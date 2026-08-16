@@ -1,0 +1,43 @@
+# ─── GB Energy Monitor · .gitignore ───────────────────────────────
+# Runtime-generated data and, above all, anything holding credentials.
+# NONE of these should ever be committed — especially in a public repo.
+
+# ── Credentials / secrets (NEVER COMMIT) ──
+octopus_config.json
+openweather_key.json
+*_key.json
+*_config.json
+*.key
+*.pem
+.env
+.env.*
+
+# ── Runtime caches, budgets, last-good snapshots ──
+openweather_budget.json
+weather_last_good.json
+bmu_locations.json
+bmu_registry.json
+
+# ── Logs / accumulating history ──
+margin_history.json
+gas_history.json
+alert_history.json
+alert_history/
+octopus_history/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Editor / OS cruft ──
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
