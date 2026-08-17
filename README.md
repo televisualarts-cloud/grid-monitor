@@ -156,3 +156,7 @@ Individual data feeds (grid, gas, flood, weather) come from separate public serv
 
 **The weather panel asks for a key / My Home asks for credentials.**
 Those features need their own credentials (OpenWeather for weather; Octopus Energy for My Home). See the relevant sections above. Both are optional — the core grid, gas and environment pages work without them.
+
+## Work-in-progress
+The next update will use the Octopus Agile API to pull more detailed tariff information from your account - but you'll need to input your Octopus account number(s). Remember - account information is kept on your local machine and is NOT shared over the web. The current version uses fixed tariff rates, which is not appropriate for people on flexible tariffs.
+
