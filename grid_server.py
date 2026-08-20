@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260817.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260819.10  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -48,13 +48,17 @@ The dashboard (grid_dashboard.html) fetches /api/grid every 60 s.
 import argparse
 import json
 import math
+import os
+import random
 import re
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
 import urllib.parse
 import base64
+import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -62,6 +66,21 @@ from pathlib import Path
 BMRS = "https://data.elexon.co.uk/bmrs/api/v1"
 CARBON = "https://api.carbonintensity.org.uk"
 UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
+
+# ---- Debug logging ----------------------------------------------------------
+# Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
+# When on, every HTTP fetch logs its URL, outcome, HTTP status, timing, and (on
+# error) a snippet of the response body — enough to see which upstream call is
+# failing and why, without a heavyweight logging setup.
+DEBUG = bool(os.environ.get("GRIDMON_DEBUG"))
+
+
+def dbg(*args):
+    """Print a timestamped debug line to stderr when DEBUG is on."""
+    if not DEBUG:
+        return
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    print(f"[dbg {ts}]", *args, file=sys.stderr, flush=True)
 
 # ---- Fuel type presentation -------------------------------------------------
 # Elexon FUELINST fuel codes -> (display name, category, colour)
@@ -92,9 +111,114 @@ FUEL_META = {
 
 
 def fetch_json(url, timeout=30):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+    return _fetch_json_retry(url, timeout=timeout)
+
+
+# ---- Retry + per-host throttle ---------------------------------------------
+# Transient upstream failures (CDN 503 'Backend fetch failed', 502/504 gateway
+# errors, 429 rate-limits, and connection timeouts) are common on the free
+# public APIs this dashboard uses. Rather than let one blip blank a panel for a
+# whole cache cycle, retry a bounded number of times with exponential backoff +
+# jitter. Non-transient statuses (400/401/403/404) are a real answer — retrying
+# them just wastes time and hammers the upstream — so they raise immediately.
+#
+# A per-host semaphore caps how many requests are in flight to any single host
+# at once. This matters now that the snapshot is built in parallel: without it,
+# a cold cache could fire six simultaneous Elexon calls and trip rate-limits or
+# make the upstream itself the bottleneck.
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+FETCH_MAX_RETRIES = 2          # 3 attempts total (1 + 2 retries)
+FETCH_BACKOFF_BASE = 0.6       # seconds; grows 0.6, 1.2, 2.4 … with jitter
+FETCH_BACKOFF_CAP = 6.0        # never sleep longer than this between tries
+HOST_MAX_INFLIGHT = 4          # concurrent requests allowed per host
+
+_host_sems = {}
+_host_sems_lock = threading.Lock()
+
+
+def _host_sem(url):
+    """Return the concurrency semaphore for this URL's host, creating it once."""
+    host = urllib.parse.urlsplit(url).netloc or "?"
+    with _host_sems_lock:
+        s = _host_sems.get(host)
+        if s is None:
+            s = threading.BoundedSemaphore(HOST_MAX_INFLIGHT)
+            _host_sems[host] = s
+        return s
+
+
+def _retry_after_seconds(e):
+    """Parse a Retry-After header (seconds form) from a 429/503 if present."""
+    try:
+        ra = e.headers.get("Retry-After") if getattr(e, "headers", None) else None
+        if ra and ra.strip().isdigit():
+            return min(float(ra.strip()), FETCH_BACKOFF_CAP)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_json_retry(url, timeout=30, max_retries=FETCH_MAX_RETRIES):
+    """GET and parse JSON with bounded retries on transient failures and a
+    per-host in-flight cap. On permanent failure raises the last exception with
+    the URL, HTTP status, and a short body snippet attached (surfaced when DEBUG
+    is on and in callers' out['error'])."""
+    sem = _host_sem(url)
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        # Bound the wait to acquire a host slot so a wedged host can't hang the
+        # caller indefinitely; treat a slot-starvation as a transient failure.
+        got = sem.acquire(timeout=timeout + 5)
+        if not got:
+            last_exc = TimeoutError(f"host busy: {urllib.parse.urlsplit(url).netloc}")
+            dbg(f"GET BUSY (no host slot) {url}")
+            break
+        req = urllib.request.Request(url, headers=UA)
+        t0 = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.load(r)
+            dbg(f"GET ok   {(time.monotonic()-t0)*1000:.0f}ms  "
+                f"{'(try %d) ' % (attempt+1) if attempt else ''}{url}")
+            return data
+        except urllib.error.HTTPError as e:
+            dt = (time.monotonic() - t0) * 1000
+            body = ""
+            try:
+                body = e.read(500).decode("utf-8", "replace")
+            except Exception:
+                pass
+            e.grid_url = url
+            e.grid_body = body[:300]
+            last_exc = e
+            transient = e.code in RETRYABLE_STATUS
+            dbg(f"GET HTTP {e.code} {dt:.0f}ms {'transient' if transient else 'permanent'} "
+                f"{url}\n       body: {body[:200]!r}")
+            if not transient:
+                raise         # 4xx (bar 429) is a real answer — don't retry
+            wait_hint = _retry_after_seconds(e)
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                json.JSONDecodeError) as e:
+            dt = (time.monotonic() - t0) * 1000
+            last_exc = e
+            dbg(f"GET FAIL {type(e).__name__} {dt:.0f}ms  {url}\n       {e}")
+            wait_hint = None
+        finally:
+            sem.release()
+
+        # Out of attempts? Stop and raise below.
+        if attempt >= max_retries:
+            break
+        # Backoff with jitter (or honour Retry-After if the server gave one).
+        delay = wait_hint if wait_hint is not None else min(
+            FETCH_BACKOFF_BASE * (2 ** attempt), FETCH_BACKOFF_CAP)
+        delay += random.uniform(0, delay * 0.25)
+        dbg(f"GET retry in {delay:.1f}s (attempt {attempt+1}/{max_retries}) {url}")
+        time.sleep(delay)
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"fetch failed with no exception: {url}")
 
 
 def post_json(url, body, timeout=30):
@@ -1248,7 +1372,7 @@ WEATHER_DISK_MAX_AGE = 6 * 3600   # 6 hours
 
 
 def _weather_next_utc_midnight(now_epoch):
-    """Epoch of the next 00:00 UTC — when Open-Meteo's daily quota resets."""
+    """Epoch of the next 00:00 UTC — when OpenWeather's daily quota resets."""
     now_dt = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
     tomorrow = (now_dt + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0)
@@ -1673,6 +1797,271 @@ def _octopus_consumption(kind, point, serial, api_key, hours=336):
     return d.get("results", []) if isinstance(d, dict) else []
 
 
+def _agreements_for_fuel(account_doc, fuel):
+    """Pull one fuel's dated agreements out of a single account-endpoint response.
+    fuel is 'electricity' or 'gas'. Returns a date-ascending list."""
+    key = "electricity_meter_points" if fuel == "electricity" else "gas_meter_points"
+    out = []
+    for prop in (account_doc.get("properties") or []):
+        for mp in (prop.get(key) or []):
+            for ag in (mp.get("agreements") or []):
+                out.append({
+                    "tariff_code": ag.get("tariff_code"),
+                    "valid_from": ag.get("valid_from"),
+                    "valid_to": ag.get("valid_to"),
+                })
+    out.sort(key=lambda a: a.get("valid_from") or "")
+    return out
+
+
+def _octopus_agreements(account_number, api_key, gas_account_number=None):
+    """Resolve the account's tariff history from the REST account endpoint.
+
+    Returns, per fuel, the ordered list of tariff AGREEMENTS actually applied to
+    this account — each with its tariff_code and the dates it was in force. This
+    is what lets us cost past usage against the rate that applied AT THE TIME,
+    rather than one flat typed number. Read-only; the product/rate lookups that
+    turn a tariff_code into pence come in a later stage.
+
+    Account model: most customers have ONE account number covering both fuels
+    (dual fuel). Some have electricity and gas under SEPARATE accounts. So gas is
+    resolved from its own `gas_account_number` when given, otherwise from the
+    primary `account_number` alongside electricity.
+
+    Shape:
+      {"electricity": [{"tariff_code": "E-1R-VAR-22-11-01-C",
+                         "valid_from": "2024-01-01T00:00:00Z",
+                         "valid_to":   "2025-06-01T00:00:00Z" | None}, ...],
+       "gas": [ ... ],
+       "elec_account": "A-XXXXXXXX", "gas_account": "A-YYYYYYYY"}
+    A valid_to of None means still in force. Agreements are date-ascending.
+    Returns {"error": "..."} on failure rather than raising, so callers can fall
+    back to typed rates and label the panel honestly. Per-fuel resolution is
+    best-effort: if the gas account fails but electricity succeeds, electricity
+    is still returned (and vice versa), with a per-fuel error note.
+    """
+    if not (account_number and api_key):
+        return {"error": "account number and api key required"}
+
+    def _fetch_account(acct):
+        try:
+            return _octopus_fetch(f"/accounts/{acct}/", api_key), None
+        except urllib.error.HTTPError as e:
+            return None, f"HTTP {e.code}"
+        except Exception as e:
+            return None, type(e).__name__
+
+    out = {"electricity": [], "gas": [],
+           "elec_account": account_number,
+           "gas_account": gas_account_number or account_number}
+
+    # Primary account: electricity, and gas too unless gas has its own account.
+    primary_doc, err = _fetch_account(account_number)
+    if primary_doc is None:
+        # Primary failed entirely — nothing to resolve from it.
+        out["error"] = f"account lookup failed: {err}"
+        return out
+    out["electricity"] = _agreements_for_fuel(primary_doc, "electricity")
+
+    if gas_account_number and gas_account_number != account_number:
+        gas_doc, gerr = _fetch_account(gas_account_number)
+        if gas_doc is None:
+            out["gas_error"] = f"gas account lookup failed: {gerr}"
+        else:
+            out["gas"] = _agreements_for_fuel(gas_doc, "gas")
+    else:
+        out["gas"] = _agreements_for_fuel(primary_doc, "gas")
+
+    return out
+
+
+# ---- Stage 2: tariff-code -> dated rate history (public product endpoints) --
+# The account gives us tariff CODES and when each applied. To cost usage we need
+# what each tariff CHARGED, as dated periods. Those live on the public product
+# endpoints (no auth). Cached in-process keyed by tariff code + payment method,
+# since rate history changes rarely (a few times a year for standard tariffs).
+_octopus_rates_cache = {}          # {(tariff_code, pay): {"ts":.., "unit":[..], "standing":[..]}}
+OCTOPUS_RATES_TTL = 6 * 3600       # rate history is slow-moving; 6h is plenty
+
+_TARIFF_RE = re.compile(r"^([EG])-\d+R-(.+)-[A-P]$")
+
+
+def _product_from_tariff(tariff_code):
+    """E-1R-VAR-22-11-01-C -> ('electricity','VAR-22-11-01'); gas -> 'gas'.
+    Returns (fuel_path, product_code) or (None, None) if unparseable."""
+    m = _TARIFF_RE.match(tariff_code or "")
+    if not m:
+        return None, None
+    fuel_path = "electricity-tariffs" if m.group(1) == "E" else "gas-tariffs"
+    return fuel_path, m.group(2)
+
+
+def _pick_rate_records(results, pay="DIRECT_DEBIT"):
+    """The rate-history endpoints return TWO records per period — one for Direct
+    Debit, one for non-DD (via payment_method). Collapse to one series for the
+    chosen method, newest-first, as {valid_from, valid_to, p} using inc-VAT."""
+    picked = []
+    for r in results:
+        pm = r.get("payment_method")
+        # Records with payment_method None apply to all methods; keep those too.
+        if pm is not None and pm != pay:
+            continue
+        picked.append({
+            "valid_from": r.get("valid_from"),
+            "valid_to": r.get("valid_to"),
+            "p": r.get("value_inc_vat"),
+        })
+    # If the filter removed everything (e.g. tariff has no per-method split under
+    # a different label), fall back to all records so we don't return empty.
+    if not picked and results:
+        picked = [{"valid_from": r.get("valid_from"), "valid_to": r.get("valid_to"),
+                   "p": r.get("value_inc_vat")} for r in results]
+    picked.sort(key=lambda x: x.get("valid_from") or "", reverse=True)
+    return picked
+
+
+def _octopus_rate_history(tariff_code, pay="DIRECT_DEBIT"):
+    """Fetch dated unit-rate and standing-charge history for one tariff code.
+
+    Returns {"unit":[{valid_from,valid_to,p}], "standing":[...],
+             "tariff_code":.., "product":..} or {"error":..}. Public endpoints,
+    no auth. Cached for OCTOPUS_RATES_TTL. 'pay' selects the payment-method
+    variant (Direct Debit by default — the common domestic case)."""
+    if not tariff_code:
+        return {"error": "no tariff code"}
+    ck = (tariff_code, pay)
+    hit = _octopus_rates_cache.get(ck)
+    if hit and (time.time() - hit["ts"]) < OCTOPUS_RATES_TTL:
+        return hit["data"]
+
+    fuel_path, product = _product_from_tariff(tariff_code)
+    if not product:
+        return {"error": f"unparseable tariff code: {tariff_code}"}
+
+    base = f"https://api.octopus.energy/v1/products/{product}/{fuel_path}/{tariff_code}/"
+
+    def _fetch_all(kind):
+        # Paginate the rate/standing history; usually 1 page for standard tariffs.
+        rows, url = [], base + kind + "/"
+        for _ in range(6):          # cap pages (Agile could be long; costing
+            try:                     # only needs the dated STANDARD periods here)
+                req = urllib.request.Request(url, headers={"User-Agent": "uk-grid-monitor"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    d = json.load(r)
+            except Exception as e:
+                return None, type(e).__name__
+            rows.extend(d.get("results", []))
+            url = d.get("next")
+            if not url:
+                break
+        return rows, None
+
+    unit_raw, uerr = _fetch_all("standard-unit-rates")
+    if unit_raw is None:
+        return {"error": f"unit-rate fetch failed: {uerr}"}
+    stand_raw, serr = _fetch_all("standing-charges")
+    if stand_raw is None:
+        return {"error": f"standing-charge fetch failed: {serr}"}
+
+    data = {
+        "tariff_code": tariff_code,
+        "product": product,
+        "pay": pay,
+        "unit": _pick_rate_records(unit_raw, pay),
+        "standing": _pick_rate_records(stand_raw, pay),
+    }
+    _octopus_rates_cache[ck] = {"ts": time.time(), "data": data}
+    return data
+
+
+# ---- Stage 3: matched costing (each reading × the rate in force at its time) -
+# The honest calculation: rather than total_kWh × one flat rate, cost every
+# half-hourly reading against the unit rate that actually applied on its date,
+# and sum standing charges per day at the standing rate in force that day. This
+# stays correct across price changes and tariff switches. All rates are inc-VAT
+# (see _pick_rate_records -> value_inc_vat); do NOT add VAT again downstream.
+
+def _rate_at(periods, iso_t):
+    """Unit/standing rate (pence) in force at ISO timestamp iso_t. `periods` is
+    the dated list from _pick_rate_records (newest-first): each has valid_from,
+    valid_to (None = open), p. Returns pence or None if no period covers t."""
+    for pr in periods:                       # newest-first; first match wins
+        vf, vt = pr.get("valid_from"), pr.get("valid_to")
+        if vf and iso_t < vf:
+            continue
+        if vt and iso_t >= vt:
+            continue
+        return pr.get("p")
+    return None
+
+
+def _matched_energy_cost(pts, unit_periods):
+    """Sum energy cost (pence) over timestamped kWh points, each at its own-time
+    unit rate. Returns (cost_p, uncosted_kwh) — uncosted_kwh is usage that fell
+    outside every known rate period (honest: reported, not silently zero-cost)."""
+    cost = 0.0
+    uncosted = 0.0
+    for p in pts:
+        rate = _rate_at(unit_periods, p["t"])
+        if rate is None:
+            uncosted += p["kwh"]
+        else:
+            cost += p["kwh"] * rate
+    return cost, round(uncosted, 4)
+
+
+def _matched_standing_cost(day_list, standing_periods):
+    """Sum standing charge (pence) across the given days, each at the standing
+    rate in force that day. day_list is 'YYYY-MM-DD' strings. Days with no known
+    rate are skipped and counted as uncovered."""
+    cost = 0.0
+    uncovered = 0
+    for day in day_list:
+        # anchor at midday UTC to avoid edge-of-day boundary ambiguity
+        rate = _rate_at(standing_periods, day + "T12:00:00Z")
+        if rate is None:
+            uncovered += 1
+        else:
+            cost += rate
+    return cost, uncovered
+
+
+def _last_billing_period(end_day, today=None):
+    """Given the day-of-month a billing period ENDS on (e.g. 16 -> period runs
+    17th of one month to 16th of the next, inclusive of the 16th), return the
+    (from_date, to_date) ISO dates of the LAST COMPLETE period — the most recent
+    one that has already ended. Both 'YYYY-MM-DD'. None if end_day unusable.
+    Clamps end_day to each month's length so short months stay valid."""
+    try:
+        end_day = int(end_day)
+    except (TypeError, ValueError):
+        return None
+    if not (1 <= end_day <= 31):
+        return None
+    from calendar import monthrange
+    d = today or datetime.now(timezone.utc).date()
+
+    def mkdate(y, m):
+        return datetime(y, m, min(end_day, monthrange(y, m)[1])).date()
+
+    cur_end = mkdate(d.year, d.month)
+    if cur_end < d:
+        end = cur_end
+    else:
+        pm_y, pm_m = (d.year - 1, 12) if d.month == 1 else (d.year, d.month - 1)
+        end = mkdate(pm_y, pm_m)
+    sm_y, sm_m = (end.year - 1, 12) if end.month == 1 else (end.year, end.month - 1)
+    prev_end = mkdate(sm_y, sm_m)
+    start = prev_end + timedelta(days=1)
+    return start.isoformat(), end.isoformat()
+
+
+def _iso_plus_days(iso_date, n):
+    """'YYYY-MM-DD' + n days -> 'YYYY-MM-DD'."""
+    return (datetime.fromisoformat(iso_date + "T00:00:00+00:00")
+            + timedelta(days=n)).date().isoformat()
+
+
 def _looks_like_m3(results):
     """Heuristic: SMETS2 gas reports m3 (small per-half-hour values); SMETS1 is
     pre-converted to kWh. Median under ~0.35 => almost certainly m3."""
@@ -1683,7 +2072,8 @@ def _looks_like_m3(results):
     return vals[len(vals) // 2] < 0.35
 
 
-def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_is_m3=False):
+def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_is_m3=False,
+                           unit_periods=None, standing_periods=None, billing_window=None):
     """Raw half-hourly results -> totals, daily breakdown, cost. unit_rate_p is
     pence/kWh, standing_p pence/day."""
     if not results:
@@ -1721,8 +2111,34 @@ def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_i
     # for any per-day insight; allow a tiny tolerance for the odd missing slot.
     full_days = [d for d in days if day_slots.get(d, 0) >= 46]
     n_days = max(1, len(days))
-    energy_cost_p = total_kwh * unit_rate_p
-    standing_cost_p = standing_p * n_days
+
+    # Costing: if dated rate history is supplied, cost each reading against the
+    # rate in force at ITS time and sum standing per-day at that day's rate
+    # (stays correct across price changes / tariff switches). Otherwise fall back
+    # to the flat typed rate. All matched rates are inc-VAT — do not re-add VAT.
+    matched = bool(unit_periods) and bool(standing_periods)
+    uncosted_kwh = 0.0
+    uncovered_days = 0
+    n_unit_periods = 0
+    if matched:
+        energy_cost_p, uncosted_kwh = _matched_energy_cost(pts, unit_periods)
+        standing_cost_p, uncovered_days = _matched_standing_cost(days, standing_periods)
+        # count distinct rate periods actually spanned by this usage window
+        seen = set()
+        for p in pts:
+            r = _rate_at(unit_periods, p["t"])
+            if r is not None:
+                seen.add(r)
+        n_unit_periods = len(seen)
+        # a single representative "current" rate for insight figures that need a
+        # scalar (baseline projection etc.) — the newest period's rate.
+        eff_unit_p = unit_periods[0]["p"] if unit_periods else unit_rate_p
+        eff_standing_p = standing_periods[0]["p"] if standing_periods else standing_p
+    else:
+        energy_cost_p = total_kwh * unit_rate_p
+        standing_cost_p = standing_p * n_days
+        eff_unit_p = unit_rate_p
+        eff_standing_p = standing_p
 
     # ---- deeper insights from the half-hourly shape ----
     from statistics import mean
@@ -1747,7 +2163,7 @@ def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_i
             base_kwh = allk[max(0, len(allk) // 20)]
             insights["baseline_kwh_hh"] = round(base_kwh, 3)
             insights["baseline_watts"] = round(base_kwh * 2000)   # kWh/half-hour -> avg W
-            insights["baseline_daily_cost_p"] = round(base_kwh * 48 * unit_rate_p)
+            insights["baseline_daily_cost_p"] = round(base_kwh * 48 * eff_unit_p)
         # overnight share (00:00-06:00)
         night = sum(p["kwh"] for p in pts if "00:00" <= p["t"][11:16] < "06:00")
         insights["overnight_pct"] = round(100 * night / total_kwh) if total_kwh else 0
@@ -1763,8 +2179,18 @@ def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_i
             insights["weekday_avg_kwh"] = round(mean(wd.values()), 2)
         if we:
             insights["weekend_avg_kwh"] = round(mean(we.values()), 2)
-        # highest & lowest cost day — full days only (a partial day looks cheap)
-        day_cost = {d: daily[d] * unit_rate_p + standing_p for d in full_days}
+        # highest & lowest cost day — full days only (a partial day looks cheap).
+        # Under matched costing, each day is priced at the unit+standing rate in
+        # force THAT day; otherwise the flat typed rate.
+        if matched:
+            day_cost = {}
+            for d in full_days:
+                u = _rate_at(unit_periods, d + "T12:00:00Z")
+                s = _rate_at(standing_periods, d + "T12:00:00Z")
+                if u is not None and s is not None:
+                    day_cost[d] = daily[d] * u + s
+        else:
+            day_cost = {d: daily[d] * unit_rate_p + standing_p for d in full_days}
         if day_cost:
             hd = max(day_cost, key=day_cost.get); ld = min(day_cost, key=day_cost.get)
             insights["dearest_day"] = {"date": hd, "cost_p": round(day_cost[hd])}
@@ -1782,14 +2208,53 @@ def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_i
             typ_day_kwh = mean(daily[d] for d in full_days)
         else:
             typ_day_kwh = total_kwh / n_days
-        typ_day_cost = typ_day_kwh * unit_rate_p + standing_p
-        insights["standing_share_pct"] = round(100 * standing_p / typ_day_cost) if typ_day_cost else 0
+        typ_day_cost = typ_day_kwh * eff_unit_p + eff_standing_p
+        insights["standing_share_pct"] = round(100 * eff_standing_p / typ_day_cost) if typ_day_cost else 0
         insights["annual_proj_gbp"] = round(typ_day_cost * 365 / 100)
     except Exception:
         insights = {}
+
+    # ---- last-billing-period cost (if a billing window is supplied) ----
+    # Costs only the readings within [from, to] (inclusive of the 'to' day),
+    # using the same matched-or-flat basis as the headline. Reported separately
+    # so the panel can show a real billing-cycle estimate rather than a rolling
+    # window. billing_complete flags whether our data actually covers the whole
+    # period (a short/new meter history may only partly cover it — stated, not
+    # hidden). billing_window is (from_date, to_date) 'YYYY-MM-DD' or None.
+    billing = None
+    if billing_window:
+        bf, bt = billing_window
+        # inclusive of the whole 'to' day
+        bt_excl = bt + "T23:59:59Z"
+        bf_incl = bf + "T00:00:00Z"
+        bpts = [p for p in pts if bf_incl <= p["t"] <= bt_excl]
+        bdays = sorted({p["t"][:10] for p in bpts})
+        if bpts:
+            if matched:
+                b_energy, b_uncosted = _matched_energy_cost(bpts, unit_periods)
+                b_stand, b_uncov = _matched_standing_cost(bdays, standing_periods)
+            else:
+                b_energy = sum(p["kwh"] for p in bpts) * unit_rate_p
+                b_stand = standing_p * len(bdays)
+                b_uncosted = b_uncov = 0
+            # coverage: did our data reach the period start? (allow 1 day slack)
+            have_from = bpts[0]["t"][:10] if bpts else None
+            covers_start = have_from is not None and have_from <= _iso_plus_days(bf, 1)
+            billing = {
+                "from": bf, "to": bt,
+                "kwh": round(sum(p["kwh"] for p in bpts), 2),
+                "energy_cost_p": round(b_energy),
+                "standing_cost_p": round(b_stand),
+                "total_cost_p": round(b_energy + b_stand),
+                "days_covered": len(bdays),
+                "complete": bool(covers_start),
+                "uncosted_kwh": round(b_uncosted, 2),
+            }
+
     return {
         "total_kwh": round(total_kwh, 2),
         "n_days": len(days),
+        "billing_period": billing,
         "avg_daily_kwh": round(total_kwh / n_days, 2),
         "daily": [{"date": d, "kwh": round(daily[d], 2), "slots": day_slots.get(d, 0)} for d in days],
         "half_hourly": pts[-96:],
@@ -1803,8 +2268,73 @@ def _summarise_consumption(results, unit_rate_p, standing_p, is_gas=False, gas_i
         "daily_cost_p": round((energy_cost_p + standing_cost_p) / n_days),
         "monthly_proj_p": round((energy_cost_p + standing_cost_p) / n_days * 30),
         "gas_unit": ("m3->kWh" if (is_gas and gas_is_m3) else "kWh"),
+        # costing provenance — lets the UI label figures honestly (matched vs
+        # flat typed fallback) and flag any usage/days the rate history couldn't
+        # cover. eff_* are the current-period rates used for scalar projections.
+        "cost_matched": matched,
+        "eff_unit_p": round(eff_unit_p, 4) if eff_unit_p is not None else None,
+        "eff_standing_p": round(eff_standing_p, 4) if eff_standing_p is not None else None,
+        "n_rate_periods": n_unit_periods,
+        "uncosted_kwh": round(uncosted_kwh, 2),
+        "uncovered_days": uncovered_days,
         "insights": insights,
     }
+
+
+def _resolve_tariff_periods(cfg):
+    """Turn the stored config into per-fuel rate history for matched costing.
+
+    Resolves the account's current tariff (Stage 1) then its dated rate history
+    (Stage 2), for whichever fuels have an account number available. Returns:
+      {"electricity": {"tariff_code":.., "unit":[..], "standing":[..],
+                        "current_unit_p":.., "current_standing_p":.., "error":..},
+       "gas": {...}, "pay": "DIRECT_DEBIT"|"NON_DIRECT_DEBIT"}
+    Any fuel that can't be resolved gets an "error" note and no periods, so the
+    caller silently falls back to that fuel's typed rate. Best-effort: an account
+    or rate failure never breaks consumption display.
+    """
+    acct = cfg.get("account_number")
+    gas_acct = cfg.get("gas_account_number")
+    key = cfg.get("api_key")
+    pay = cfg.get("payment_method") or "DIRECT_DEBIT"
+    res = {"electricity": {}, "gas": {}, "pay": pay}
+    if not (acct and key):
+        # No account number entered — matched costing unavailable; typed fallback.
+        res["electricity"]["error"] = "no account number"
+        res["gas"]["error"] = "no account number"
+        return res
+
+    ag = _octopus_agreements(acct, key, gas_acct)
+    if "error" in ag and not ag.get("electricity") and not ag.get("gas"):
+        res["electricity"]["error"] = ag["error"]
+        res["gas"]["error"] = ag["error"]
+        return res
+
+    def _latest_code(agreements):
+        # newest agreement (list is date-ascending) that has a tariff code
+        for a in reversed(agreements or []):
+            if a.get("tariff_code"):
+                return a["tariff_code"]
+        return None
+
+    for fuel in ("electricity", "gas"):
+        code = _latest_code(ag.get(fuel))
+        if not code:
+            res[fuel]["error"] = ag.get("gas_error") if fuel == "gas" else "no tariff agreement"
+            continue
+        rh = _octopus_rate_history(code, pay)
+        if "error" in rh:
+            res[fuel]["error"] = rh["error"]
+            continue
+        res[fuel] = {
+            "tariff_code": code,
+            "product": rh.get("product"),
+            "unit": rh.get("unit", []),
+            "standing": rh.get("standing", []),
+            "current_unit_p": rh["unit"][0]["p"] if rh.get("unit") else None,
+            "current_standing_p": rh["standing"][0]["p"] if rh.get("standing") else None,
+        }
+    return res
 
 
 def get_octopus():
@@ -1818,11 +2348,24 @@ def get_octopus():
     cfg = _load_octopus_cfg()
     key = cfg["api_key"]
     out = {"needs_config": False, "errors": []}
+    # Resolve real tariff + dated rate history for matched costing (best-effort;
+    # falls back to typed rates per-fuel if unavailable). Attached to output so
+    # the UI can show the tariff panels and cost provenance.
+    tariffs = _resolve_tariff_periods(cfg)
+    out["tariffs"] = tariffs
+    # Billing window (last complete period) from the configured end-of-period day.
+    bwin = _last_billing_period(cfg.get("billing_end_day")) if cfg.get("billing_end_day") else None
+    out["billing_window"] = bwin
     try:
         er = _octopus_consumption("electricity-meter-points",
-                                  cfg["elec_mpan"], cfg["elec_serial"], key, hours=576)
+                                  cfg["elec_mpan"], cfg["elec_serial"], key, hours=1080)
+        et = tariffs.get("electricity", {})
         out["electricity"] = _summarise_consumption(
-            er, float(cfg.get("elec_unit_p", 22.70)), float(cfg.get("elec_standing_p", 53.76)))
+            er, float(cfg.get("elec_unit_p", 22.70)), float(cfg.get("elec_standing_p", 53.76)),
+            unit_periods=et.get("unit"), standing_periods=et.get("standing"), billing_window=bwin)
+        if out["electricity"] is not None:
+            out["electricity"]["_unit_periods"] = et.get("unit")
+            out["electricity"]["_standing_periods"] = et.get("standing")
         if out["electricity"] is None and not er:
             out["errors"].append("No electricity readings (smart meter required, or none yet).")
     except urllib.error.HTTPError as e:
@@ -1834,7 +2377,7 @@ def get_octopus():
     if cfg.get("gas_mprn") and cfg.get("gas_serial"):
         try:
             gr = _octopus_consumption("gas-meter-points",
-                                      cfg["gas_mprn"], cfg["gas_serial"], key, hours=576)
+                                      cfg["gas_mprn"], cfg["gas_serial"], key, hours=1080)
             # Unit interpretation. The old magnitude heuristic is unreliable:
             # genuine low summer gas in kWh (~0.04/half-hour) looks the same as
             # m3, so auto-detect could wrongly ×11.22. We therefore DEFAULT to
@@ -1851,9 +2394,14 @@ def get_octopus():
                 med = vals[len(vals)//2] if vals else 0
                 gas_m3 = bool(vals) and med < 0.08   # far below typical kWh usage
                 detected = True
+            gt = tariffs.get("gas", {})
             out["gas"] = _summarise_consumption(
                 gr, float(cfg.get("gas_unit_p", 5.56)), float(cfg.get("gas_standing_p", 33.35)),
-                is_gas=True, gas_is_m3=gas_m3)
+                is_gas=True, gas_is_m3=gas_m3,
+                unit_periods=gt.get("unit"), standing_periods=gt.get("standing"), billing_window=bwin)
+            if out["gas"] is not None:
+                out["gas"]["_unit_periods"] = gt.get("unit")
+                out["gas"]["_standing_periods"] = gt.get("standing")
             if out["gas"] is not None:
                 out["gas"]["unit_autodetected"] = detected
                 out["gas"]["unit_is_m3"] = gas_m3
@@ -1873,10 +2421,22 @@ def get_octopus():
         def _full_days(s):
             """(date -> cost_p) for COMPLETE days only (>=46 of 48 half-hours).
             Partial first/last days of the fetch window are excluded so day and
-            week comparisons aren't distorted by incomplete data."""
+            week comparisons aren't distorted by incomplete data. Costs each day
+            at the rate in force THAT day when matched rate history is available
+            (s['_unit_periods']/'_standing_periods'), else the flat typed rate."""
+            up = s.get("_unit_periods"); sp = s.get("_standing_periods")
+            matched = bool(up) and bool(sp)
             per = {}
             for d in s.get("daily", []):
-                if d.get("slots", 0) >= 46:
+                if d.get("slots", 0) < 46:
+                    continue
+                if matched:
+                    u = _rate_at(up, d["date"] + "T12:00:00Z")
+                    st = _rate_at(sp, d["date"] + "T12:00:00Z")
+                    if u is None or st is None:
+                        continue   # no known rate that day — omit rather than misprice
+                    per[d["date"]] = d["kwh"] * u + st
+                else:
                     per[d["date"]] = d["kwh"] * s["unit_rate_p"] + s["standing_p"]
             return per
 
@@ -1914,12 +2474,40 @@ def get_octopus():
                         mconv = GAS_M3_TO_KWH
                 kwh = mtot["kwh"] * mconv
                 prev_kwh = (mtot["prev_kwh"] * mconv) if mtot.get("prev_kwh") is not None else None
-                cost = kwh * s["unit_rate_p"] + s["standing_p"] * ndm
+                up = s.get("_unit_periods"); sp = s.get("_standing_periods")
+                matched = bool(up) and bool(sp)
+
+                def _month_cost(y2, m2, fallback_kwh):
+                    """Matched cost for a month: each reading at its own-time rate
+                    + per-day standing at that day's rate. Falls back to flat
+                    (fallback_kwh * unit + standing*ndm) if no rate history or no
+                    per-reading cache."""
+                    days_in = _cal.monthrange(y2, m2)[1]
+                    if matched:
+                        rd = _month_readings_from_cache(s.get("_kind"), y2, m2)
+                        if rd:
+                            energy = 0.0
+                            for iso, v in rd.items():
+                                r = _rate_at(up, iso)
+                                if r is not None and v is not None:
+                                    energy += (v * mconv) * r
+                            # standing: each day of the month at that day's rate
+                            stot = 0.0
+                            for dnum in range(1, days_in + 1):
+                                dr = _rate_at(sp, f"{y2:04d}-{m2:02d}-{dnum:02d}T12:00:00Z")
+                                if dr is not None:
+                                    stot += dr
+                            return energy + stot
+                    # flat fallback
+                    return (fallback_kwh or 0) * s["unit_rate_p"] + s["standing_p"] * days_in
+
+                cost = _month_cost(yy, mm, kwh)
+                py, pm = (yy, mm - 1) if mm > 1 else (yy - 1, 12)
+                prev_cost = _month_cost(py, pm, prev_kwh) if prev_kwh is not None else None
                 blk["month"] = {"cost_p": round(cost), "kwh": round(kwh, 1),
                                 "label": datetime(yy, mm, 1).strftime("%b %Y"),
-                                "delta_p": (round(cost - (prev_kwh * s["unit_rate_p"]
-                                                          + s["standing_p"] * ndm))
-                                            if prev_kwh is not None else None)}
+                                "delta_p": (round(cost - prev_cost)
+                                            if prev_cost is not None else None)}
             return blk or None
 
         # tag each summary with its meter kind so the cache lookup knows which file
@@ -1944,6 +2532,21 @@ def get_octopus():
         }
     c["data"] = out; c["ts"] = time.time()
     return out
+
+
+def _month_readings_from_cache(kind, yy, mm):
+    """The month's raw {iso_start: kwh} readings from the on-disk history cache
+    (same files _month_kwh_from_cache sums). Returns the dict or None. Lets the
+    month card be matched-costed per-reading rather than rate*total."""
+    if not kind:
+        return None
+    f = OCTOPUS_HIST_DIR / f"{kind}_{yy:04d}-{mm:02d}.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return None
 
 
 def _month_kwh_from_cache(kind):
@@ -2775,22 +3378,39 @@ def get_gas():
         # over time). Attach the operator's Forecast Minimum Linepack as a floor.
         api_lp = get_gas_linepack_history(48)
         if api_lp and api_lp.get("actual"):
-            # Live-primary merge (archive as hot backup). Both sources measure
-            # the same thing (NTS linepack); the local log samples every ~2 min
-            # while the API archive is strictly hourly and lags ~13h. Policy:
-            #   - For each hour in the 48h window, if the local log has ANY
-            #     sample in that hour, use the live samples (higher resolution).
-            #   - Otherwise fall back to the single hourly archive point.
-            # Over time the log fills and live progressively replaces archive.
-            # All points are equal (no est flag) — it's all measured linepack,
-            # drawn as one solid line.
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+            # Merge policy — live-primary with archive as the deep backfill:
+            #  * The API hourly-actual is authoritative up to its LAST hour, but
+            #    it lags ~13-14h behind now (D+1 publication). Over that stretch
+            #    the linepack line is the official series; balance is annotated
+            #    from the local log where we have a live sample for that hour.
+            #  * Beyond the archive's last hour there is a GAP up to now. We
+            #    bridge it by APPENDING the local-log points captured after that
+            #    hour — real measured linepack AND real measured supply-demand
+            #    balance (s-d), at full live resolution. This is the higher-res
+            #    recent tail; over time it's what the whole recent portion of the
+            #    plot is built from, exactly as intended.
+            actual = api_lp["actual"]
+            last_arch_t = actual[-1]["t"]
+            try:
+                last_arch_dt = datetime.fromisoformat(last_arch_t.replace("Z", "+00:00"))
+            except Exception:
+                last_arch_dt = None
 
-            def _hr(ts):   # hour bucket key from an ISO timestamp
-                return ts[:13]
+            # balance annotation for the archive stretch, keyed by hour
+            bal_by_hour = {}
+            for p in local_hist:
+                if p.get("s") is not None and p.get("d") is not None:
+                    bal_by_hour[p["t"][:13]] = round(p["s"] - p["d"], 1)
 
-            # bucket live samples by hour
-            live_by_hour = {}
+            hist = []
+            for p in actual:
+                hist.append({"t": p["t"], "lp": p["v"],
+                             "bal": bal_by_hour.get(p["t"][:13]),
+                             "bridge": False})   # official hourly-actual series
+
+            # append the live tail: local-log points newer than the archive's
+            # last hour, with real measured linepack + balance.
+            appended = 0
             for p in local_hist:
                 if p.get("lp") is None:
                     continue
@@ -2798,37 +3418,33 @@ def get_gas():
                     pdt = datetime.fromisoformat(p["t"].replace("Z", "+00:00"))
                 except Exception:
                     continue
-                if pdt.astimezone(timezone.utc) < cutoff:
-                    continue
-                live_by_hour.setdefault(_hr(p["t"]), []).append(p)
+                if last_arch_dt is not None and pdt <= last_arch_dt:
+                    continue   # inside the archive's authoritative span — skip
+                bal = (round(p["s"] - p["d"], 1)
+                       if (p.get("s") is not None and p.get("d") is not None) else None)
+                hist.append({"t": p["t"], "lp": p["lp"], "bal": bal,
+                             "bridge": True})    # live measured bridge tail
+                appended += 1
 
-            hist = []
-            # archive points for hours with NO live coverage (hot backup)
-            for p in api_lp["actual"]:
-                if _hr(p["t"]) in live_by_hour:
-                    continue   # a live-covered hour supersedes the archive point
-                hist.append({"t": p["t"], "lp": p["v"], "bal": None,
-                             "src": "archive"})
-            # live points for every hour we have them
-            for hour, pts in live_by_hour.items():
-                for p in pts:
-                    bal = (p["s"] - p["d"]) if (p.get("s") is not None and p.get("d") is not None) else None
-                    hist.append({"t": p["t"], "lp": p["lp"],
-                                 "bal": round(bal, 1) if bal is not None else None,
-                                 "src": "live"})
-            hist.sort(key=lambda x: x["t"])
+            hist.sort(key=lambda r: r["t"])
             out["history"] = hist
             out["linepack_min_forecast"] = api_lp.get("min_forecast")
-            live_hours = len(live_by_hour)
-            out["history_source"] = (
-                api_lp.get("source") + f" · live-primary ({live_hours}h logged, archive backfill)")
+            src = api_lp.get("source")
+            if appended:
+                src += f" + {appended} live bridge pt{'s' if appended != 1 else ''}"
+            out["history_source"] = src
+            out["bridge_points"] = appended
+            out["archive_last_t"] = last_arch_t
         else:
-            # fallback: locally-logged history (fills over time)
+            # fallback: locally-logged history (fills over time). All live
+            # measured, so every point is a bridge point by definition.
             out["history"] = [{"t": p["t"], "lp": p.get("lp"),
-                               "bal": (round(p["s"] - p["d"], 1) if (p.get("s") is not None and p.get("d") is not None) else None),
-                               "src": "live"}
+                               "bal": (round(p["s"] - p["d"], 1)
+                                       if (p.get("s") is not None and p.get("d") is not None) else None),
+                               "bridge": True}
                               for p in local_hist if p.get("lp") is not None]
             out["history_source"] = "local log (accumulating)"
+            out["bridge_points"] = len(out["history"])
         # wholesale gas price history (SAP / SMP) — independent of linepack; the
         # plot is simply omitted client-side if this is unavailable.
         out["price_history"] = get_gas_price_history(48)
@@ -2846,11 +3462,11 @@ def get_gas():
 GEOCODE_BASE = "https://api.postcodes.io"
 
 
-def _haversine_mi(lat1, lon1, lat2, lon2):
-    """Great-circle distance in miles between two lat/lon points."""
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in kilometres between two lat/lon points."""
     if None in (lat1, lon1, lat2, lon2):
         return None
-    R = 3958.8  # earth radius, miles
+    R = 6371.0  # earth radius, km
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = math.radians(lat2 - lat1)
     dl = math.radians(lon2 - lon1)
@@ -2875,9 +3491,16 @@ def _short_place(nm):
 
 
 def reverse_geocode_bulk(points):
-    """Reverse-geocode a list of (lat,lon) to place names in ONE call via
-    postcodes.io's bulk endpoint. Returns a list of names aligned to input
-    order (None where no match). Never raises."""
+    """Reverse-geocode a list of (lat,lon) to place info in ONE call via
+    postcodes.io's bulk endpoint. Returns a list aligned to input order; each
+    entry is a dict {name, postcode} (or None where no match). Never raises.
+
+    `name` prefers PARISH, which is finer than admin_ward: EA rainfall gauges
+    have no real label of their own (they're all literally 'Rainfall station'),
+    so their card name comes entirely from here — and wards are large enough
+    that several gauges share one, producing confusing duplicate names. Parish
+    separates most of them; the postcode is returned as a further tiebreaker for
+    any that still collide (see _dedupe_place_names)."""
     if not points:
         return []
     out = [None] * len(points)
@@ -2889,17 +3512,65 @@ def reverse_geocode_bulk(points):
             f"{GEOCODE_BASE}/postcodes", data=body,
             headers={"Content-Type": "application/json",
                      "User-Agent": "uk-grid-monitor/1.0"})
-        d = json.loads(urllib.request.urlopen(req, timeout=25).read())
+        d = json.loads(urllib.request.urlopen(req, timeout=8).read())
         for i, item in enumerate(d.get("result") or []):
             res = (item.get("result") or [None])
             r = res[0] if res else None
             if r:
-                # prefer ward for granularity, fall back to district
-                out[i] = r.get("admin_ward") or r.get("admin_district") \
-                    or r.get("parish")
+                name = (r.get("parish") or r.get("admin_ward")
+                        or r.get("admin_district"))
+                out[i] = {"name": name, "postcode": r.get("postcode")}
     except Exception:
         pass
     return out
+
+
+def _postcode_area(pc):
+    """Outward code + first inward digit, e.g. 'PL20 6RN' -> 'PL20 6'. A compact,
+    geographically meaningful disambiguator for two gauges in the same parish."""
+    if not pc:
+        return None
+    parts = pc.split()
+    if len(parts) == 2 and parts[1]:
+        return f"{parts[0]} {parts[1][0]}"
+    return parts[0] if parts else None
+
+
+def _dedupe_place_names(records):
+    """Make the displayed gauge names distinguishable WITHOUT bloating the name
+    itself. EA rainfall gauges have no real name, so several can reverse-geocode
+    to the same place. Rather than stuff a suffix into the name (which crowds the
+    card and forces mid-word ellipsis), we keep the clean place name and lean on
+    the distance shown on the reading line to tell them apart.
+
+      * unique place name  -> leave as-is; card shows bucketed '~N km'.
+      * shared place name  -> try a short postcode area suffix IF it actually
+        separates them (different districts). Where it doesn't (same parish AND
+        same postcode district, as on open moorland), leave the name clean and
+        set r['dist_exact']=True so the card shows the gauge's PRECISE distance
+        on the reading line — which is always distinct for gauges that aren't
+        essentially co-located, and needs no extra name text.
+    """
+    from collections import defaultdict
+
+    def regroup():
+        g = defaultdict(list)
+        for r in records:
+            g[r.get("place")].append(r)
+        return g
+
+    for name, rs in regroup().items():
+        if not name or len(rs) < 2:
+            continue
+        areas = [_postcode_area(r.get("postcode")) for r in rs]
+        # postcode areas separate them only if they're all present and distinct
+        if len(set(a for a in areas if a)) == len(rs) and all(areas):
+            for r, a in zip(rs, areas):
+                r["place"] = f"{name} ({a})"
+        else:
+            # keep the clean name; distinguish by precise distance on the card
+            for r in rs:
+                r["dist_exact"] = True
 
 
 def geocode(q):
@@ -2976,6 +3647,7 @@ EA_DEFAULT_LAT, EA_DEFAULT_LON, EA_DEFAULT_DIST = 51.51, -0.13, 40
 
 _ea_cache = {}            # keyed by (lat,lon,dist) -> {"data":..., "ts":...}
 EA_TTL = 300              # 5 min; readings change at most every 15 min
+_ea_rain_cache = {}       # rain-only overviews (background watcher) — same key
 _ea_floods_cache = {"data": None, "ts": 0}
 EA_FLOODS_TTL = 300
 _ea_station_cache = {}    # keyed by station ref -> {"data":..., "ts":...}
@@ -2983,31 +3655,128 @@ EA_STATION_TTL = 300
 # National latest-readings, fetched in ONE call and indexed by measure URI.
 # This is the EA's own recommended efficient pattern (a single call every
 # ~15 min rather than crawling stations one by one). ~5000 rows, ~1s, small.
-_ea_latest_cache = {"idx": None, "ts": 0}
-EA_LATEST_TTL = 300
+#
+# Phase-aligned refresh: EA gauges publish on a ~15-min cadence, but at an
+# offset we don't know a priori. A blind fixed-interval poll can land just
+# BEFORE a publish and serve data ~26–28 min old. Instead we watch the newest
+# reading's timestamp on each fetch, learn the publish rhythm, and schedule the
+# NEXT refresh to land shortly AFTER the next expected publish — landing us in
+# the fresh (1–8 min old) part of the cycle without polling any more often.
+# This changes WHEN we poll, not HOW OFTEN, and every displayed age stays the
+# measured `dateTime` (honesty preserved — we never imply data is fresher than
+# the EA published).
+_ea_latest_cache = {"idx": None, "ts": 0, "last_error": None, "stale": False,
+                    "next_due": 0,        # monotonic time the next refresh is allowed
+                    "last_publish": None, # epoch of the newest reading last seen
+                    "period_s": None,     # learned publish period (~900s)
+                    "newest_age_s": None} # age of newest reading at last fetch (for UI)
+EA_LATEST_TTL = 300            # fallback interval when phase isn't yet learned
+EA_LATEST_TTL_MIN = 120        # never refetch more often than this (rate guard)
+EA_LATEST_TTL_MAX = 900        # and never wait longer than one full cycle
+EA_PUBLISH_PERIOD = 900        # expected EA cadence: 15 min
+EA_PHASE_LEAD = 45             # aim to poll this many s AFTER expected publish
+
+
+def _ea_errstr(e):
+    """Compact, informative error string for an upstream failure. For an
+    HTTPError, include the status code and any body snippet fetch_json attached
+    (e.g. a CDN's 'Backend fetch failed' text), so out['error'] pinpoints the
+    cause rather than just naming the exception type."""
+    if isinstance(e, urllib.error.HTTPError):
+        body = getattr(e, "grid_body", "") or ""
+        body = " ".join(body.split())[:160]
+        base = f"HTTP {e.code} {e.reason}"
+        return f"{base} — {body}" if body else base
+    return f"{type(e).__name__}: {e}"
+
+
+def _ea_parse_dt(s):
+    """Parse an EA ISO dateTime (usually '...Z') to epoch seconds, or None."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _ea_schedule_next(c, now_wall, now_mono, newest_epoch):
+    """After a successful index fetch, learn the publish rhythm from the newest
+    reading and set c['next_due'] (monotonic) to just after the next expected
+    publish. Falls back to the fixed interval until a publish is observed."""
+    period = c.get("period_s") or EA_PUBLISH_PERIOD
+    if newest_epoch is None:
+        # No timestamp to learn from — use the plain fallback interval.
+        c["next_due"] = now_mono + EA_LATEST_TTL
+        c["newest_age_s"] = None
+        return
+    age = max(0.0, now_wall - newest_epoch)
+    c["newest_age_s"] = age
+    # Refine the period estimate if the publish moment moved by ~one period.
+    prev = c.get("last_publish")
+    if prev and newest_epoch > prev:
+        step = newest_epoch - prev
+        # accept only plausible ~1-cycle steps to avoid learning from gaps
+        if 0.5 * EA_PUBLISH_PERIOD <= step <= 1.5 * EA_PUBLISH_PERIOD:
+            # gentle EMA toward the observed step
+            c["period_s"] = 0.7 * period + 0.3 * step
+    c["last_publish"] = newest_epoch
+    period = c.get("period_s") or EA_PUBLISH_PERIOD
+    # Next publish is expected ~one period after the newest reading we hold.
+    # Aim to poll EA_PHASE_LEAD seconds after that, in monotonic terms.
+    secs_to_next_publish = period - age + EA_PHASE_LEAD
+    # Clamp so we neither hammer the endpoint nor drift more than a cycle.
+    wait = min(max(secs_to_next_publish, EA_LATEST_TTL_MIN), EA_LATEST_TTL_MAX)
+    c["next_due"] = now_mono + wait
+    dbg(f"ea index: newest {age:.0f}s old, period~{period:.0f}s, "
+        f"next refresh in {wait:.0f}s")
 
 
 def _ea_latest_index():
     """Return {measureURI: (value, dateTime)} for the latest reading of every
     measure nationally, cached. The station 'measures[].@id' join key matches
-    the readings 'measure' field."""
+    the readings 'measure' field. On failure keeps the prior index (labelled
+    stale) rather than blanking; records the last error for diagnostics.
+
+    Refresh timing is phase-aligned (see _ea_latest_cache): we refetch when the
+    learned schedule says the next publish is due, not on a blind fixed timer."""
     c = _ea_latest_cache
-    if c["idx"] is not None and time.time() - c["ts"] < EA_LATEST_TTL:
+    now_mono = time.monotonic()
+    # Phase-aware gate: hold the cached index until its scheduled next_due.
+    if c["idx"] is not None and now_mono < c.get("next_due", 0):
         return c["idx"]
     idx = {}
+    newest_epoch = None
     try:
+        # The single heaviest EA call (~15k rows). This is the most likely one
+        # to draw a CDN 503 'Backend fetch failed' under load.
         p = fetch_json(f"{EA_BASE}/data/readings?latest&_limit=15000", timeout=60)
         for r in (p.get("items") or []):
             m = r.get("measure")
             if not m:
                 continue
             mid = m.get("@id") if isinstance(m, dict) else m
-            idx[mid] = (_ea_num(r.get("value")), r.get("dateTime"))
-    except Exception:
+            dt = r.get("dateTime")
+            idx[mid] = (_ea_num(r.get("value")), dt)
+            e = _ea_parse_dt(dt)
+            if e is not None and (newest_epoch is None or e > newest_epoch):
+                newest_epoch = e
+        c["last_error"] = None
+    except Exception as e:
+        c["last_error"] = _ea_errstr(e)
+        dbg("ea latest-index failed:", c["last_error"])
         if c["idx"] is not None:
+            c["stale"] = True
+            # brief retry rather than waiting a whole phase after a failure
+            c["next_due"] = now_mono + EA_LATEST_TTL_MIN
             return c["idx"]   # keep prior index rather than blanking on failure
+        # cold + failed: try again soon
+        c["next_due"] = now_mono + EA_LATEST_TTL_MIN
+    else:
+        _ea_schedule_next(c, time.time(), now_mono, newest_epoch)
     c["idx"] = idx
     c["ts"] = time.time()
+    c["stale"] = False
     return idx
 
 
@@ -3088,31 +3857,84 @@ def _ea_band_position(value, scale):
     return None
 
 
-def get_ea(lat=None, lon=None, dist=None):
+def get_ea(lat=None, lon=None, dist=None, rain_only=False):
     """Overview for a location: nearby river-level / flow / rainfall stations
     with their latest readings and each station's own typical-range context.
-    Cached per (lat,lon,dist)."""
+    Cached per (lat,lon,dist).
+
+    rain_only=True skips the (expensive) river-station fetch and returns only
+    the rainfall gauges. This is what the dashboard's background rain watcher
+    uses when the EA panel is closed — it avoids two _limit=500 station pulls
+    per poll for a signal that only needs the rainfall list. A fresh FULL
+    overview already contains rainfall, so it satisfies a rain_only request too;
+    a rain_only result is cached separately and never served to a full request."""
     lat = EA_DEFAULT_LAT if lat is None else lat
     lon = EA_DEFAULT_LON if lon is None else lon
     dist = EA_DEFAULT_DIST if dist is None else dist
     key = (round(lat, 3), round(lon, 3), round(dist, 1))
+    # A fresh full overview serves everything; a rain_only cache entry only
+    # serves rain_only callers.
     c = _ea_cache.get(key)
     if c and time.time() - c["ts"] < EA_TTL:
         return c["data"]
+    if rain_only:
+        rc = _ea_rain_cache.get(key)
+        if rc and time.time() - rc["ts"] < EA_TTL:
+            return rc["data"]
 
     out = {"lat": lat, "lon": lon, "dist": dist, "stations": [],
            "rainfall": [], "attribution": EA_ATTRIB, "error": None,
+           "rain_only": rain_only,
+           # Per-endpoint diagnostics: which of the underlying EA calls failed
+           # and why. The dashboard can show this so a partial failure (floods
+           # OK, stations/rainfall 503) is visible rather than a blank panel.
+           "diag": {"latest_index": None, "stations": None, "rainfall": None,
+                    "latest_stale": False},
            "generated": datetime.now(timezone.utc).isoformat()}
+    try:
+        latest = _ea_latest_index()
+        out["diag"]["latest_index"] = _ea_latest_cache.get("last_error")
+        out["diag"]["latest_stale"] = bool(_ea_latest_cache.get("stale"))
+        out["diag"]["index_age_s"] = _ea_latest_cache.get("newest_age_s")
+        if not rain_only:
+            _ea_collect_stations(out, lat, lon, dist, latest)
+        _ea_collect_rainfall(out, lat, lon, dist, latest)
+    except Exception as e:
+        out["error"] = _ea_errstr(e)
+    # Roll a concise top-level error from whichever sub-call failed, so existing
+    # UI that reads out['error'] still shows something useful.
+    if not out["error"]:
+        d = out["diag"]
+        parts = []
+        if d["latest_index"]:
+            parts.append(f"latest-readings index: {d['latest_index']}")
+        if d["stations"]:
+            parts.append(f"river stations: {d['stations']}")
+        if d["rainfall"]:
+            parts.append(f"rainfall gauges: {d['rainfall']}")
+        if parts:
+            out["error"] = "; ".join(parts)
+
+    if rain_only:
+        _ea_rain_cache[key] = {"data": out, "ts": time.time()}
+    else:
+        _ea_cache[key] = {"data": out, "ts": time.time()}
+    return out
+
+
+def _ea_collect_stations(out, lat, lon, dist, latest):
+    """River-level / flow stations near the point, banded against each station's
+    own typical range. Mutates out['stations']. Never raises past its own body
+    for the rainfall step's sake — a station failure sets out['error']."""
     try:
         # Stations near the point, full view so we get stageScale typical ranges.
         url = (f"{EA_BASE}/id/stations?lat={lat}&long={lon}&dist={dist}"
                f"&_view=full&_limit=500")
-        payload = fetch_json(url, timeout=30)
+        payload = fetch_json(url, timeout=15)
         items = payload.get("items") or []
         # Latest readings aren't carried on the station's measures[] in
         # _view=full, so join against the national latest-readings index by
-        # measure URI (one cached call, the EA's own efficient pattern).
-        latest = _ea_latest_index()
+        # measure URI (the shared index is passed in — one cached call).
         for it in items:
             measures = it.get("measures") or []
             if isinstance(measures, dict):
@@ -3174,6 +3996,7 @@ def get_ea(lat=None, lon=None, dist=None):
                 "typical_low": _ea_num(band_scale.get("typicalRangeLow")),
                 "typical_high": _ea_num(band_scale.get("typicalRangeHigh")),
                 "max_on_record": _ea_num((band_scale.get("maxOnRecord") or {}).get("value")),
+                "dist_km": _haversine_km(lat, lon, _ea_num(it.get("lat")), _ea_num(it.get("long"))),
                 "status": _ea_first(it.get("status")),
             }
             out["stations"].append(st)
@@ -3181,54 +4004,72 @@ def get_ea(lat=None, lon=None, dist=None):
         _bandrank = {"high": 0, "normal": 1, "low": 2, None: 3}
         out["stations"].sort(key=lambda s: (_bandrank.get(s["band"], 3),
                                             (s["river"] or "~"), (s["label"] or "")))
-
-        # Rainfall: geo-filtering works on the STATIONS endpoint (not readings),
-        # so list nearby rainfall stations and join their measures to the same
-        # latest index. Values are tips (mm) over the station's period.
-        try:
-            rurl = (f"{EA_BASE}/id/stations?parameter=rainfall"
-                    f"&lat={lat}&long={lon}&dist={dist}&_limit=500")
-            rp = fetch_json(rurl, timeout=30)
-            for it in (rp.get("items") or []):
-                ms = it.get("measures") or []
-                if isinstance(ms, dict):
-                    ms = [ms]
-                for m in ms:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = m.get("@id")
-                    val, dt = latest.get(mid, (None, None))
-                    if val is None:
-                        continue
-                    out["rainfall"].append({
-                        "ref": it.get("stationReference") or it.get("notation"),
-                        "label": _ea_first(it.get("label")),
-                        "grid": it.get("gridReference"),
-                        "period_s": m.get("period"),
-                        "lat": _ea_num(it.get("lat")),
-                        "lon": _ea_num(it.get("long")),
-                        "mm": val, "dt": dt,
-                    })
-            # distance from the user's location (local calc, no API), rounded
-            # to a ~5-mile bucket for a rough "how far" sense.
-            for r in out["rainfall"]:
-                d = _haversine_mi(lat, lon, r.get("lat"), r.get("lon"))
-                r["dist_mi"] = d
-                r["dist_bucket"] = (round(d/5)*5) if d is not None else None
-            # nearest first
-            out["rainfall"].sort(key=lambda r: (r["dist_mi"] is None, r["dist_mi"] or 0))
-            out["rainfall"] = out["rainfall"][:40]
-            # one bulk reverse-geocode call names them all (EA gives no place)
-            names = reverse_geocode_bulk([(r["lat"], r["lon"]) for r in out["rainfall"]])
-            for r, nm in zip(out["rainfall"], names):
-                r["place"] = _short_place(nm)
-        except Exception:
-            pass   # rainfall is a nice-to-have; don't fail the whole overview
     except Exception as e:
-        out["error"] = f"{type(e).__name__}: {e}"
+        # Record the station failure but let rainfall still be attempted by the
+        # caller — a river-endpoint hiccup shouldn't blind the rain watcher.
+        out["diag"]["stations"] = _ea_errstr(e)
+        dbg("ea stations failed:", out["diag"]["stations"])
 
-    _ea_cache[key] = {"data": out, "ts": time.time()}
-    return out
+
+def _ea_collect_rainfall(out, lat, lon, dist, latest):
+    """Nearby rainfall gauges joined to the shared latest-readings index.
+    Mutates out['rainfall']. Rainfall is a nice-to-have for the full overview
+    but the primary signal for the background rain watcher, so failures are
+    swallowed rather than propagated."""
+    # Rainfall: geo-filtering works on the STATIONS endpoint (not readings),
+    # so list nearby rainfall stations and join their measures to the same
+    # latest index. Values are tips (mm) over the station's period.
+    try:
+        rurl = (f"{EA_BASE}/id/stations?parameter=rainfall"
+                f"&lat={lat}&long={lon}&dist={dist}&_limit=500")
+        rp = fetch_json(rurl, timeout=15)
+        for it in (rp.get("items") or []):
+            ms = it.get("measures") or []
+            if isinstance(ms, dict):
+                ms = [ms]
+            for m in ms:
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("@id")
+                val, dt = latest.get(mid, (None, None))
+                if val is None:
+                    continue
+                out["rainfall"].append({
+                    "ref": it.get("stationReference") or it.get("notation"),
+                    "label": _ea_first(it.get("label")),
+                    "grid": it.get("gridReference"),
+                    "period_s": m.get("period"),
+                    "lat": _ea_num(it.get("lat")),
+                    "lon": _ea_num(it.get("long")),
+                    "mm": val, "dt": dt,
+                })
+        # distance from the user's location (local calc, no API), rounded
+        # to a ~5-km bucket for a rough "how far" sense.
+        for r in out["rainfall"]:
+            d = _haversine_km(lat, lon, r.get("lat"), r.get("lon"))
+            r["dist_km"] = d
+            r["dist_bucket"] = (round(d/5)*5) if d is not None else None
+        # nearest first
+        out["rainfall"].sort(key=lambda r: (r["dist_km"] is None, r["dist_km"] or 0))
+        out["rainfall"] = out["rainfall"][:40]
+    except Exception as e:
+        # The gauge fetch itself failed — this is the diagnostic that matters.
+        out["diag"]["rainfall"] = _ea_errstr(e)
+        dbg("ea rainfall failed:", out["diag"]["rainfall"])
+        return
+    # Naming is a separate, non-critical step: a reverse-geocode failure must
+    # NOT be reported as a rainfall-gauge failure, so it's isolated.
+    try:
+        info = reverse_geocode_bulk([(r["lat"], r["lon"]) for r in out["rainfall"]])
+        for r, nm in zip(out["rainfall"], info):
+            r["place"] = _short_place(nm["name"]) if nm else None
+            r["postcode"] = nm.get("postcode") if nm else None
+        # Gauges have no real EA name, so several can reverse-geocode to the same
+        # place. Append a short postcode area to any that still collide so no two
+        # cards read identically.
+        _dedupe_place_names(out["rainfall"])
+    except Exception as e:
+        dbg("ea rainfall geocode failed (non-fatal):", _ea_errstr(e))
 
 
 def get_ea_station(ref):
@@ -3801,27 +4642,65 @@ def _hhmm(iso):
 # fetch doesn't blank the panel.
 _last_good = {}
 
+# Snapshot build tuning. Sources are fetched in parallel (each already caches
+# its own result, so most builds are cheap); the overall deadline caps how long
+# a single build can block the /api/grid request even if an upstream hangs.
+SNAP_BUILD_DEADLINE = 25       # seconds; return partial after this
+SNAP_POOL_WORKERS = 8
+# One shared pool so background workers from a timed-out build can still finish
+# and warm their caches for the next request rather than being cancelled.
+_snap_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=SNAP_POOL_WORKERS, thread_name_prefix="snap")
+
+SNAP_SOURCES = [
+    ("generation", "get_generation"), ("frequency", "get_frequency"),
+    ("demand", "get_demand"), ("margin", "get_margin"),
+    ("warnings", "get_warnings"), ("carbon", "get_carbon"),
+    ("weather", "get_weather"), ("reserve", "get_operating_reserve"),
+    ("solar", "get_solar"), ("price", "get_price"),
+    ("battery", "get_battery"),
+]
+
 
 def build_snapshot():
     snap = {"generated": datetime.now(timezone.utc).isoformat(),
-            "backend_version": "260817.1",   # YYMMDD.N in UT; bump on server change
+            "backend_version": "2026-08-07a",   # bump when adding data fields
             "features": ["solar", "freq_trace_points", "weather_batch",
                          "operating_reserve", "supply_stack", "weather_openweather",
                          "weather_resource_sites", "generator_units"],
             "sources_ok": {}, "errors": []}
-    for key, fn in [("generation", get_generation), ("frequency", get_frequency),
-                    ("demand", get_demand), ("margin", get_margin),
-                    ("warnings", get_warnings), ("carbon", get_carbon),
-                    ("weather", get_weather), ("reserve", get_operating_reserve),
-                    ("solar", get_solar), ("price", get_price),
-                    ("battery", get_battery)]:
-        try:
-            snap[key] = fn()
-            snap["sources_ok"][key] = snap[key] is not None
-        except Exception as e:
-            snap[key] = None
-            snap["sources_ok"][key] = False
-            snap["errors"].append(f"{key}: {e}")
+
+    # Fetch all sources in parallel. Each has its own cache and timeouts; the
+    # per-host throttle in fetch_json keeps parallelism from hammering any one
+    # upstream. We wait only up to SNAP_BUILD_DEADLINE, then return a PARTIAL
+    # snapshot marking any laggards — their futures keep running in the shared
+    # pool and warm their caches for the next request.
+    futures = {_snap_pool.submit(globals()[fn]): key for key, fn in SNAP_SOURCES}
+    deadline = time.monotonic() + SNAP_BUILD_DEADLINE
+    pending = set(futures)
+    for key, _ in SNAP_SOURCES:
+        snap[key] = None
+        snap["sources_ok"][key] = False
+    try:
+        for fut in concurrent.futures.as_completed(
+                futures, timeout=SNAP_BUILD_DEADLINE):
+            key = futures[fut]
+            pending.discard(fut)
+            try:
+                val = fut.result()
+                snap[key] = val
+                snap["sources_ok"][key] = val is not None
+            except Exception as e:
+                snap["errors"].append(f"{key}: {_ea_errstr(e) if 'HTTPError' in type(e).__name__ else e}")
+    except concurrent.futures.TimeoutError:
+        pass   # deadline hit — whatever's still pending is reported below
+    # Anything not done by the deadline is a soft timeout, not a hard failure:
+    # leave its value None (post-processing below falls back to last-good where
+    # it can) and record it so the UI can show which source lagged this cycle.
+    for fut in pending:
+        if not fut.done():
+            key = futures[fut]
+            snap["errors"].append(f"{key}: timed out (> {SNAP_BUILD_DEADLINE}s this cycle)")
 
     # Solar isn't in FUELINST; splice the PVLive estimate into the fuel list so
     # the generation mix reflects it (as Gridwatch does). Marked estimated.
@@ -4044,8 +4923,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     payload = {}
                 # accept known fields only; the API key + meter IDs + tariff rates
-                allowed = {"api_key", "elec_mpan", "elec_serial", "gas_mprn",
-                           "gas_serial", "elec_unit_p", "elec_standing_p",
+                allowed = {"api_key", "account_number", "gas_account_number",
+                           "payment_method", "billing_end_day", "elec_mpan", "elec_serial",
+                           "gas_mprn", "gas_serial", "elec_unit_p", "elec_standing_p",
                            "gas_unit_p", "gas_standing_p", "gas_units"}
                 cfg = {k: payload[k] for k in allowed if k in payload}
                 if not cfg.get("api_key") and not _octopus_has_config():
@@ -4085,6 +4965,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "has_config": _octopus_has_config(),
                 "has_key": bool(cfg.get("api_key")),
+                "account_number": cfg.get("account_number", ""),
+                "gas_account_number": cfg.get("gas_account_number", ""),
+                "payment_method": cfg.get("payment_method", "DIRECT_DEBIT"),
+                "billing_end_day": cfg.get("billing_end_day", ""),
                 "elec_mpan": cfg.get("elec_mpan", ""),
                 "elec_serial": cfg.get("elec_serial", ""),
                 "gas_mprn": cfg.get("gas_mprn", ""),
@@ -4143,13 +5027,19 @@ class Handler(BaseHTTPRequestHandler):
                 lat = qs.get("lat", [None])[0]
                 lon = qs.get("lon", [None])[0]
                 dist = qs.get("dist", [None])[0]
+                rain_only = qs.get("rain", ["0"])[0] in ("1", "true", "yes")
                 self._send_json(get_ea(
                     float(lat) if lat else None,
                     float(lon) if lon else None,
-                    float(dist) if dist else None))
+                    float(dist) if dist else None,
+                    rain_only=rain_only))
             except Exception as e:
+                # get_ea is internally resilient (returns partial data with a
+                # soft 'error' field); this outer guard only trips on a total
+                # failure. Serve empty-but-shaped data, not a bare 500 blank.
                 self._send_json({"error": f"{type(e).__name__}: {e}",
-                                 "stations": []}, 500)
+                                 "stations": [], "rainfall": [], "floods": None,
+                                 "partial": True}, 200)
         elif self.path.startswith("/api/alert-stats"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -4201,10 +5091,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global DEBUG
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8412)
     ap.add_argument("--once", action="store_true", help="write snapshot.json and exit")
+    ap.add_argument("--debug", action="store_true",
+                    help="verbose per-fetch logging to stderr (URL, status, timing, "
+                         "error body); also enabled via GRIDMON_DEBUG=1")
     args = ap.parse_args()
+    if args.debug:
+        DEBUG = True
 
     if args.once:
         snap = build_snapshot()
@@ -4215,6 +5111,8 @@ def main():
 
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
     print(f"GB Energy Monitor running: http://localhost:{args.port}")
+    if DEBUG:
+        print("Debug logging ON (per-fetch diagnostics to stderr).")
     print("Ctrl-C to stop.")
     try:
         srv.serve_forever()

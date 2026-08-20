@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260817.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260819.15  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -356,7 +356,7 @@
   .ic:last-child{border-bottom:0}
   .ic .nm{color:var(--ink-dim)}
   .ic .fl{font-family:var(--mono);font-variant-numeric:tabular-nums}
-  .ic .imp{color:var(--accent)}.ic .exp{color:var(--warn)}
+  .ic .imp{color:#a06fe0}.ic .exp{color:var(--warn)}
 
   .warn-list{display:flex;flex-direction:column;gap:10px}
   .wn{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:var(--panel2)}
@@ -634,6 +634,21 @@
   .octo-stat .v .u{font-size:12px;color:var(--ink-dim);font-weight:400}
   .octo-stat .d{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);margin-top:5px}
   .octo-stat .d.up{color:var(--crit)} .octo-stat .d.down{color:var(--ok)}
+  .octo-stat .d.warn{color:var(--warn)}
+  .octo-tariff{margin-top:14px}
+  .ea-softerr{font-family:var(--mono);font-size:11px;color:var(--warn);
+    padding:6px 10px;margin-bottom:8px;border:1px solid rgba(245,185,66,.35);
+    border-radius:7px;background:rgba(245,185,66,.06)}
+  .ea-diag{font-family:var(--mono);font-size:11px;margin:4px 0 10px;
+    padding:8px 11px;border:1px solid rgba(245,185,66,.4);
+    border-radius:8px;background:rgba(245,185,66,.07)}
+  .ea-diag-h{color:var(--warn);margin-bottom:5px}
+  .ea-diag-row{display:flex;gap:10px;padding:2px 0;align-items:baseline}
+  .ea-diag-k{color:var(--ink-faint);min-width:190px;flex:0 0 auto}
+  .ea-diag-v{color:var(--ink);word-break:break-word}
+  .octo-tariff .disclaimer{font-family:var(--mono);font-size:10.5px;color:var(--warn);
+    margin-top:10px;padding:8px 11px;border:1px solid rgba(245,185,66,.35);
+    border-radius:8px;background:rgba(245,185,66,.06);line-height:1.5}
   /* setup form */
   .octo-setup{max-width:560px;margin:10px auto}
   .octo-setup h2{font-size:16px;margin:0 0 8px}
@@ -855,7 +870,7 @@
   .ea-sec-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
   .ea-sec-title .note{text-transform:none;letter-spacing:0;font-size:10.5px}
-  .ea-layout{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  .ea-layout{display:grid;grid-template-columns:0.82fr 1.18fr;gap:22px}
   @media(max-width:900px){.ea-layout{grid-template-columns:1fr}}
   .ea-riverblock{margin-bottom:16px}
   .ea-riverblock h3{font-family:var(--disp);font-size:13px;margin:0 0 7px;color:var(--ink-dim);font-weight:600}
@@ -888,27 +903,43 @@
   .ea-badge.high{color:var(--crit);background:rgba(255,92,108,.14)}
   .ea-badge.normal{color:var(--ok);background:rgba(57,217,138,.12)}
   .ea-badge.low{color:var(--accent2);background:rgba(91,141,239,.14)}
-  .ea-rain{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px}
-  .ea-rain .rn{font-family:var(--mono);font-size:11px;padding:6px 10px;border-radius:7px;
+  .ea-rain{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:7px}
+  /* directional map view */
+  .rn-viewtoggle{margin-left:10px;display:inline-flex;gap:2px;vertical-align:middle}
+  .rn-vt{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
+    border:1px solid var(--line);border-radius:5px;padding:2px 7px;cursor:pointer}
+  .rn-vt.on{color:var(--ink);border-color:var(--accent);background:var(--panel)}
+  .ea-rainmap .rmnote{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:2px 0 8px}
+  .rmgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+  .rmcell{min-width:0;display:flex}
+  .rmcell .rn{flex:1 1 auto}
+  .rmcell.rm-empty{visibility:hidden}
+  /* nearest gauge(s) — dotted outline instead of a separate "here" tile */
+  .rn.rn-here{outline:1px dotted var(--accent);outline-offset:1px}
+  /* rain cards — SHARED by list and map views so both look identical. Larger
+     font (12px) with auto height so "42m ago" never truncates in either view. */
+  .rn{font-family:var(--mono);font-size:12px;padding:8px 11px;border-radius:7px;
     background:var(--panel2);border:1px solid var(--line);color:var(--ink-dim);
-    display:flex;flex-direction:column;gap:2px;min-width:0;height:44px;justify-content:center;
+    display:flex;flex-direction:column;gap:2px;min-width:0;height:auto;min-height:44px;justify-content:center;
     box-sizing:border-box;cursor:pointer;transition:border-color .15s}
-  .ea-rain .rn:hover{border-color:var(--accent)}
-  .ea-rain .rn.sel{border-color:var(--accent);background:var(--panel)}
-  .ea-rain .rn b{color:var(--ink);font-weight:600}
-  .ea-rain .rn-nm{color:var(--ink);font-size:10.5px;white-space:nowrap;overflow:hidden;
+  .rn:hover{border-color:var(--accent)}
+  .rn.sel{border-color:var(--accent);background:var(--panel)}
+  .rn b{color:var(--ink);font-weight:600}
+  .rn-nm{color:var(--ink);font-size:11.5px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis;display:block}
-  .ea-rain .rn-d{color:var(--ink-faint)}
-  .ea-rain .rn-val{color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rn-d{color:var(--ink-faint);flex:0 0 auto;white-space:nowrap}
+  .rn-mm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .rn-val{color:var(--ink-faint);display:flex;align-items:baseline;white-space:nowrap;overflow:hidden}
   /* intensity bands (15-min accumulation) */
-  .ea-rain .rn.rn-light{border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.07)}
-  .ea-rain .rn.rn-light b{color:#7ea2f0}
-  .ea-rain .rn.rn-mod{border-color:rgba(63,182,201,.5);background:rgba(63,182,201,.10)}
-  .ea-rain .rn.rn-mod b{color:var(--accent)}
-  .ea-rain .rn.rn-heavy{border-color:rgba(245,140,66,.55);background:rgba(245,140,66,.12)}
-  .ea-rain .rn.rn-heavy b{color:#f5934a}
-  .ea-rain .rn.rn-violent{border-color:rgba(255,92,108,.6);background:rgba(255,92,108,.14)}
-  .ea-rain .rn.rn-violent b{color:var(--crit)}
+  .rn.rn-light{border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.07)}
+  .rn.rn-light b{color:#7ea2f0}
+  .rn.rn-mod{border-color:rgba(63,182,201,.5);background:rgba(63,182,201,.10)}
+  .rn.rn-mod b{color:var(--accent)}
+  .rn.rn-heavy{border-color:rgba(245,140,66,.55);background:rgba(245,140,66,.12)}
+  .rn.rn-heavy b{color:#f5934a}
+  .rn.rn-violent{border-color:rgba(255,92,108,.6);background:rgba(255,92,108,.14)}
+  .rn.rn-violent b{color:var(--crit)}
+
 
   .cg-tip{position:fixed;z-index:250;pointer-events:none;opacity:0;transition:opacity .1s;
     background:var(--panel);border:1px solid var(--line2);border-radius:7px;padding:7px 10px;
@@ -1138,9 +1169,9 @@
   </div>
 
   <footer>
-    <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · Open-Meteo (weather) · National Gas · Environment Agency</span>
+    <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260817.1 · Server build 260817.1 · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260819.15 · Server build 260819.10 · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1179,14 +1210,16 @@
       repeat until the condition clears.</p>
     <div class="alarm-arm-row">
       <button class="modal-btn" id="alarmArmBtn">🔊 Arm sound</button>
+      <button class="modal-btn ghost" id="alarmClearBtn" title="Silence and reset river &amp; rainfall alarms">Clear river / rain alarms</button>
       <span class="alarm-arm-state" id="alarmArmState">muted</span>
     </div>
     <div class="alarm-cats" id="alarmCats">
       <!-- rows injected by JS -->
     </div>
     <p class="modal-note">Arming resets each time you reload the page. Your category
-      choices are remembered. The river-above-record alarm only works while the EA
-      panel has loaded nearby station data.</p>
+      choices are remembered. River and rainfall alarms only work while the EA
+      panel has loaded nearby data, repeat at most hourly, and clear automatically
+      when you change location.</p>
     <div class="modal-row">
       <span style="flex:1"></span>
       <button class="modal-btn ghost" id="alarmClose">Close</button>
@@ -1240,6 +1273,7 @@
       <div class="octo-breakdown" id="octoBreakdown"></div>
       <!-- consumption insights -->
       <div class="octo-stats" id="octoStats"></div>
+      <div class="octo-tariff" id="octoTariff"></div>
       <div class="octo-note" id="octoNote"></div>
     </div>
     <!-- setup form (first run) -->
@@ -1250,6 +1284,18 @@
         Developer settings.</p>
       <div class="octo-form">
         <label>API key <input id="ocApiKey" type="password" placeholder="sk_live_…"></label>
+        <label>Account number <input id="ocAccountNo" placeholder="e.g. A-1A2B3C4D">
+          <span class="muted">enables live tariff rates &amp; name</span></label>
+        <label>Gas account number <span class="muted">(only if gas is on a separate account)</span>
+          <input id="ocGasAccountNo" placeholder="leave blank if same as above"></label>
+        <label>Payment method
+          <select id="ocPayMethod">
+            <option value="DIRECT_DEBIT">Direct Debit</option>
+            <option value="NON_DIRECT_DEBIT">Non-Direct Debit</option>
+          </select>
+          <span class="muted">selects the correct tariff rate variant</span></label>
+        <label>Billing period ends on day <input id="ocBillDay" type="number" min="1" max="31" placeholder="e.g. 16" style="width:5em">
+          <span class="muted">day of month your billing period ends (period runs the next day to this day). This is NOT the bill payment date.</span></label>
         <div class="octo-fs"><b>Electricity</b>
           <label>MPAN <input id="ocElecMpan" placeholder="e.g. 2200011269132"></label>
           <label>Serial <input id="ocElecSerial" placeholder="e.g. 19P5008058"></label>
@@ -1770,7 +1816,7 @@ function render(d){
     const net=d.generation.interconnector_net_mw;
     $("#icList").innerHTML += `<div class="ic" style="border-top:1px solid var(--line2);margin-top:4px">
       <span class="nm" style="color:var(--ink)">Net</span>
-      <span class="fl">${net>=0?'importing':'exporting'} ${fmt(Math.abs(net))} MW</span></div>`;
+      <span class="fl ${net>=0?'imp':'exp'}">${net>=0?'importing':'exporting'} ${fmt(Math.abs(net))} MW</span></div>`;
   }
 
   // ---- warnings ----
@@ -2601,6 +2647,10 @@ async function octoLoadCfgInto(){
   try{
     const c=await (await fetch("/api/octopus-config",{cache:"no-store"})).json();
     $("#ocElecMpan").value=c.elec_mpan||""; $("#ocElecSerial").value=c.elec_serial||"";
+    if($("#ocAccountNo")) $("#ocAccountNo").value=c.account_number||"";
+    if($("#ocGasAccountNo")) $("#ocGasAccountNo").value=c.gas_account_number||"";
+    if($("#ocPayMethod")&&c.payment_method) $("#ocPayMethod").value=c.payment_method;
+    if($("#ocBillDay")) $("#ocBillDay").value=c.billing_end_day||"";
     $("#ocGasMprn").value=c.gas_mprn||""; $("#ocGasSerial").value=c.gas_serial||"";
     $("#ocElecUnit").value=c.elec_unit_p||""; $("#ocElecStanding").value=c.elec_standing_p||"";
     $("#ocGasUnit").value=c.gas_unit_p||""; $("#ocGasStanding").value=c.gas_standing_p||"";
@@ -2846,6 +2896,54 @@ function octoRenderStats(e, g){
       '<span class="tag">patterns</span></h3><div class="grid">'+cards.join("")+'</div></section>');
   });
   wrap.innerHTML=blocks.join("");
+
+  // ---- Tariff and Estimated Costs panel (below patterns) ----
+  const tw=$("#octoTariff"); if(!tw) return;
+  const T=(octoData&&octoData.tariffs)||{};
+  function tariffCard(label,cls,s,ti){
+    const rows=[];
+    // tariff name / code
+    if(ti && ti.tariff_code && !ti.error){
+      rows.push('<div class="d">Tariff <b>'+(ti.product||ti.tariff_code)+'</b></div>');
+      if(ti.current_unit_p!=null) rows.push('<div class="d">Unit rate <b>'+
+        ti.current_unit_p.toFixed(2)+'p/kWh</b> · Standing <b>'+
+        (ti.current_standing_p!=null?ti.current_standing_p.toFixed(2):"?")+'p/day</b> <span class="u">inc VAT</span></div>');
+    } else {
+      rows.push('<div class="d">Tariff rates as entered in settings '+
+        '<span class="u">(live rates unavailable'+(ti&&ti.error?": "+ti.error:"")+')</span></div>');
+    }
+    // estimated cost + provenance
+    if(s){
+      const bp=s.billing_period;
+      if(bp){
+        rows.push('<div class="v">Est. £'+(bp.total_cost_p/100).toFixed(2)+'</div>');
+        rows.push('<div class="d">'+bp.from.slice(5)+' to '+bp.to.slice(5)+' · '+bp.kwh+' kWh</div>');
+        if(!bp.complete) rows.push('<div class="d warn">data only partly covers this period</div>');
+      } else {
+        rows.push('<div class="v">Est. £'+(s.total_cost_p/100).toFixed(2)+
+          ' <span class="u">last '+s.n_days+' days</span></div>');
+        rows.push('<div class="d">set a billing end-day in settings for a billing-period estimate</div>');
+      }
+      if(s.cost_matched){
+        rows.push('<div class="d">matched rates · '+(T.pay==="NON_DIRECT_DEBIT"?"non-DD":"DD")+
+          ' · inc VAT · '+s.n_rate_periods+' rate period'+(s.n_rate_periods===1?"":"s")+'</div>');
+        if(bp&&bp.uncosted_kwh>0) rows.push('<div class="d warn">'+bp.uncosted_kwh+
+          ' kWh outside known rates (uncosted)</div>');
+      } else {
+        rows.push('<div class="d">typed flat rate (live tariff not resolved)</div>');
+      }
+    }
+    return '<div class="octo-stat"><div class="k">'+label+'</div>'+rows.join("")+'</div>';
+  }
+  const tcards=[
+    tariffCard("Electricity","elec",octoData.electricity,T.electricity),
+    tariffCard("Gas","gas",octoData.gas,T.gas)
+  ];
+  tw.innerHTML='<section><h3>Tariff and Estimated Costs</h3>'+
+    '<div class="grid">'+tcards.join("")+'</div>'+
+    '<div class="disclaimer">Estimated energy usage for the last billing period. '+
+    'Actual bills may be different based on how payments are spread out.<br>'+
+    'This is not a bill. See your Octopus Account for up to date billing information.</div></section>';
 }
 function octoSetRange(r){
   octoRange=r;
@@ -2861,6 +2959,18 @@ function octoOpenFn(){
   if(!octoPoll) octoPoll=setInterval(()=>{ if(octoOpen) octoFetch(); }, 5*60*1000);
 }
 function octoCloseFn(){
+  // If the settings pane is open on an already-configured account, closing it
+  // should return to the My Home view, not dismiss the whole overlay to the
+  // main page. First-run (needs_config) has no content to return to, so fall
+  // through and close the overlay in that case.
+  const setupVisible = $("#octoSetup") && $("#octoSetup").style.display!=="none";
+  if(setupVisible && octoData && !octoData.needs_config){
+    $("#octoSetup").style.display="none";
+    $("#octoLoading").style.display="none";
+    $("#octoContent").style.display="";
+    octoRender();
+    return;
+  }
   $("#octoOverlay").classList.remove("open"); octoOpen=false;
   if(octoPoll){ clearInterval(octoPoll); octoPoll=null; }
 }
@@ -2874,6 +2984,10 @@ function octoCloseFn(){
   const save=$("#ocSave");
   if(save) save.onclick=async()=>{
     const body={
+      account_number:$("#ocAccountNo")?$("#ocAccountNo").value.trim():"",
+      gas_account_number:$("#ocGasAccountNo")?$("#ocGasAccountNo").value.trim():"",
+      payment_method:$("#ocPayMethod")?$("#ocPayMethod").value:"DIRECT_DEBIT",
+      billing_end_day:$("#ocBillDay")?$("#ocBillDay").value.trim():"",
       elec_mpan:$("#ocElecMpan").value.trim(), elec_serial:$("#ocElecSerial").value.trim(),
       gas_mprn:$("#ocGasMprn").value.trim(), gas_serial:$("#ocGasSerial").value.trim(),
       elec_unit_p:$("#ocElecUnit").value.trim(), elec_standing_p:$("#ocElecStanding").value.trim(),
@@ -3709,16 +3823,25 @@ function gasDrawTrend(g){
   const padL=54,padR=60,padT=22,padB=40;
   const ts=h.map(p=>new Date(p.t).getTime());
   const lp=h.map(p=>p.lp);
-  // balance from linepack slope: centred difference in mcm/hour → ×24 = mcm/d
-  const bal=h.map((p,i)=>{
-    if(i===0||i===h.length-1) {
-      const j = i===0?1:h.length-1, k=i===0?0:h.length-2;
+  // Supply−demand balance line. PRIMARY: the real measured value (supply minus
+  // demand) that the server attaches to every LIVE point as p.bal. BACKUP: for
+  // archive-only hours (no live sample, so p.bal is null) derive it from the
+  // linepack slope — the hour-to-hour Δlinepack IS the imbalance (mcm/h × 24 =
+  // mcm/d). So the line is measured at full live resolution, and only falls back
+  // to the coarser slope estimate over the archive-backfilled stretch. This
+  // mirrors the linepack line's live-primary / archive-backup policy.
+  const slopeAt=(i)=>{
+    if(i===0||i===h.length-1){
+      const j=i===0?1:h.length-1, k=i===0?0:h.length-2;
       const dh=(ts[j]-ts[k])/3600000; if(dh<=0) return null;
       return (lp[j]-lp[k])/dh*24;
     }
     const dh=(ts[i+1]-ts[i-1])/3600000; if(dh<=0) return null;
     return (lp[i+1]-lp[i-1])/dh*24;
-  });
+  };
+  const bal=h.map((p,i)=> (p.bal!=null ? p.bal : slopeAt(i)));
+  // track which points are measured vs derived, for honest legend/styling
+  const balMeasured=h.map(p=>p.bal!=null);
   const floor=g.linepack_min_forecast;   // operator's forecast minimum linepack
   const t0=ts[0], t1=ts[ts.length-1];
   const X=t=>padL+(W-padL-padR)*(t-t0)/((t1-t0)||1);
@@ -3768,15 +3891,39 @@ function gasDrawTrend(g){
     ctx.fillStyle = v>=0 ? "rgba(57,217,138,.14)" : "rgba(255,122,92,.14)";
     ctx.beginPath();ctx.moveTo(x1,yz);ctx.lineTo(x1,YR(bal[i]));ctx.lineTo(x2,YR(bal[i+1]));ctx.lineTo(x2,yz);ctx.closePath();ctx.fill();
   }
-  // balance line
-  ctx.strokeStyle=cssv("--warn");ctx.lineWidth=1.2;ctx.beginPath();let started=false;
-  h.forEach((p,i)=>{ if(bal[i]==null){started=false;return;} const x=X(ts[i]),y=YR(bal[i]); started?ctx.lineTo(x,y):ctx.moveTo(x,y); started=true; });
-  ctx.stroke();
-  // linepack line (accent, thicker). Live-primary data with hourly archive as
-  // hot backup — all measured linepack, drawn as one solid line.
-  ctx.strokeStyle=cssv("--accent");ctx.lineWidth=2;ctx.beginPath();
-  h.forEach((p,i)=>{ const x=X(ts[i]),y=YL(lp[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-  ctx.stroke();
+  // balance line: SOLID where measured (live supply−demand), DASHED where the
+  // value was derived from the linepack slope (archive-only backfill) — same
+  // honesty convention as elsewhere (solid=measured, dashed=derived/estimated).
+  ctx.strokeStyle=cssv("--warn");ctx.lineWidth=1.2;
+  for(let i=0;i<h.length-1;i++){
+    if(bal[i]==null||bal[i+1]==null) continue;
+    // a segment is "measured" only if BOTH endpoints are measured
+    const seg_measured = balMeasured[i] && balMeasured[i+1];
+    ctx.setLineDash(seg_measured?[]:[4,3]);
+    ctx.beginPath();
+    ctx.moveTo(X(ts[i]),YR(bal[i]));
+    ctx.lineTo(X(ts[i+1]),YR(bal[i+1]));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // linepack line (accent, thicker). Two provenances, both measured but from
+  // different sources: the official hourly-actual archive (D+1 publication,
+  // solid) and the LIVE bridge tail we log locally to fill the ~13-14h gap up
+  // to now (dashed, so it's honestly distinguished from the official series —
+  // same convention as the balance line). Drawn as one path but the dash state
+  // flips at the archive→bridge boundary.
+  const isBridge=h.map(p=>!!p.bridge);
+  ctx.strokeStyle=cssv("--accent");ctx.lineWidth=2;
+  for(let i=0;i<h.length-1;i++){
+    // a segment is "bridge" (dashed) if either endpoint is a live bridge point
+    const seg=isBridge[i]||isBridge[i+1];
+    ctx.setLineDash(seg?[3,3]:[]);
+    ctx.beginPath();
+    ctx.moveTo(X(ts[i]),YL(lp[i]));
+    ctx.lineTo(X(ts[i+1]),YL(lp[i+1]));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
   ctx.fillStyle=cssv("--accent");ctx.beginPath();ctx.arc(X(t1),YL(lp[lp.length-1]),3,0,7);ctx.fill();
   // time axis: ticks every 6h in UTC (UT). Dates shown at the left end and at
   // UTC midnight; the right-hand label is the latest actual plot time. All UT.
@@ -3812,8 +3959,8 @@ function gasDrawTrend(g){
   ctx.fillText(utcHH(t1)+" UT",W-padR,axisY+6);
   // legend
   ctx.textAlign="left";ctx.textBaseline="top";ctx.font="12px "+mono;
-  ctx.fillStyle=cssv("--accent");ctx.fillText("— linepack (mcm)",padL,3);
-  ctx.fillStyle=cssv("--warn");ctx.fillText("— supply−demand, from Δlinepack (mcm/d)",padL+150,3);
+  ctx.fillStyle=cssv("--accent");ctx.fillText("— linepack (mcm): solid archive · dashed live",padL,3);
+  ctx.fillStyle=cssv("--warn");ctx.fillText("— supply−demand (mcm/d): solid measured · dashed derived",padL+230,3);
 }
 
 // Wholesale gas price trend: SAP + SMP buy/sell (p/kWh on the left axis, with a
@@ -3992,7 +4139,7 @@ function gasRender(g){
   // ---- 48h balance / linepack trend ----
   if(g.history && g.history.length>1){
     html+='<div class="gas-trend-wrap"><div class="gas-sec-title">Balance trend '+
-      '<span class="note">last 48h · linepack (live, hourly archive backfill) &amp; derived supply−demand · National Gas</span></div>'+
+      '<span class="note">last 48h · linepack &amp; supply−demand (live measured, hourly archive backfill) · National Gas</span></div>'+
       '<canvas id="gasTrend"></canvas></div>';
   }
 
@@ -4164,6 +4311,53 @@ function eaLoadLoc(){
 function eaSaveLoc(){
   try{ localStorage.setItem(EA_LOC_KEY, JSON.stringify(eaLoc)); }
   catch(e){/* storage unavailable — keep in memory only for this session */}
+  eaLocChosen=true;   // a save means the user picked a location this session
+}
+
+// Persisted station overview. This lets river/rain alarms start watching the
+// moment the page loads — even before (or without) opening the EA panel —
+// instead of waiting for the heavy /id/stations fetch. What we persist is
+// STATION METADATA (which gauges exist near you, their coordinates, and their
+// typical-range thresholds), which barely changes, so a 24h age is fine.
+// IMPORTANT — honesty: the READINGS carried in the cached copy are NOT trusted
+// as current. evaluateRivers only fires on readings whose own timestamp is
+// fresh (see EA_READING_FRESH_MS); the seed just tells the alarm WHAT to watch,
+// and a live pull supplies fresh readings before anything sounds.
+const EA_OVERVIEW_KEY="ukgrid.ea.overview";
+const EA_OVERVIEW_MAX_AGE_MS=24*3600*1000;   // station metadata good for 24h
+function eaSaveOverview(ov){
+  try{
+    if(!ov || !ov.stations) return;
+    localStorage.setItem(EA_OVERVIEW_KEY, JSON.stringify({
+      at: Date.now(), lat: eaLoc.lat, lon: eaLoc.lon, dist: eaDist, ov: ov }));
+  }catch(e){/* quota/unavailable — non-fatal */}
+}
+function eaLoadOverview(){
+  try{
+    const raw=localStorage.getItem(EA_OVERVIEW_KEY);
+    if(!raw) return null;
+    const o=JSON.parse(raw);
+    if(!o||!o.ov) return null;
+    if(Date.now()-o.at > EA_OVERVIEW_MAX_AGE_MS) return null;   // too old
+    // only reuse if it's for the SAME location we're watching now
+    if(Math.abs((o.lat||0)-(eaLoc.lat||0))>0.01 ||
+       Math.abs((o.lon||0)-(eaLoc.lon||0))>0.01) return null;
+    return o.ov;
+  }catch(e){ return null; }
+}
+function eaClearOverview(){
+  try{ localStorage.removeItem(EA_OVERVIEW_KEY); }catch(e){}
+}
+// True once the user has actually chosen a location — either persisted from a
+// previous session or set during this one. Used to gate the background rain
+// watcher so it never polls the London default for an unconfigured user.
+let eaLocChosen=false;
+function eaHasChosenLoc(){
+  if(eaLocChosen) return true;
+  // Persisted from a prior session: load it into eaLoc so the watcher fetches
+  // the right coordinates even if the panel was never opened this session.
+  if(eaLoadLoc()){ eaLocChosen=true; return true; }
+  return false;
 }
 
 function eaOpenFn(){
@@ -4176,6 +4370,105 @@ function eaOpenFn(){
 }
 function eaCloseFn(){ $("#eaOverlay").classList.remove("open"); eaOpen=false;
   if(eaPoll){ clearInterval(eaPoll); eaPoll=null; } }
+
+/* ---------- Background rainfall watcher ----------
+   The rain alarm must be available whether or not the EA panel is open. Once
+   the alarm is armed AND the "Rainfall nearby" category is enabled, this poller
+   fetches only the rainfall gauges for the saved location and feeds them to the
+   alarm evaluator on a background cadence. It renders nothing and shares no DOM
+   with the overlay. When the overlay is open its own eaFetch already evaluates
+   rain (and stamps eaLastFetchTs), so this watcher skips its poll if a fresh
+   fetch happened recently — avoiding double-hitting the endpoint. Errors are
+   never fatal: a failed poll is logged and retried on the next tick. */
+let eaLastFetchTs=0;            // set by eaFetch() and by the background watcher
+let rainWatchPoll=null, rainWatchBusy=false, rainWatchFails=0;
+const RAINWATCH_MS=300000;      // 5 min base cadence (matches the panel poller)
+const RAINWATCH_FRESH_MS=240000;// treat a fetch newer than 4 min as still fresh
+// A reading (river level or rainfall) is only alarmed on if its own timestamp
+// is within this window. EA gauges publish ~every 15 min; 2h lets a couple of
+// missed publications pass without going stale, but keeps us from firing on the
+// old readings carried in a persisted station-list seed.
+const EA_READING_FRESH_MS=2*3600*1000;
+// River levels change slowly, so the background FULL pull (stations + levels,
+// which drives the river alarm) runs on a slower cadence than the rain poll.
+const RIVERWATCH_MS=1800000;    // 30 min
+let riverWatchLast=0;           // last time the background did a full (stations) pull
+
+// Seed the alarm evaluators from a persisted station overview (if <24h and for
+// the current location) so watching begins the instant the page loads, before
+// any network pull. Cached readings that are too old are suppressed inside
+// evaluateRivers/evaluateRainfall by the freshness guard, so this only ever
+// tells the alarms WHAT to watch — never fires on stale numbers.
+function eaSeedFromCache(){
+  if(eaData && eaData.stations) return true;   // already have live data
+  if(!eaHasChosenLoc()) return false;
+  const ov=eaLoadOverview();
+  if(!ov) return false;
+  eaData=ov;
+  if(Alarm.riverWatchWanted() && ov.stations) Alarm.evaluateRivers(ov.stations);
+  if(Alarm.rainWatchWanted() && ov.rainfall)  Alarm.evaluateRainfall(ov.rainfall);
+  return true;
+}
+
+async function eaWatchTick(){
+  if(!Alarm.eaWatchWanted()) return;           // gate: armed + rain or river on
+  if(rainWatchBusy) return;                     // never overlap requests
+  if(!eaHasChosenLoc()) return;                 // need a chosen location first
+  // Decide what to pull this tick. River levels change slowly, so a FULL pull
+  // (stations + rainfall) only runs every RIVERWATCH_MS; otherwise, if rain is
+  // wanted, a light rainfall-only pull runs at the fast cadence.
+  const now=Date.now();
+  const wantRiver=Alarm.riverWatchWanted();
+  const wantRain=Alarm.rainWatchWanted();
+  const doFull = wantRiver && (now-riverWatchLast >= RIVERWATCH_MS || !(eaData&&eaData.stations));
+  // If the panel just fetched fresh full data, reuse it rather than refetching.
+  if(Date.now()-eaLastFetchTs < RAINWATCH_FRESH_MS){
+    if(eaData && eaData.stations && wantRiver) Alarm.evaluateRivers(eaData.stations);
+    if(eaData && eaData.rainfall && wantRain)  Alarm.evaluateRainfall(eaData.rainfall);
+    if(!doFull) return;   // nothing more to do unless a full pull is now due
+  }
+  if(!doFull && !wantRain) return;              // nothing to pull this tick
+  rainWatchBusy=true;
+  try{
+    const q="/api/ea?dist="+eaDist+"&lat="+eaLoc.lat+"&lon="+eaLoc.lon+(doFull?"":"&rain=1");
+    const ctl=("AbortController" in window)?new AbortController():null;
+    const to=ctl?setTimeout(()=>{ try{ctl.abort();}catch(e){} }, 20000):null;
+    const ov=await fetch(q, ctl?{signal:ctl.signal}:undefined).then(r=>r.json());
+    if(to) clearTimeout(to);
+    eaLastFetchTs=Date.now();
+    rainWatchFails=0;
+    if(doFull){
+      riverWatchLast=Date.now();
+      // adopt the full overview (unless the panel is open with its own copy)
+      if(!eaOpen) eaData=ov;
+      eaSaveOverview(ov);                        // persist metadata for next load
+      if(ov && ov.stations && wantRiver) Alarm.evaluateRivers(ov.stations);
+      if(ov && ov.rainfall && wantRain)  Alarm.evaluateRainfall(ov.rainfall);
+    } else {
+      if(ov && ov.rainfall && wantRain) Alarm.evaluateRainfall(ov.rainfall);
+      if(!eaData) eaData={rainfall:ov.rainfall, dist:ov.dist, attribution:ov.attribution};
+    }
+  }catch(e){
+    rainWatchFails++;
+    if(rainWatchFails<=1 || rainWatchFails%5===0)
+      console.warn("EA watch poll failed ("+rainWatchFails+"):", e && e.message);
+  }finally{
+    rainWatchBusy=false;
+  }
+}
+function eaWatchSync(){
+  const want=Alarm.eaWatchWanted();
+  if(want && !rainWatchPoll){
+    eaSeedFromCache();                           // instant coverage from cache
+    rainWatchPoll=setInterval(eaWatchTick, RAINWATCH_MS);
+    eaWatchTick();                               // and pull fresh right away
+  } else if(!want && rainWatchPoll){
+    clearInterval(rainWatchPoll); rainWatchPoll=null;
+  }
+}
+// NOTE: the watcher is wired to the Alarm module and first evaluated at the
+// bottom of the file, AFTER `Alarm` is defined (it's a const declared later,
+// so referencing it here at parse time would hit the temporal dead zone).
 
 function eaSyncLocLabel(){ const l=$("#eaLocLabel"); if(l) l.textContent=eaLoc.label||"location"; }
 
@@ -4210,6 +4503,8 @@ async function eaGeocode(){
     matches.querySelectorAll(".ea-match").forEach(btn=>btn.onclick=()=>{
       const m=d.matches[+btn.dataset.i];
       eaLoc={lat:m.lat, lon:m.lon, label:m.label, country:m.country};
+      Alarm.clearEA();   // old-area river/rain alarms must not persist after a move
+      eaClearOverview(); // and drop the cached station list for the old location
       eaSaveLoc(); eaSyncLocLabel(); eaHideLocModal(); eaSelRef=null; eaFetch();
     });
   }catch(e){ msg.textContent="Lookup failed: "+e.message; msg.className="ea-locmsg err"; }
@@ -4223,8 +4518,14 @@ async function eaFetch(){
       fetch("/api/ea-floods").then(r=>r.json()),
     ]);
     eaData=ov; eaFloods=fl; eaRender();
-    // river-above-record alarm can only run while EA station data is loaded
-    if(eaData && eaData.stations) Alarm.evaluateRivers(eaData.stations);
+    eaLastFetchTs=Date.now();   // let the background watcher skip a redundant poll
+    // river + rainfall alarms can only run while EA station data is loaded
+    if(eaData && eaData.stations){
+      Alarm.evaluateRivers(eaData.stations);
+      riverWatchLast=Date.now();     // this counts as the latest full (stations) pull
+      eaSaveOverview(eaData);        // persist station metadata for next load
+    }
+    if(eaData && eaData.rainfall) Alarm.evaluateRainfall(eaData.rainfall);
   }catch(e){
     $("#eaBody").innerHTML='<div class="octo-loading">Could not load Environment Agency data: '+e.message+'</div>';
   }
@@ -4240,6 +4541,105 @@ function eaRainBand(mm){
   if(mm<2.5) return "rn-heavy";
   return "rn-violent";
 }
+
+// Rainfall view: "list" (nearest-first grid) or "map" (rough directional grid).
+let eaRainView = (function(){ try{ return localStorage.getItem("eaRainView")||"list"; }catch(e){ return "list"; } })();
+
+// Build one rainfall card's HTML (shared by list and map views). `near` adds a
+// subtle highlight for gauges essentially at "here" (<5 km).
+function eaRainCard(r, near){
+  const loc = r.place || r.grid || r.ref || "";
+  let dist='';
+  if(r.dist_exact && r.dist_km!=null) dist=r.dist_km.toFixed(1)+' km';
+  else if(r.dist_bucket!=null) dist=(r.dist_bucket===0?'~here':'~'+r.dist_bucket+' km');
+  const nm='<span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+'">'+loc+'</span>';
+  const cls=eaRainBand(r.mm)+(near?' rn-here':'')+(r.ref===eaSelRef?' sel':'');
+  return '<div class="rn '+cls+'" data-rainref="'+(r.ref||'')+'" data-rainloc="'+loc.replace(/"/g,'')+'">'+nm+
+    '<span class="rn-val"><span class="rn-mm"><b>'+r.mm.toFixed(1)+'</b> mm · '+timeAgo(r.dt)+'</span>'+
+    (dist?'<span class="rn-d"> · '+dist+'</span>':'')+'</span></div>';
+}
+
+// Rough directional layout on a fixed 3-column grid. NOT to scale — an
+// indicative "which way / roughly how far" picture. "Here" sits at the vertical
+// middle of the centre column; westerly gauges go left, easterly right, and
+// north/south + distance drive the row. Cells that collide spill to the nearest
+// free cell (fuzzy edges). Bearing/distance come from each gauge's lat/lon
+// relative to the chosen location.
+function eaRenderRainMap(rainfall){
+  const oLat=eaLoc.lat, oLon=eaLoc.lon;
+  const toRad=d=>d*Math.PI/180;
+  function bearing(la,lo){
+    const p1=toRad(oLat),p2=toRad(la),dl=toRad(lo-oLon);
+    const y=Math.sin(dl)*Math.cos(p2);
+    const x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+    return (Math.atan2(y,x)*180/Math.PI+360)%360;   // 0=N,90=E,180=S,270=W
+  }
+  // annotate with bearing + east/north components
+  const gs=rainfall.filter(r=>r.lat!=null&&r.lon!=null).map(r=>{
+    const b=bearing(r.lat,r.lon), rad=toRad(b);
+    return {r, b, ew:Math.sin(rad), ns:Math.cos(rad),   // ew:+E/-W, ns:+N/-S
+            d:(r.dist_km!=null?r.dist_km:9999)};
+  }).sort((a,b)=>a.d-b.d);   // nearest first so they claim inner cells first
+
+  // column by east/west lean; a small dead-zone keeps near-due-N/S in centre
+  const colOf=g=> g.ew> 0.35 ? 2 : g.ew< -0.35 ? 0 : 1;
+
+  // Build a sparse grid: map of "row,col"->card. Row 0 is the centre; north is
+  // negative rows (up), south positive (down). We grow rows as needed.
+  const placed=new Map();
+  const key=(row,col)=>row+","+col;
+  const occupied=(row,col)=>placed.has(key(row,col));
+  function place(g){
+    const col=colOf(g);
+    // desired row: north/south lean scaled by distance rank; due-E/W (ns~0)
+    // start at centre and get bumped outward on collision.
+    let row=Math.round(-g.ns*Math.min(4, 1+g.d/8));   // more distant -> further out
+    if(row===0 && col===1) row = g.ns>=0? -1 : 1;     // keep centre col clear-ish for "here"
+    // spill search: try the target, then step outward (same col), then adjacent
+    // columns, expanding until a free cell is found.
+    const dir = row<=0? -1 : 1;   // grow in the card's vertical direction
+    for(let radius=0; radius<40; radius++){
+      const candidates=[];
+      // same column, stepping outward in its N/S direction first
+      candidates.push([row+dir*radius, col]);
+      if(radius>0) candidates.push([row-dir*radius, col]);      // then the other way
+      // fuzzy edge: adjacent columns at the same rows
+      [col-1,col+1].forEach(c=>{ if(c>=0&&c<=2){ candidates.push([row+dir*radius,c]); if(radius>0) candidates.push([row-dir*radius,c]); } });
+      for(const [rr,cc] of candidates){
+        if(cc<0||cc>2) continue;
+        if(!occupied(rr,cc)){ placed.set(key(rr,cc), g); return; }
+      }
+    }
+  }
+  // Nearest gauge takes the centre first so "here" is anchored at a real gauge;
+  // the rest fill around it by direction.
+  if(gs.length){ placed.set(key(0,1), gs[0]); gs.slice(1).forEach(place); }
+
+  // Which gauges get the dotted "near here" outline: the nearest, plus any
+  // others within 5 km (so a tight cluster around you all read as "here").
+  const nearSet=new Set();
+  if(gs.length){
+    nearSet.add(gs[0]);
+    gs.forEach(g=>{ if(g.d!=null && g.d<5) nearSet.add(g); });
+  }
+
+  // bounds
+  let minR=0,maxR=0;
+  placed.forEach((_,k)=>{ const rr=+k.split(",")[0]; if(rr<minR)minR=rr; if(rr>maxR)maxR=rr; });
+
+  // render rows top(min)->bottom(max)
+  let out='<div class="ea-rainmap"><div class="rmnote">Rough layout — direction &amp; relative distance from here, not to scale · dotted = nearest</div><div class="rmgrid">';
+  for(let rr=minR; rr<=maxR; rr++){
+    for(let cc=0; cc<=2; cc++){
+      const cell=placed.get(key(rr,cc));
+      if(!cell){ out+='<div class="rmcell rm-empty"></div>'; continue; }
+      out+='<div class="rmcell">'+eaRainCard(cell.r, nearSet.has(cell))+'</div>';
+    }
+  }
+  out+='</div></div>';
+  return out;
+}
+
 function eaRender(){
   if(!eaData){ return; }
   const b=$("#eaBody");
@@ -4258,6 +4658,23 @@ function eaRender(){
   }
   html+='</div>';
 
+  // ---- per-endpoint diagnostics banner ----
+  // Floods come from a separate, lighter endpoint, so they can succeed while
+  // the river-station and rainfall calls fail (commonly a CDN 503 "Backend
+  // fetch failed" on the heavy national readings index). Surface exactly which
+  // sub-call failed so the cause is visible rather than a silently blank panel.
+  const dg=eaData.diag||{};
+  const diagRows=[];
+  if(dg.latest_index) diagRows.push(["Latest-readings index (shared)", dg.latest_index]);
+  if(dg.stations)     diagRows.push(["River gauges", dg.stations]);
+  if(dg.rainfall)     diagRows.push(["Rainfall gauges", dg.rainfall]);
+  if(dg.latest_stale && !dg.latest_index)
+    diagRows.push(["Latest-readings index (shared)", "using last-good cached index (refresh failed this cycle)"]);
+  if(diagRows.length){
+    html+='<div class="ea-diag"><div class="ea-diag-h">⚠ Some Environment Agency calls did not return this cycle — retrying automatically:</div>';
+    diagRows.forEach(([k,v])=>{ html+='<div class="ea-diag-row"><span class="ea-diag-k">'+k+'</span><span class="ea-diag-v">'+String(v).replace(/</g,"&lt;")+'</span></div>'; });
+    html+='</div>';
+  }
   // list active warnings (sev 1-3) as an accordion: exactly one expanded at a
   // time (the first, highest-severity, by default), the rest collapsed to their
   // title line with a chevron. Expanding one collapses the others.
@@ -4288,14 +4705,23 @@ function eaRender(){
   // ---- two-column: stations (left) + drill-down (right) ----
   html+='<div class="ea-layout"><div class="ea-left">';
   html+='<div class="ea-sec-title">River levels near you '+
-    '<span class="note">'+ (eaData.stations.length) +' gauges within '+eaData.dist+' km · coloured vs each gauge\u2019s own typical range</span></div>';
-  if(eaData.error){
+    '<span class="note">'+ (eaData.stations.length) +' gauges within '+eaData.dist+' km · coloured vs each gauge\u2019s own typical range'+
+    (((eaData.diag||{}).index_age_s!=null)?' · readings ~'+Math.round(eaData.diag.index_age_s/60)+' min old':'')+
+    '</span></div>';
+  if(eaData.error && !eaData.stations.length){
+    // hard failure — nothing came back at all
     html+='<div class="octo-loading">'+eaData.error+'</div>';
   } else if(!eaData.stations.length){
     const nonEng = eaLoc.country && eaLoc.country!=="England";
     html+='<div class="octo-loading">No river gauges found in range.'+
       (nonEng?' This location is in '+eaLoc.country+' — the Environment Agency feed covers England only. Try an English location, or use the national river/rainfall service for '+eaLoc.country+'.':'')+'</div>';
   } else {
+    // we have stations — if there was ALSO a soft error (a slow feed timed out),
+    // show it as a non-blocking notice rather than hiding the data we did get.
+    if(eaData.error){
+      html+='<div class="ea-softerr">Some data may be incomplete this cycle: '+
+        eaData.error+' — retrying automatically.</div>';
+    }
     // group by river
     const byRiver={};
     eaData.stations.forEach(s=>{ const r=s.river||"Other watercourses"; (byRiver[r]=byRiver[r]||[]).push(s); });
@@ -4332,22 +4758,33 @@ function eaRender(){
     const ps=eaData.rainfall[0].period_s;
     const periodLbl = ps==900?"15-minute rainfall" : ps==3600?"Hourly rainfall"
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
+    // when this rainfall data was last pulled (server-side overview build time)
+    let pulled='';
+    if(eaData.generated){
+      try{ pulled=' · pulled '+new Date(eaData.generated)
+        .toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"})+' UT'; }catch(e){}
+    }
     html+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
-      '<span class="note">'+eaData.rainfall.length+' gauges · nearest first'+
-      (rained.length?'':' · all dry')+'</span></div>';
-    html+='<div class="ea-rain">';
-    eaData.rainfall.forEach(r=>{
-      // EA rainfall stations have no place name; reverse-geocoded on the server.
-      const loc = r.place || r.grid || r.ref || "";
-      const dist = (r.dist_bucket!=null)
-        ? (r.dist_bucket===0 ? '~here' : '~'+r.dist_bucket+' mi') : '';
-      const nm = '<span class="rn-nm">'+loc+(dist?' <span class="rn-d">· '+dist+'</span>':'')+'</span>';
-      // intensity band from the 15-min accumulation (mm)
-      const cls = eaRainBand(r.mm);
-      html+='<div class="rn '+cls+(r.ref===eaSelRef?' sel':'')+'" data-rainref="'+(r.ref||'')+'" data-rainloc="'+loc.replace(/"/g,'')+'">'+nm+
-        '<span class="rn-val"><b>'+r.mm.toFixed(1)+'</b> mm · '+timeAgo(r.dt)+'</span></div>';
-    });
-    html+='</div>';
+      '<span class="note">'+eaData.rainfall.length+' gauges · '+
+      (eaRainView==="map"?"roughly by direction":"nearest first")+
+      (rained.length?'':' · all dry')+pulled+'</span>'+
+      '<span class="rn-viewtoggle">'+
+        '<button class="rn-vt'+(eaRainView==="list"?" on":"")+'" data-rainview="list">list</button>'+
+        '<button class="rn-vt'+(eaRainView==="map"?" on":"")+'" data-rainview="map">map</button>'+
+      '</span></div>';
+    if(eaRainView==="map") html+=eaRenderRainMap(eaData.rainfall);
+    else {
+      html+='<div class="ea-rain">';
+      eaData.rainfall.forEach(r=>{ html+=eaRainCard(r); });
+      html+='</div>';
+    }
+  } else if((eaData.diag||{}).rainfall){
+    // rainfall gauges failed to load this cycle — say so rather than omitting
+    // the section entirely (which looks like "no rain gauges exist here").
+    html+='<div class="ea-sec-title" style="margin-top:22px">Rainfall'+
+      '<span class="note">gauges unavailable this cycle</span></div>'+
+      '<div class="ea-softerr">Rainfall gauges did not return: '+
+      String(eaData.diag.rainfall).replace(/</g,"&lt;")+' — retrying automatically.</div>';
   }
   html+='</div></div>';  // ea-detail, ea-layout
 
@@ -4370,11 +4807,18 @@ function eaRender(){
       it.classList.toggle("open", +it.dataset.fi===eaFloodOpen);
     });
   });
-  // wire rainfall gauge clicks -> plot 15-min history in the detail area
-  b.querySelectorAll(".ea-rain .rn").forEach(el=>el.onclick=()=>{
+  // view toggle (list / map)
+  b.querySelectorAll(".rn-vt").forEach(btn=>btn.onclick=()=>{
+    const v=btn.dataset.rainview; if(!v||v===eaRainView) return;
+    eaRainView=v; try{ localStorage.setItem("eaRainView", v); }catch(e){}
+    eaRender();
+  });
+  // wire rainfall gauge clicks -> plot 15-min history in the detail area.
+  // Cards live under .ea-rain (list) or .ea-rainmap (map) — match both.
+  b.querySelectorAll(".ea-rain .rn, .ea-rainmap .rn").forEach(el=>el.onclick=()=>{
     const ref=el.dataset.rainref; if(!ref) return;
     eaSelRef=ref; eaSelKind="rain"; eaSelLoc=el.dataset.rainloc||ref;
-    b.querySelectorAll(".ea-rain .rn").forEach(x=>x.classList.toggle("sel",x.dataset.rainref===eaSelRef));
+    b.querySelectorAll(".rn").forEach(x=>x.classList.toggle("sel",x.dataset.rainref===eaSelRef));
     b.querySelectorAll(".ea-st").forEach(x=>x.classList.remove("sel"));
     eaLoadRain(ref, eaSelLoc);
   });
@@ -4411,7 +4855,7 @@ function eaDrawChart(d, s){
   const dpr=devicePixelRatio||1, W=c.clientWidth||360, H=170;
   c.width=W*dpr;c.height=H*dpr;c.style.height=H+"px";
   const g=c.getContext("2d"); g.scale(dpr,dpr);
-  const padL=42,padR=10,padT=12,padB=22;
+  const padL=42,padR=10,padT=12,padB=30;
   const xs=series.map(p=>new Date(p.t).getTime()), ys=series.map(p=>p.v);
   let ymin=Math.min(...ys), ymax=Math.max(...ys);
   // include typical band in the y-range if present
@@ -4439,11 +4883,42 @@ function eaDrawChart(d, s){
   g.stroke();
   // last point dot
   g.fillStyle=col; g.beginPath(); g.arc(X(x1),Y(ys[ys.length-1]),3,0,7); g.fill();
-  // time span label
-  g.fillStyle=cssv("--ink-faint"); g.font="9px "+cssv("--mono"); g.textAlign="left"; g.textBaseline="bottom";
-  g.fillText(new Date(x0).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}),padL,H-6);
-  g.textAlign="right";
-  g.fillText("now",W-padR,H-6);
+  // ---- x-axis: span-adaptive UT ticks + labels ----
+  // The river series can span ~4-5 days (up to 400 readings), so a fixed 6h
+  // label step would crowd. Scale the LABEL step to the span (targeting ~5-7
+  // labels) and put tick marks at 1/3 of the label step. Dates show at the left
+  // end and at UTC midnight; times are UT.
+  const axisY=H-padB, spanH=(x1-x0)/3600000;
+  const labelStepH = spanH<=14?3 : spanH<=30?6 : spanH<=54?12 : 24;  // hours/label
+  const tickStepH  = labelStepH/3;                                    // 1,2,4,8h ticks
+  g.strokeStyle="rgba(90,110,140,.25)"; g.lineWidth=1; g.textBaseline="top";
+  const utcHH=ms=>{const dt=new Date(ms);
+    return String(dt.getUTCHours()).padStart(2,"0")+":"+String(dt.getUTCMinutes()).padStart(2,"0");};
+  const utcDate=ms=>new Date(ms).toLocaleDateString("en-GB",{timeZone:"UTC",day:"2-digit",month:"short"});
+  const tickMs=tickStepH*3600000;
+  // first tick strictly after x0, aligned to a UTC hour divisible by tickStepH
+  let t=Math.ceil(x0/tickMs)*tickMs;
+  while(new Date(t).getUTCHours()%tickStepH!==0) t+=3600000;
+  for(; t<=x1; t+=tickMs){
+    const x=X(t);
+    const isLabel=(new Date(t).getUTCHours()%labelStepH===0);
+    g.beginPath(); g.moveTo(x,axisY); g.lineTo(x,axisY+(isLabel?5:3)); g.stroke();
+    if(isLabel && x>padL+24 && x<W-padR-24){   // keep clear of the end labels
+      g.fillStyle=cssv("--ink-faint"); g.textAlign="center";
+      g.fillText(utcHH(t),x,axisY+6);
+      if(new Date(t).getUTCHours()===0){       // date at UTC midnight
+        g.fillStyle="#7c8aa0"; g.fillText(utcDate(t),x,axisY+16);
+      }
+    }
+  }
+  // left-end anchor: date + time
+  g.fillStyle=cssv("--ink-faint"); g.font="9px "+cssv("--mono");
+  g.textAlign="left"; g.textBaseline="top";
+  g.fillText(utcHH(x0),padL,axisY+6);
+  g.fillStyle="#7c8aa0"; g.fillText(utcDate(x0),padL,axisY+16);
+  // right-end: latest plotted time (UT), not the word 'now'
+  g.fillStyle=cssv("--ink-dim"); g.textAlign="right";
+  g.fillText(utcHH(x1)+" UT",W-padR,axisY+6);
 }
 
 async function eaLoadRain(ref, loc){
@@ -4471,7 +4946,7 @@ function eaDrawRain(series){
   const dpr=devicePixelRatio||1, W=c.clientWidth||360, H=170;
   c.width=W*dpr;c.height=H*dpr;c.style.height=H+"px";
   const g=c.getContext("2d"); g.scale(dpr,dpr);
-  const padL=42,padR=10,padT=12,padB=22;
+  const padL=42,padR=10,padT=12,padB=30;
   const xs=pts.map(p=>new Date(p.t).getTime()), ys=pts.map(p=>p.v||0);
   const ymax=Math.max(...ys,0.5)*1.15;
   const x0=xs[0], x1=xs[xs.length-1];
@@ -4491,10 +4966,38 @@ function eaDrawRain(series){
     const v=p.v||0, x=padL+i*bw, bh=plotH*v/ymax;
     g.fillStyle=bandCol(v); g.fillRect(x+0.5, padT+plotH-bh, Math.max(1,bw-0.8), bh);
   });
-  // time labels
-  g.fillStyle=cssv("--ink-faint"); g.font="9px "+cssv("--mono"); g.textAlign="left"; g.textBaseline="bottom";
-  g.fillText(new Date(x0).toLocaleString("en-GB",{hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"}),padL,H-6);
-  g.textAlign="right"; g.fillText("now",W-padR,H-6);
+  // ---- x-axis: 2-hourly tick marks, 6-hourly time labels (UT) ----
+  // Bars are index-positioned (even 15-min spacing), so map a target time to the
+  // nearest bar's centre x. Ticks every 2h; labels every 6h so text can't clash.
+  const axisY=H-padB;
+  g.strokeStyle="rgba(90,110,140,.25)"; g.lineWidth=1; g.textBaseline="top";
+  const utcHH=ms=>{const dt=new Date(ms);
+    return String(dt.getUTCHours()).padStart(2,"0")+":"+String(dt.getUTCMinutes()).padStart(2,"0");};
+  const utcDate=ms=>new Date(ms).toLocaleDateString("en-GB",{timeZone:"UTC",day:"2-digit",month:"short"});
+  const barX=t=>{
+    // nearest 15-min sample index to time t, then that bar's centre
+    let best=0, bd=Infinity;
+    for(let i=0;i<xs.length;i++){ const dd=Math.abs(xs[i]-t); if(dd<bd){bd=dd;best=i;} }
+    return padL+best*bw+bw/2;
+  };
+  const H2=2*3600000;
+  let t=Math.ceil(x0/H2)*H2; while(new Date(t).getUTCHours()%2!==0) t+=3600000;
+  for(; t<=x1; t+=H2){
+    const x=barX(t), isLabel=(new Date(t).getUTCHours()%6===0);
+    g.beginPath(); g.moveTo(x,axisY); g.lineTo(x,axisY+(isLabel?5:3)); g.stroke();
+    if(isLabel && x>padL+24 && x<W-padR-18){
+      g.fillStyle=cssv("--ink-faint"); g.textAlign="center";
+      g.fillText(utcHH(t),x,axisY+6);
+      if(new Date(t).getUTCHours()===0){ g.fillStyle="#7c8aa0"; g.fillText(utcDate(t),x,axisY+16); }
+    }
+  }
+  // left-end anchor + right-end latest time (UT)
+  g.font="9px "+cssv("--mono");
+  g.fillStyle=cssv("--ink-faint"); g.textAlign="left";
+  g.fillText(utcHH(x0),padL,axisY+6);
+  g.fillStyle="#7c8aa0"; g.fillText(utcDate(x0),padL,axisY+16);
+  g.fillStyle=cssv("--ink-dim"); g.textAlign="right";
+  g.fillText(utcHH(x1)+" UT",W-padR,axisY+6);
 }
 
 (function wireEa(){
@@ -4528,9 +5031,40 @@ const Alarm = (function(){
   let armed=false;             // master; resets each load (browser gesture rule)
   let baselined=false;         // first evaluate() establishes state silently
   const active={};             // condition-key -> true while latched
-  let critTimer=null;          // repeats critical tones
+  let critTimer=null;          // slow repeat timer (rivers/rainfall/criticals)
+  let summaryTimer=null;       // 3-hourly spoken summary timer
   let critActiveCount=0;       // how many CRITICAL conditions are currently latched
   let ac=null;                 // AudioContext (created on arm)
+  const REPEAT_MS=60*60*1000;      // repeat tone at most once per hour (was 20s)
+  const SUMMARY_MS=3*60*60*1000;   // spoken situation summary every 3 hours
+  // Situation state for aggregated EA alarms (rivers, rainfall). Each holds the
+  // latest computed set so the summary timer can voice counts without re-fetch.
+  const situations={ river:null, rain:null };
+  // distance phrasing: under 5 km is "less than 5 km", else rounded km.
+  function distPhrase(km){
+    if(km==null) return "an unknown distance away";
+    if(km<5) return "less than 5 kilometres";
+    return Math.round(km)+" kilometres";
+  }
+  // Trim long text to end at a sentence boundary near `limit` rather than
+  // mid-word. Prefers the last sentence end (. ! ?) at or before the limit; if
+  // none, falls back to the last word boundary; adds an ellipsis only if the
+  // text was actually shortened.
+  function _clipSentence(txt, limit){
+    txt=(txt||"").replace(/\s+/g," ").trim();
+    if(txt.length<=limit) return txt;
+    const head=txt.slice(0, limit);
+    // last sentence-ending punctuation followed by a space (or end of head)
+    let cut=-1;
+    const m=head.match(/[.!?](?=\s|$)/g);
+    if(m){ cut=head.lastIndexOf(m[m.length-1])+1; }
+    if(cut<limit*0.5){                     // no good sentence break — use a word break
+      const sp=head.lastIndexOf(" ");
+      cut = sp>0 ? sp : limit;
+    }
+    const out=txt.slice(0, cut).trim();
+    return out + (out.length<txt.length ? "\u2026" : "");
+  }
 
   // Categories. `on` is the enabled state (persisted). Defaults: frequency only.
   const CATS={
@@ -4542,8 +5076,10 @@ const Alarm = (function(){
             desc:"Speaks new NESO SYSWARN messages as they arrive; margin notices are critical."},
     flood: {name:"Flood warnings", tier:"crit", on:false,
             desc:"Severe flood warning = critical; ordinary flood warning = warning."},
-    river: {name:"River level above record", tier:"crit", on:false,
-            desc:"Nearby EA stations exceeding their record high. Needs the EA panel open."},
+    river: {name:"River level high", tier:"crit", on:false,
+            desc:"Nearby EA stations above their normal range. Needs the EA panel open. Nearest (<5mi) treated as critical."},
+    rain:  {name:"Rainfall nearby", tier:"warn", on:false,
+            desc:"Informational: nearby EA gauges reporting rain (light to extremely heavy). Extra hysteresis for stop/start rain."},
     gas:   {name:"Gas margin (derived)", tier:"notice", on:false,
             desc:"Soft blip only, no speech — this is a derived early-warning signal."},
   };
@@ -4604,12 +5140,31 @@ const Alarm = (function(){
     setTimeout(()=>{ if(!critActiveCount) b.classList.remove("firing"); }, 2500);
   }
   function startCritRepeat(){
-    if(critTimer) return;
-    critTimer=setInterval(()=>{ if(armed && critActiveCount>0) tone("crit"); }, 20000);
+    if(!critTimer){
+      critTimer=setInterval(()=>{ if(armed && critActiveCount>0) tone("crit"); }, REPEAT_MS);
+    }
+    if(!summaryTimer){
+      summaryTimer=setInterval(()=>{ if(armed) speakSummary(); }, SUMMARY_MS);
+    }
   }
   function stopCritRepeat(){
     if(critTimer && critActiveCount===0){ clearInterval(critTimer); critTimer=null;
+      if(summaryTimer){ clearInterval(summaryTimer); summaryTimer=null; }
       const b=$("#alarmBtn"); if(b) b.classList.remove("firing"); }
+  }
+  // Spoken 3-hourly summary of the aggregated EA situations (rivers + rainfall).
+  function speakSummary(){
+    const parts=[];
+    const rv=situations.river;
+    if(rv && rv.count>0) parts.push(rv.count+" river"+(rv.count>1?"s":"")+" above normal level");
+    const rn=situations.rain;
+    if(rn && rn.count>0){
+      const byBand=rn.byBand||{};
+      const segs=Object.keys(byBand).filter(k=>byBand[k]>0)
+        .map(k=>byBand[k]+" "+k);
+      if(segs.length) parts.push("rain nearby: "+segs.join(", "));
+    }
+    if(parts.length) say("Situation summary. "+parts.join(". ")+".");
   }
 
   // Enter/exit a latched condition. `key` unique per condition instance.
@@ -4662,7 +5217,9 @@ const Alarm = (function(){
         "Critical. Operating reserve is below the largest single infeed.");
     }
 
-    // SYSWARN — speak new warnings. Margin-notice types are critical.
+    // SYSWARN — speak new warnings. Margin-notice types are critical; routine
+    // IT / operational / test notices are downgraded to a silent NOTICE (blip
+    // only, no speech) rather than read aloud as warnings.
     const w=d.warnings||[];
     const seen=new Set();
     w.forEach(x=>{
@@ -4670,8 +5227,15 @@ const Alarm = (function(){
       const key="sys-"+txt.slice(0,80);
       seen.add(key);
       const isMargin=/margin notice|capacity market notice|electricity margin|demand control|deman flexibility|insufficient/i.test(txt);
-      set("sys",key, true, isMargin?"crit":"warn",
-        (isMargin?"Critical. System warning. ":"Warning. System warning. ")+txt.slice(0,160));
+      // Operational / IT / administrative chatter — not a grid condition.
+      const isInfo=/it system|systems outage|api|edl|edt|wider access|maintenance|planned outage|scheduled|test message|this is a test|reminder|no longer required|cancellation|withdrawn|issued by/i.test(txt);
+      let tier, prefix;
+      if(isMargin){ tier="crit"; prefix="Critical. System warning. "; }
+      else if(isInfo){ tier="notice"; prefix=""; }   // blip only, not spoken
+      else { tier="warn"; prefix="Warning. System warning. "; }
+      // Speak the whole message up to a sentence boundary near the limit, so it
+      // never cuts off mid-word. (notice tier isn't spoken, so text is moot.)
+      set("sys",key, true, tier, prefix + _clipSentence(txt, 220));
     });
     // clear SYSWARN latches no longer present
     Object.keys(active).filter(k=>k.startsWith("sys-")&&!seen.has(k)).forEach(k=>{
@@ -4692,15 +5256,183 @@ const Alarm = (function(){
       "Warning. "+sev2+" flood warning"+(sev2>1?"s":"")+" active.");
   }
 
-  // ---- evaluation from EA station data (only when EA panel loaded) ----
+  // ---- aggregated EA situations (rivers, rainfall) ----
+  // Both fire as ONE latch representing the whole set, not per-station, so a
+  // regional EA event doesn't produce a flood of alarms. Naming: <=3 give each
+  // by distance; >3 give the nearest 3 then "and N other locations near you".
+  function _composeLocations(items){
+    // items: [{dist_km}], already sorted nearest-first. Returns spoken phrase.
+    const n=items.length;
+    if(n<=3){
+      return items.map(s=>distPhrase(s.dist_km)).join(", ");
+    }
+    const near=items.slice(0,3).map(s=>distPhrase(s.dist_km)).join(", ");
+    return near+", and "+(n-3)+" other location"+((n-3)>1?"s":"")+" near you";
+  }
+
+  // Rivers: above the station's OWN typical high (EA's "higher than normal").
+  // Not "above record" — that fires once a decade and misreads on gauge glitches.
   function evaluateRivers(stations){
-    if(!Array.isArray(stations)) return;
-    stations.forEach(s=>{
-      if(s.level_m==null || s.max_on_record==null) return;   // silent where no record
-      const over = s.level_m > s.max_on_record;
-      set("river","river-"+(s.ref||s.label), over, "crit",
-        "Critical. River level above record at "+(s.label||"a nearby station")+".");
-    });
+    if(!Array.isArray(stations)){ return; }
+    // Only consider stations whose latest reading is genuinely fresh. EA river
+    // gauges publish every ~15 min; a reading older than EA_READING_FRESH_MS is
+    // treated as stale and never alarmed on. This is what lets us seed the
+    // station list from a 24h metadata cache safely: the cached readings are old
+    // and get suppressed here until a live pull replaces them with fresh values.
+    const now=Date.now();
+    const fresh=s=>{
+      if(!s.latest_dt) return false;
+      const t=Date.parse(s.latest_dt);
+      return !isNaN(t) && (now-t) <= EA_READING_FRESH_MS;
+    };
+    const over=stations.filter(s=>s.level_m!=null && s.typical_high!=null
+                                   && s.level_m > s.typical_high && fresh(s))
+                       .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
+    situations.river={count:over.length, items:over};
+    const present=over.length>0;
+    let spoken=null;
+    if(present){
+      const nearest=over[0];
+      const urgency=(nearest.dist_km!=null && nearest.dist_km<5)?"Critical. ":"Warning. ";
+      spoken=urgency+over.length+" river"+(over.length>1?"s":"")+
+        " above normal level, nearest "+distPhrase(nearest.dist_km)+
+        (over.length>1?". Others: "+_composeLocations(over.slice(1)):"")+".";
+    }
+    set("river","river-situation", present, "crit", spoken);
+  }
+
+  // Rainfall: EA gauges banded light/moderate/heavy/extremely heavy. Greater
+  // hysteresis than rivers (rain is stop/start): must persist RAIN_ON polls to
+  // fire and be absent RAIN_OFF polls to clear, so drizzle flicker doesn't spam.
+  const RAIN_ON=2, RAIN_OFF=2;
+  let rainOnCount=0, rainOffCount=0, rainLatched=false;
+  // ---- escalation cadence ----
+  // The plain latch fires ONCE on dry->wet and then stays silent under
+  // hysteresis, which would hide rain intensifying right on top of you. So we
+  // also track the worst band present and RE-ANNOUNCE when it steps UP, then
+  // repeat at that level on a distance-scaled, logarithmically-widening cadence.
+  //   base interval by nearest gauge's distance at the worst band:
+  //     <5km -> 10 min, <15km -> 20 min, else 40 min
+  //   log widening: each repeat at the SAME band doubles the wait (base, 2x,
+  //     4x...) up to a cap; a step UP resets to base and re-announces promptly.
+  //   "sustained": >5 gauges within 15 km sharing the worst band.
+  const RAIN_BANDS=["light rain","moderate rain","heavy rain","extremely heavy rain"];
+  const _bandRank=b=>RAIN_BANDS.indexOf(b);
+  const RAIN_BASE_NEAR=10*60*1000, RAIN_BASE_MID=20*60*1000, RAIN_BASE_FAR=40*60*1000;
+  const RAIN_CADENCE_CAP=4*60*60*1000;   // never wait more than 4h between repeats
+  let rainWorstRank=-1;        // worst band rank currently announced
+  let rainNextAnnounce=0;      // epoch ms of the next allowed repeat
+  let rainRepeatStep=0;        // how many repeats at the current band (for log widen)
+  function _rainBaseInterval(distKm){
+    if(distKm==null) return RAIN_BASE_FAR;
+    if(distKm<5)  return RAIN_BASE_NEAR;
+    if(distKm<15) return RAIN_BASE_MID;
+    return RAIN_BASE_FAR;
+  }
+  function _rainBandName(mm){
+    if(mm==null||mm<=0) return null;
+    if(mm<0.5) return "light rain";
+    if(mm<1.25) return "moderate rain";
+    if(mm<2.5) return "heavy rain";
+    return "extremely heavy rain";
+  }
+  function _rainPhrase(band, nearest, sustained){
+    const cap=band.charAt(0).toUpperCase()+band.slice(1);   // "Moderate rain"
+    const lead=sustained ? "Sustained "+band : cap;          // "Sustained heavy rain"
+    let where;
+    if(!nearest || nearest.dist_km==null) where=" is detected nearby";
+    else if(nearest.dist_km<5)            where=" detected within 5 kilometres";
+    else                                  where=" detected within "+Math.round(nearest.dist_km)+" kilometres";
+    return "Rain warning: "+lead+where+".";
+  }
+  function evaluateRainfall(rainfall){
+    if(!Array.isArray(rainfall)){ return; }
+    // Only count gauges whose reading is fresh — same rationale as rivers, so a
+    // cached-seed rainfall list can't fire on old tips (r.dt is the reading time).
+    const now=Date.now();
+    const fresh=r=>{ if(!r.dt) return false; const t=Date.parse(r.dt);
+                     return !isNaN(t) && (now-t) <= EA_READING_FRESH_MS; };
+    const wet=rainfall.map(r=>({...r, band:_rainBandName(r.mm)}))
+                      .filter(r=>r.band && fresh(r))
+                      .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
+    const byBand={}; wet.forEach(r=>{ byBand[r.band]=(byBand[r.band]||0)+1; });
+    situations.rain={count:wet.length, items:wet, byBand};
+    const raw=wet.length>0;
+    // hysteresis on the raw presence (governs the base latch on/off only)
+    if(raw){ rainOnCount++; rainOffCount=0; } else { rainOffCount++; rainOnCount=0; }
+    let want=rainLatched;
+    if(!rainLatched && rainOnCount>=RAIN_ON) want=true;
+    if(rainLatched && rainOffCount>=RAIN_OFF) want=false;
+    const wasLatched=rainLatched;
+    rainLatched=want;
+
+    // --- worst band + its nearest gauge + "sustained" test ---
+    let worst=null, worstRank=-1;
+    RAIN_BANDS.forEach(b=>{ if(byBand[b]>0 && _bandRank(b)>worstRank){ worst=b; worstRank=_bandRank(b); } });
+    const nearestAtWorst = worst ? wet.find(r=>r.band===worst) : null;
+    // sustained: more than 5 gauges within 15 km reporting AT LEAST the worst band
+    const sustained = worst
+      ? wet.filter(r=>r.dist_km!=null && r.dist_km<=15 && _bandRank(r.band)>=worstRank).length > 5
+      : false;
+
+    // --- escalation cadence (only while latched-on) ---
+    // Re-announce when the worst band steps UP, and otherwise repeat at the
+    // current band on a distance-scaled, log-widening schedule. This overrides
+    // the plain latch's one-shot behaviour so intensifying rain is heard.
+    let spoken=null, forceAnnounce=false;
+    if(want){
+      const base=_rainBaseInterval(nearestAtWorst ? nearestAtWorst.dist_km : null);
+      if(!wasLatched){
+        // fresh latch: normal first announcement, seed the cadence
+        rainWorstRank=worstRank; rainRepeatStep=0;
+        rainNextAnnounce=now+base;
+      } else if(worstRank>rainWorstRank){
+        // STEP UP — override hysteresis, announce now, reset cadence to base
+        rainWorstRank=worstRank; rainRepeatStep=0;
+        rainNextAnnounce=now+base; forceAnnounce=true;
+        spoken=_rainPhrase(worst, nearestAtWorst, sustained);
+      } else if(now>=rainNextAnnounce && worst){
+        // due a repeat at the current (or lower) band — log-widen the interval
+        rainRepeatStep++;
+        const wait=Math.min(base*Math.pow(2,rainRepeatStep), RAIN_CADENCE_CAP);
+        rainNextAnnounce=now+wait; forceAnnounce=true;
+        rainWorstRank=worstRank;   // track downward drift too
+        spoken=_rainPhrase(worst, nearestAtWorst, sustained);
+      } else {
+        // no step up and not yet due: keep worst-rank tracking current
+        rainWorstRank=worstRank;
+      }
+    } else {
+      // cleared: reset cadence state
+      rainWorstRank=-1; rainRepeatStep=0; rainNextAnnounce=0;
+    }
+
+    // The base latch still handles the very first dry->wet announcement (via
+    // set() firing on the transition). For step-ups / repeats we force-announce
+    // here without toggling the latch.
+    if(!wasLatched && want && !spoken){
+      spoken=_rainPhrase(worst||"light rain", nearestAtWorst, sustained);
+    }
+    if(forceAnnounce && spoken){
+      fire("warn", spoken);        // re-announce over the held latch
+      flashBtnSafe();
+    }
+    // keep the latch itself in sync (fires once on the initial transition)
+    set("rain","rain-situation", want, "warn", (wasLatched||forceAnnounce)?null:spoken);
+  }
+  function flashBtnSafe(){ try{ flashBtn(); }catch(e){} }
+
+  // Clear all EA alarm latches (button + on location change).
+  function clearEA(){
+    // river-situation is a crit-tier latch (decrement the crit counter);
+    // rain-situation is warn-tier (no crit counter involvement).
+    if(active["river-situation"]){ delete active["river-situation"]; critActiveCount=Math.max(0,critActiveCount-1); }
+    if(active["rain-situation"]){ delete active["rain-situation"]; }
+    situations.river=null; situations.rain=null;
+    rainOnCount=rainOffCount=0; rainLatched=false;
+    rainWorstRank=-1; rainRepeatStep=0; rainNextAnnounce=0;
+    stopCritRepeat();
+    if("speechSynthesis" in window) try{ speechSynthesis.cancel(); }catch(e){}
   }
 
   // ---- gas margin (derived) — soft notice blip only ----
@@ -4714,13 +5446,31 @@ const Alarm = (function(){
     // a tiny confirmation blip so the user knows sound is live
     tone("notice");
     updateBtn();
+    notifyWatchChange();
   }
   function disarm(){
     armed=false;
     if(critTimer){ clearInterval(critTimer); critTimer=null; }
     if("speechSynthesis" in window) try{ speechSynthesis.cancel(); }catch(e){}
     updateBtn();
+    notifyWatchChange();
   }
+  // Background-watch coordination: something outside the module (the EA rain
+  // background poller) can register here to be told the moment the "should we
+  // be watching rain?" condition changes, so it can start/stop promptly rather
+  // than waiting for its own next tick.
+  let watchChangeCb=null;
+  function onWatchChange(cb){ watchChangeCb=cb; }
+  function notifyWatchChange(){ if(watchChangeCb) try{ watchChangeCb(); }catch(e){} }
+  // True when nearby rainfall should be actively monitored regardless of
+  // whether the EA panel is open: sound armed AND the rain category enabled.
+  function rainWatchWanted(){ return armed && !!(CATS.rain && CATS.rain.on); }
+  // Same idea for river levels: armed AND the river category enabled. Drives the
+  // slower background FULL (stations) pull so river alarms work with the panel
+  // closed, not just rain.
+  function riverWatchWanted(){ return armed && !!(CATS.river && CATS.river.on); }
+  // Either kind of EA watch wanted — the background poller runs if so.
+  function eaWatchWanted(){ return rainWatchWanted() || riverWatchWanted(); }
   function toggleArm(){ armed?disarm():arm(); }
   function updateBtn(){
     const b=$("#alarmBtn"); if(b){ b.textContent=armed?"🔊 alarms":"🔇 alarms";
@@ -4746,9 +5496,11 @@ const Alarm = (function(){
         '<button class="ac-toggle'+(c.on?' on':'')+'" aria-label="toggle"></button>';
       const [testBtn, tog]=[row.querySelector(".ac-test"), row.querySelector(".ac-toggle")];
       testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
-        if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
+        if(cat==="rain") say("Rain warning: Moderate rain detected within 5 kilometres. Test.");
+        else if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
       tog.onclick=()=>{ c.on=!c.on; tog.classList.toggle("on",c.on); persist();
         // clearing a disabled category's latches happens on next evaluate()
+        notifyWatchChange();   // rain toggle may start/stop the background watch
       };
       host.appendChild(row);
     });
@@ -4759,23 +5511,33 @@ const Alarm = (function(){
     const btn=$("#alarmBtn");
     if(btn) btn.onclick=()=>{ $("#alarmModal").classList.add("open"); };
     const arm=$("#alarmArmBtn"); if(arm) arm.onclick=toggleArm;
+    const clr=$("#alarmClearBtn"); if(clr) clr.onclick=()=>{ clearEA(); flashBtn(); };
     const close=$("#alarmClose"); if(close) close.onclick=()=>$("#alarmModal").classList.remove("open");
     const back=$("#alarmModal");
     if(back) back.onclick=e=>{ if(e.target===back) back.classList.remove("open"); };
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateGas,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateGas, clearEA,
+           rainWatchWanted, riverWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();
 
 
 wireUtilIndicators();
 Alarm.wire();
+// Background rain watcher: wire to the alarm module now that it exists, and
+// evaluate the gate once (covers a load where the alarm was already armed with
+// the rain category enabled from a previous session).
+Alarm.onWatchChange(eaWatchSync);
+eaWatchSync();
 // Footer copyright — static year; amend manually when the project changes.
 (function setCopyright(){
   const el=$("#copyright"); if(!el) return;
-  el.innerHTML="© 2026 Andy Smith, G7IZU · MIT Licence";
+  el.innerHTML="© 2026 Andy Smith, G7IZU · MIT Licence"
+    +"<br><strong>The app developer is not affiliated with any of the data providers which contribute to the application. "
+    +"Grid Monitor is provided for educational and hobby purposes only. It is not to be used for operational or safety of life decisions. "
+    +"The author bares no liability whatsoever for the accuracy or inaccuracy of the data displayed</strong>";
 })();
 tick();
 setInterval(tick, REFRESH);
