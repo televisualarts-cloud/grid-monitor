@@ -93,8 +93,9 @@ Open with the **ea** button.
 - Enter an England postcode **or place name** (e.g. `SW1A 1AA` or `Sheffield`) to monitor river levels, rainfall and flood status nearby.
 - Choose a radius: **20, 40 or 80 km**.
 - **Flood alerts** appear in an accordion list (one open at a time; the first is expanded by default) and are also flagged at the very top of the main page.
-- Gauges are ordered nearest-first, grouped into distance bands. The rainfall gauges can also be shown in a rough **map** view (a toggle) that arranges them by direction and relative distance from your location.
+- Gauges are ordered nearest-first, grouped into distance bands.
 - **Click a river-level or rainfall gauge** to plot its history. Rainfall is colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy) based on 15-minute accumulation.
+- **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
 
 ---
 
@@ -104,13 +105,17 @@ Open with the **my home** button.
 
 **You need:** to be a UK Octopus Energy customer with your API credentials to hand (find them in your online Octopus account). If you haven't entered them yet, a pop-up prompts you. To change them later, click the settings **cog** (⚙). Credentials are stored by the local server in `octopus_config.json` (in the project folder); your API key is sent only to Octopus Energy to fetch your usage, and nowhere else.
 
-What you can enter: your API key, your account number (and a separate gas account number if your gas is on a different account), electricity MPAN/serial, gas MPRN/serial, unit rates and standing charges (p/kWh and p/day), your payment method (Direct Debit or non-Direct Debit), the day your billing period ends, and your preferred units.
+What you can enter: your API key, your account number (and a separate gas account number if your gas is on a different account), electricity MPAN/serial, gas MPRN/serial, unit rates and standing charges (p/kWh and p/day), your payment method (Direct Debit or non-Direct Debit), the day your billing period ends, and your gas **units**.
+
+**Gas units (important for correct costs).** Octopus's data doesn't say what unit your gas readings are in — it depends on your meter. SMETS1 meters report gas already converted to kWh; SMETS2 meters report raw volume in cubic metres (m³). The two differ by roughly 11× (each m³ is about 11.22 kWh), so getting this wrong makes your gas cost come out about 11× too high or too low. The **Units** setting in ⚙ lets you tell the app which you have — **kWh**, **m³**, or **Auto-detect**. If you pick m³, the app applies the standard industry conversion (volume × 1.02264 × calorific value ÷ 3.6) and labels the value as converted. Auto-detect is offered but is *not* reliable in every case — a genuinely low-usage month in kWh can look like m³ — so an explicit choice is recommended. The quickest way to confirm: check your Octopus bill; if it quotes gas in "m³ (Units)" and then converts to kWh, choose m³.
+
+**Unit-check flag.** If the app spots that your gas readings look inconsistent with the unit you've set (for example, configured as kWh but the numbers look like m³), a small amber "check unit?" pill appears on the gas cost cards and on the estimated-cost card. Clicking it opens the settings so you can fix the unit. The pill also appears as "confirm unit" when gas is running on a default rather than an explicit choice. It never changes any figure — it only prompts you to verify the setting.
 
 **Live tariff rates (recommended).** If you enter your account number, the app looks up your actual tariff and its real rates directly from Octopus — including how the rate has changed over time — and costs your usage against the rate that applied on each date. This stays accurate through price changes and tariff switches, which matters especially on variable tariffs. The unit rates and standing charges you type are used only as a fallback when a live tariff can't be resolved, and are labelled as such. All rates used are VAT-inclusive.
 
 What it shows:
 - **Cost cards** for electricity and gas — standing charge, today, last 7 days and this month (the month card is highlighted; electricity in cyan, gas in gold, combined total in green). Costs include the standing charge and, where live rates are available, are matched to the rate in force on each day.
-- **Tariff and Estimated Costs panel** (below the usage patterns) — shows each fuel's tariff name and current unit rate and standing charge (VAT-inclusive), plus an estimated cost for your last complete billing period (set your billing end-day in settings). This is an estimate of energy usage cost, not a bill: actual bills may differ depending on how your payments are spread out.
+- **Tariff and Estimated Costs panel** (below the usage patterns) — shows each fuel's tariff name and current unit rate and standing charge (VAT-inclusive), plus an estimated cost for your last complete billing period (set your billing end-day in settings). This is an estimate of energy usage cost, not a bill: actual bills may differ depending on how your payments are spread out, small differences in the exact billing dates, and the natural lag in Octopus delivering the most recent half-hourly readings. Where gas is read in m³, the estimate uses the converted kWh (see *Gas units* above).
 - **Usage charts** — switch between **30-min · 48h** and **daily · 2 weeks** views.
 - **Consumption patterns** — peak time, always-on baseline, overnight share, weekday vs weekend split, standing-charge share, overall trend, your dearest and cheapest days, and an annual projection.
 - Data freshness is shown, and the page refreshes itself while open.
@@ -137,44 +142,14 @@ Companion charts alongside the carpet:
 
 Built-in monitoring raises alert messages on the main page when data crosses thresholds. Alerts are classified by type, and routine operational/IT notices are shown as neutral blue "NOTICE" items rather than alarms.
 
-Audible and spoken alarms can be armed from the alarm panel, with per-category toggles. Two of the categories cover the Environment Agency data. Once armed with the relevant category enabled, these are monitored in the background whenever the dashboard is open — the EA panel no longer needs to be open (the app remembers your last location and keeps a short-lived copy of the nearby station list). Alarms only ever fire on genuinely fresh readings, so a remembered station list can start watching immediately without sounding on stale numbers:
+Audible and spoken alarms can be armed from the alarm panel, with per-category toggles. Two of the categories cover the Environment Agency data (and only work while the EA panel has loaded nearby data):
 
 - **River level high** — nearby gauges above their own normal range (each station's published typical-range high), not the rare "record" level. Fires as one aggregated alarm for the whole set rather than one per gauge.
-- **Rainfall nearby** — nearby gauges reporting rain, from light to extremely heavy, with extra hysteresis so stop/start rain doesn't spam. If the rain *intensifies* nearby, the alarm re-announces on each step up in band (overriding the hysteresis), on a cadence that is shorter for closer rain and widens the longer a level persists; "sustained" is added when several gauges nearby share the same band.
+- **Rainfall nearby** — nearby gauges reporting rain, from light to extremely heavy, with extra hysteresis so stop/start rain doesn't spam.
 
-To avoid a flood of alerts when a whole region is affected, these name up to three locations by distance (in km); if more than three are active, the nearest three are named followed by "and N other locations near you". Nearest rain/rivers are treated with greater urgency. The river repeat tone sounds at most once per hour, with a spoken situation summary every three hours. A **Clear river / rain alarms** button resets these, and they also clear automatically when you change location.
+To avoid a flood of alerts when a whole region is affected, these name up to three locations by distance ("less than 5 miles", or rounded miles); if more than three are active, the nearest three are named followed by "and N other locations near you". Nearest (within 5 miles) is treated as more urgent. The repeat tone sounds at most once per hour, with a spoken situation summary every three hours. A **Clear river / rain alarms** button resets these, and they also clear automatically when you change location.
 
 Click the **history** button (top right) to open the alert history and statistics view. Choose a window — **24 h, 7 d, 30 d, or all** — to see how often each type of alert has fired and how long they typically lasted. History is kept for up to 30 days.
-
----
-
-## Recent changes
-
-Build tags are `YYMMDD.N`; the dashboard and server are versioned independently (the footer shows both). Newest first. Base before this session: server/HTML `260817.15`.
-
-**Dashboard (`grid_dashboard.html`)**
-- **260819.15** — Routine operational/IT SYSWARN notices (IT outages, API/maintenance, test messages) classified as silent NOTICE rather than spoken warnings; spoken messages now clip at a sentence boundary instead of mid-word.
-- **260819.14** — Larger card font applied to both list and map views; rivers/rainfall column split shifted to prevent truncation.
-- **260819.13** — Map view uses the same card styling as the list (intensity colours included); nearest gauge marked with a dotted outline.
-- **260819.12** — Rainfall alarm escalation: band step-ups override hysteresis and re-announce; repeats scale with distance and widen logarithmically; "sustained" qualifier when more than five gauges within 15 km share the band. Directional map view for rain gauges added, with a list/map toggle.
-- **260819.11** — Rainfall header shows the last data-pull time (UT).
-- **260819.9 / .10** — Same-name gauges distinguished by precise distance on the reading line; reading line fixed to *rainfall · when · distance*, distance protected from truncation.
-- **260819.8** — Reverse-geocode prefers parish over ward, with a postcode-area suffix where names still collide.
-- **260819.7** — River-gauge plot x-axis label step made span-adaptive (3 h → 24 h).
-- **260819.6** — 2-hourly ticks and 6-hourly labels applied to the rainfall bar chart x-axis.
-- **260819.5** — Distances changed from miles to km; EA station list persisted (24 h metadata cache) so alarms can start on page load; reading-freshness guard prevents firing on stale readings; background watcher extended to river levels; river-gauge plot x-axis given 2-hourly ticks and 6-hourly labels.
-- **260819.1** — Setup close returns to My Home; "This is not a bill" disclaimer added to My Home; footer disclaimer reworded; Sources credit Open-Meteo → OpenWeather; rainfall announcements made informational (severity label and location-count tail removed); background rainfall watcher so rain alarms work with the EA panel closed.
-
-**Server (`grid_server.py`)**
-- **260819.9 / .10** — Gauge-name disambiguation by postcode area, falling back to precise distance for same-parish clusters.
-- **260819.8** — Parish-first reverse-geocode; `rain=1` mode on the EA endpoint for the background watcher; `get_ea` split into separate station and rainfall collectors.
-- **260819.4** — Gas supply–demand plot bridges the archive-to-now gap: live logged linepack/balance points appended after the official hourly-actual series, drawn dashed.
-- **260819.2** — EA per-endpoint diagnostics and a `--debug` flag (per-fetch logging of URL, status, timing, error body).
-
-**Across several builds**
-- `fetch_json` retries transient failures (429/5xx/timeouts) with exponential backoff and a per-host concurrency cap.
-- The main snapshot is built in parallel with an overall deadline.
-- The EA national readings index refreshes on a schedule phase-aligned to the ~15-minute publish cycle rather than a fixed timer.
 
 ---
 
@@ -201,4 +176,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 260819.15*
+*README build 260823.8*

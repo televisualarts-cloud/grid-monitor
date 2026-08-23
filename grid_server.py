@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260819.10  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260823.8  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -66,6 +66,13 @@ from pathlib import Path
 BMRS = "https://data.elexon.co.uk/bmrs/api/v1"
 CARBON = "https://api.carbonintensity.org.uk"
 UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
+
+# Single source of truth for this server's build tag. Keep it in step with the
+# "# Build YYMMDD.N" header comment above AND the dashboard's HTML build tag —
+# bump all three together on every change. It is emitted in the snapshot so the
+# dashboard footer can show the REAL running server build instead of a hard-coded
+# string that silently goes stale.
+SERVER_BUILD = "260823.8"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -280,7 +287,7 @@ def get_generation():
 def get_frequency():
     """Latest grid frequency (Hz) plus a recent history trace.
     Uses the near-real-time system/frequency endpoint (15-second cadence,
-    ~1 minute latency) with an explicit recent window. The older
+    ~1-2 minute latency) with an explicit recent window. The older
     datasets/FREQ archive feed lags to the previous midnight, so it is only
     a fallback if the live endpoint returns nothing."""
     now = datetime.now(timezone.utc)
@@ -312,6 +319,84 @@ def get_frequency():
             "trace_points": trace_points,   # timestamped, for axis labels
             "window_start": sampled[0][0] if sampled else latest_t,
             "window_end": latest_t}
+
+
+# ---- Fast frequency feed (phase-learned burst rhythm) ----------------------
+# BMRS frequency is 15-second RESOLUTION but publishes in ~2-minute BURSTS: the
+# newest timestamp sits still for ~2 min, then jumps forward ~2 min at once,
+# bringing ~8 fresh 15s points together. So we phase-learn the BURST cadence
+# (~120s) — not the 15s resolution — and fetch just after each burst is due.
+# The client then animates the dial through the burst's 15s points for a live
+# FEEL, while every displayed age stays the measured timestamp (honest: it's
+# visibly replaying data 1-2 min old, never claiming real-time).
+_freq_fast_cache = {"data": None, "ts": 0, "next_due": 0,
+                    "last_sample_t": None,   # epoch of newest sample last seen
+                    "period_s": None,        # learned burst period (~120s)
+                    "newest_age_s": None}
+FREQ_BURST_PERIOD = 120.0     # observed ~2-min publish burst cadence
+FREQ_FAST_MIN = 10.0          # never refetch more often than this (rate guard)
+FREQ_FAST_MAX = 115.0         # normal wait between bursts (just under one period)
+FREQ_PHASE_LEAD = 6.0         # poll this many s after a burst is expected
+FREQ_RETRY = 10.0             # if a burst is due but hasn't arrived, retry this often
+
+
+def get_frequency_fast():
+    """Return the freshest frequency payload, refetching only when the next
+    ~2-min publish burst is due (phase-learned). Serves cache between bursts.
+    Includes a full-resolution 15s recent tail so the client can animate the
+    dial through the newly-arrived points."""
+    c = _freq_fast_cache
+    now_mono = time.monotonic()
+    if c["data"] is not None and now_mono < c["next_due"]:
+        return c["data"]        # not due yet — serve cache, no upstream call
+    freq = get_frequency()
+    now_wall = datetime.now(timezone.utc).timestamp()
+    if not freq:
+        c["next_due"] = now_mono + FREQ_FAST_MIN
+        return c["data"]
+    newest_epoch = _ea_parse_dt(freq.get("time"))
+    # Attach a FULL-RESOLUTION recent tail (undecimated 15s points) so the client
+    # can sweep the dial through the last couple of minutes of real movement.
+    try:
+        now2 = datetime.now(timezone.utc)
+        frm2 = (now2 - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        to2 = now2.strftime("%Y-%m-%dT%H:%M:%SZ")
+        rrows = _rows(fetch_json(f"{BMRS}/system/frequency?format=json&from={frm2}&to={to2}"))
+        ru = {r["measurementTime"]: r["frequency"] for r in rrows if r.get("frequency") is not None}
+        recent = sorted(ru.items())[-40:]
+        freq["recent_points"] = [{"t": t, "hz": round(hz, 3)} for t, hz in recent]
+    except Exception:
+        freq["recent_points"] = None
+    # --- phase-learn the BURST rhythm and schedule just after the next burst ---
+    if newest_epoch is not None:
+        age = max(0.0, now_wall - newest_epoch)
+        c["newest_age_s"] = age
+        prev = c.get("last_sample_t")
+        period = c.get("period_s") or FREQ_BURST_PERIOD
+        got_new = bool(prev and newest_epoch > prev)
+        if got_new:
+            step = newest_epoch - prev
+            if 0.5 * FREQ_BURST_PERIOD <= step <= 2.0 * FREQ_BURST_PERIOD:
+                period = 0.7 * period + 0.3 * step
+                c["period_s"] = period
+        c["last_sample_t"] = newest_epoch
+        # If the freshest sample is already older than one period, the next burst
+        # is OVERDUE — retry quickly (every FREQ_RETRY) so we catch it within ~10s
+        # of it landing, rather than waiting a full period. Otherwise wait until
+        # just after the next burst is expected (phase-aligned).
+        if age >= period:
+            wait = FREQ_RETRY                       # burst overdue — poll again soon
+        else:
+            secs_to_next = (period - age) + FREQ_PHASE_LEAD
+            wait = min(max(secs_to_next, FREQ_FAST_MIN), FREQ_FAST_MAX)
+        c["next_due"] = now_mono + wait
+    else:
+        c["next_due"] = now_mono + FREQ_FAST_MIN
+        c["newest_age_s"] = None
+    freq["newest_age_s"] = c["newest_age_s"]
+    c["data"] = freq
+    c["ts"] = now_wall
+    return freq
 
 
 def get_demand():
@@ -1730,7 +1815,7 @@ def get_weather():
 # config file as a secret. Tariff rates are stored too so we can cost usage.
 OCTOPUS_BASE = "https://api.octopus.energy/v1"
 OCTOPUS_CFG_FILE = Path(__file__).with_name("octopus_config.json")
-_octopus_cfg = {"data": None}
+_octopus_cfg = {"data": None, "mtime": None}
 _octopus_cache = {"data": None, "ts": 0}
 OCTOPUS_TTL = 1800        # consumption updates ~half-hourly; refresh every 30 min
 
@@ -1740,27 +1825,113 @@ GAS_VOL_CORRECTION = 1.02264
 GAS_CALORIFIC = 39.5
 GAS_M3_TO_KWH = GAS_VOL_CORRECTION * GAS_CALORIFIC / 3.6   # ~11.22 kWh per m3
 
+# There is NO unit field in the Octopus consumption payload. SMETS1 gas meters
+# return kWh already; SMETS2 return m3. The unit is a fixed property of the
+# meter, so it is a user-declared config value (gas_units: "m3" | "kwh"), not
+# something we infer at runtime. Magnitude auto-detection is retained ONLY as a
+# soft plausibility WARNING — it never overrides the declared setting, because a
+# genuinely low-usage summer month in kWh can masquerade as m3 and mispricing by
+# ~11x is a far worse failure than asking the user to set one flag once.
+
+
+def _resolve_gas_units(cfg, results=None):
+    """Single source of truth for gas unit interpretation. Returns a dict:
+        is_m3      : bool  -- apply the m3->kWh conversion?
+        conv       : float -- multiplier to reach kWh (GAS_M3_TO_KWH or 1.0)
+        declared   : str   -- the raw configured value ("m3"/"kwh"/"auto"/unset)
+        confirmed  : bool  -- did the user explicitly declare m3 or kwh?
+        warning    : str|None -- plausibility mismatch note, if any
+
+    'results' (raw half-hourly records) is optional; when supplied it drives the
+    plausibility guard. The guard NEVER changes is_m3 for an explicit setting."""
+    raw = (cfg.get("gas_units") or "").lower().strip()
+    declared = raw or "unset"
+
+    # median half-hour consumption, if we have data to look at
+    med = None
+    if results:
+        vals = sorted(r["consumption"] for r in results if r.get("consumption"))
+        if vals:
+            med = vals[len(vals) // 2]
+
+    # Thresholds. Typical domestic half-hour reading:
+    #   kWh mode : ~0.1 - 3.0  (a quiet summer half-hour can dip to ~0.03-0.05)
+    #   m3  mode : ~0.01 - 0.3 (that same energy is ~11x smaller as volume)
+    # LOOKS_M3: at/under this, the data is more consistent with m3 than kWh —
+    #   used both to WARN and (for 'auto' only) to flip. Set at 0.15 so it spans
+    #   the bulk of the m3 range while staying under normal kWh usage.
+    # LOOKS_KWH: at/over this, the data is clearly kWh-scale — used to warn when
+    #   the meter is configured as m3 but is plainly already in kWh.
+    LOOKS_M3 = 0.15
+    LOOKS_KWH = 0.6
+
+    if raw == "m3":
+        is_m3, confirmed = True, True
+    elif raw == "kwh":
+        is_m3, confirmed = False, True
+    elif raw == "auto":
+        # explicit opt-in to detection: flip to m3 when the data looks like m3
+        is_m3 = (med is not None and med <= LOOKS_M3)
+        confirmed = False
+    else:  # unset -> conservative default: assume kWh, but flag as unconfirmed
+        is_m3, confirmed = False, False
+
+    # Plausibility guard: WARN (never act) when the data looks inconsistent with
+    # the chosen interpretation. This catches a mis-set flag loudly rather than
+    # silently mispricing by ~11x.
+    warning = None
+    if med is not None:
+        if is_m3 and med >= LOOKS_KWH:
+            warning = ("gas configured as m3 but half-hourly median is {:.3f} — "
+                       "that looks like kWh already; verify meter type").format(med)
+        elif (not is_m3) and med <= LOOKS_M3:
+            warning = ("gas configured/defaulted to kWh but half-hourly median is "
+                       "{:.3f} — that looks like m3; set gas_units=m3 if SMETS2"
+                       ).format(med)
+
+    return {"is_m3": is_m3, "conv": (GAS_M3_TO_KWH if is_m3 else 1.0),
+            "declared": declared, "confirmed": confirmed, "warning": warning}
+
 
 def _load_octopus_cfg():
-    if _octopus_cfg["data"] is not None:
+    # Re-read the file when it changes on disk (mtime). Previously the config was
+    # cached in memory for the life of the process and never re-read, so a
+    # hand-edit to octopus_config.json (e.g. adding "gas_units":"m3") had no
+    # effect until a full restart — a silent, confusing failure. Now any change
+    # to the file is picked up on the next access.
+    try:
+        mtime = OCTOPUS_CFG_FILE.stat().st_mtime
+    except OSError:
+        mtime = None
+    if _octopus_cfg["data"] is not None and _octopus_cfg.get("mtime") == mtime:
         return _octopus_cfg["data"]
     try:
         _octopus_cfg["data"] = json.loads(OCTOPUS_CFG_FILE.read_text())
     except Exception:
         _octopus_cfg["data"] = {}
+    _octopus_cfg["mtime"] = mtime
     return _octopus_cfg["data"]
 
 
 def _save_octopus_cfg(cfg):
     cur = dict(_load_octopus_cfg() or {})
     for k, v in (cfg or {}).items():
-        if v is not None:
-            cur[k] = (v.strip() if isinstance(v, str) else v)
+        if v is None:
+            continue
+        if isinstance(v, str):
+            v = v.strip()
+        cur[k] = v
     _octopus_cfg["data"] = cur
     _octopus_cache["data"] = None
     _octopus_cache["ts"] = 0
     try:
         OCTOPUS_CFG_FILE.write_text(json.dumps(cur))
+        # record the mtime we just wrote so the next _load doesn't treat our own
+        # in-memory copy as stale and re-read (harmless, but avoids a round-trip)
+        try:
+            _octopus_cfg["mtime"] = OCTOPUS_CFG_FILE.stat().st_mtime
+        except OSError:
+            _octopus_cfg["mtime"] = None
     except Exception:
         pass
     return cur
@@ -2378,22 +2549,10 @@ def get_octopus():
         try:
             gr = _octopus_consumption("gas-meter-points",
                                       cfg["gas_mprn"], cfg["gas_serial"], key, hours=1080)
-            # Unit interpretation. The old magnitude heuristic is unreliable:
-            # genuine low summer gas in kWh (~0.04/half-hour) looks the same as
-            # m3, so auto-detect could wrongly ×11.22. We therefore DEFAULT to
-            # kWh (the common Octopus case, and the safer error) unless the user
-            # explicitly sets m3. 'auto' is retained but only flips to m3 on a
-            # strong signal (median well below any plausible kWh half-hour).
-            gu = (cfg.get("gas_units") or "kwh").lower()
-            if gu == "m3":
-                gas_m3, detected = True, False
-            elif gu == "kwh":
-                gas_m3, detected = False, False
-            else:   # 'auto' — conservative: only m3 if unmistakably tiny
-                vals = sorted(r["consumption"] for r in gr if r.get("consumption"))
-                med = vals[len(vals)//2] if vals else 0
-                gas_m3 = bool(vals) and med < 0.08   # far below typical kWh usage
-                detected = True
+            # Unit interpretation is resolved centrally (see _resolve_gas_units).
+            # The setting is user-declared; detection only warns, never overrides.
+            gres = _resolve_gas_units(cfg, gr)
+            gas_m3 = gres["is_m3"]
             gt = tariffs.get("gas", {})
             out["gas"] = _summarise_consumption(
                 gr, float(cfg.get("gas_unit_p", 5.56)), float(cfg.get("gas_standing_p", 33.35)),
@@ -2402,9 +2561,13 @@ def get_octopus():
             if out["gas"] is not None:
                 out["gas"]["_unit_periods"] = gt.get("unit")
                 out["gas"]["_standing_periods"] = gt.get("standing")
-            if out["gas"] is not None:
-                out["gas"]["unit_autodetected"] = detected
                 out["gas"]["unit_is_m3"] = gas_m3
+                out["gas"]["unit_declared"] = gres["declared"]
+                out["gas"]["unit_confirmed"] = gres["confirmed"]
+                out["gas"]["unit_autodetected"] = (gres["declared"] == "auto")
+                if gres["warning"]:
+                    out["gas"]["unit_warning"] = gres["warning"]
+                    out.setdefault("warnings", []).append("Gas: " + gres["warning"])
             if out["gas"] is None and not gr:
                 out["errors"].append("No gas readings yet.")
         except urllib.error.HTTPError as e:
@@ -2470,8 +2633,7 @@ def get_octopus():
                 mconv = 1.0
                 if s.get("_kind") == "gas":
                     cfg2 = _load_octopus_cfg() or {}
-                    if (cfg2.get("gas_units", "kwh").lower() == "m3"):
-                        mconv = GAS_M3_TO_KWH
+                    mconv = _resolve_gas_units(cfg2)["conv"]
                 kwh = mtot["kwh"] * mconv
                 prev_kwh = (mtot["prev_kwh"] * mconv) if mtot.get("prev_kwh") is not None else None
                 up = s.get("_unit_periods"); sp = s.get("_standing_periods")
@@ -3069,7 +3231,7 @@ def get_octopus_carpet(months_sel=None, fuel="electricity", interpolate=True, sc
         if not (cfg.get("gas_mprn") and cfg.get("gas_serial")):
             return {"error": "gas not configured"}
         kind, point, serial = "gas-meter-points", cfg["gas_mprn"], cfg["gas_serial"]
-        conv = GAS_M3_TO_KWH if (cfg.get("gas_units", "kwh").lower() == "m3") else 1.0
+        conv = _resolve_gas_units(cfg)["conv"]
     else:
         kind, point, serial = "electricity-meter-points", cfg["elec_mpan"], cfg["elec_serial"]
         conv = 1.0
@@ -3378,63 +3540,53 @@ def get_gas():
         # over time). Attach the operator's Forecast Minimum Linepack as a floor.
         api_lp = get_gas_linepack_history(48)
         if api_lp and api_lp.get("actual"):
-            # Merge policy — live-primary with archive as the deep backfill:
-            #  * The API hourly-actual is authoritative up to its LAST hour, but
-            #    it lags ~13-14h behind now (D+1 publication). Over that stretch
-            #    the linepack line is the official series; balance is annotated
-            #    from the local log where we have a live sample for that hour.
-            #  * Beyond the archive's last hour there is a GAP up to now. We
-            #    bridge it by APPENDING the local-log points captured after that
-            #    hour — real measured linepack AND real measured supply-demand
-            #    balance (s-d), at full live resolution. This is the higher-res
-            #    recent tail; over time it's what the whole recent portion of the
-            #    plot is built from, exactly as intended.
+            # Merge policy — LIVE-PRIMARY, archive as gap-fill:
+            #  * Wherever we have a locally-logged LIVE sample, use it — that's
+            #    the high-resolution, real measured linepack + supply-demand. Over
+            #    a full day of running this is most of the window.
+            #  * The official hourly-actual archive is used only to FILL STRETCHES
+            #    with no live data (typically before local logging began, or gaps
+            #    from downtime). This backfills the plot on a fresh start yet lets
+            #    the accumulated high-res log take over as it fills in.
+            #  * Each point is tagged bridge=True (live/high-res) or False
+            #    (archive/hourly) so the frontend can still draw them distinctly
+            #    and never present derived-from-archive data as live.
             actual = api_lp["actual"]
-            last_arch_t = actual[-1]["t"]
-            try:
-                last_arch_dt = datetime.fromisoformat(last_arch_t.replace("Z", "+00:00"))
-            except Exception:
-                last_arch_dt = None
 
-            # balance annotation for the archive stretch, keyed by hour
-            bal_by_hour = {}
-            for p in local_hist:
-                if p.get("s") is not None and p.get("d") is not None:
-                    bal_by_hour[p["t"][:13]] = round(p["s"] - p["d"], 1)
-
-            hist = []
-            for p in actual:
-                hist.append({"t": p["t"], "lp": p["v"],
-                             "bal": bal_by_hour.get(p["t"][:13]),
-                             "bridge": False})   # official hourly-actual series
-
-            # append the live tail: local-log points newer than the archive's
-            # last hour, with real measured linepack + balance.
-            appended = 0
+            # 1) start from all live-log points (high-res, measured)
+            live_pts = []
+            live_hours = set()
             for p in local_hist:
                 if p.get("lp") is None:
                     continue
-                try:
-                    pdt = datetime.fromisoformat(p["t"].replace("Z", "+00:00"))
-                except Exception:
-                    continue
-                if last_arch_dt is not None and pdt <= last_arch_dt:
-                    continue   # inside the archive's authoritative span — skip
                 bal = (round(p["s"] - p["d"], 1)
                        if (p.get("s") is not None and p.get("d") is not None) else None)
-                hist.append({"t": p["t"], "lp": p["lp"], "bal": bal,
-                             "bridge": True})    # live measured bridge tail
-                appended += 1
+                live_pts.append({"t": p["t"], "lp": p["lp"], "bal": bal,
+                                 "bridge": True})   # live measured, high-res
+                live_hours.add(p["t"][:13])         # YYYY-MM-DDTHH bucket
 
+            # 2) add archive hours ONLY where no live sample exists for that hour
+            arch_pts = []
+            for p in actual:
+                if p["t"][:13] in live_hours:
+                    continue   # we have live data for this hour — prefer it
+                arch_pts.append({"t": p["t"], "lp": p["v"],
+                                 "bal": None,        # archive carries no live balance
+                                 "bridge": False})   # official hourly-actual
+
+            hist = live_pts + arch_pts
             hist.sort(key=lambda r: r["t"])
             out["history"] = hist
             out["linepack_min_forecast"] = api_lp.get("min_forecast")
             src = api_lp.get("source")
-            if appended:
-                src += f" + {appended} live bridge pt{'s' if appended != 1 else ''}"
+            n_live = len(live_pts)
+            n_arch = len(arch_pts)
+            if n_live:
+                src += f" + {n_live} live pt{'s' if n_live != 1 else ''}"
             out["history_source"] = src
-            out["bridge_points"] = appended
-            out["archive_last_t"] = last_arch_t
+            out["bridge_points"] = n_live
+            out["archive_fill_points"] = n_arch
+            out["archive_last_t"] = actual[-1]["t"] if actual else None
         else:
             # fallback: locally-logged history (fills over time). All live
             # measured, so every point is a bridge point by definition.
@@ -3650,6 +3802,212 @@ EA_TTL = 300              # 5 min; readings change at most every 15 min
 _ea_rain_cache = {}       # rain-only overviews (background watcher) — same key
 _ea_floods_cache = {"data": None, "ts": 0}
 EA_FLOODS_TTL = 300
+# Wind (Open-Meteo) has its OWN cache + TTL, independent of the 5-min EA cache.
+# Open-Meteo's data only updates every ~15 min and each of the 9 ring points
+# counts against its daily quota, so refreshing on the general EA cadence wasted
+# the free-tier allowance. 30 min = 2 fetches/hour: still twice the data's own
+# update rate (never miss a refresh) but ~6x fewer calls than before.
+_ea_wind_cache = {}       # keyed by (round(lat,2), round(lon,2)) -> {"wind":..., "ts":...}
+EA_WIND_TTL = 900         # 15 min (4 fetches/hour)
+# Wind uses OpenWeather (single-point current weather) on its OWN daily budget,
+# separate from the Resource Conditions budget. 1 call per refresh × 4/hour ×
+# 24h = 96/day, under this 100 ceiling.
+WIND_DAILY_MAX = 100
+WIND_BUDGET_FILE = Path(__file__).with_name("wind_budget.json")
+_wind_budget = {"date": None, "count": 0}
+
+def _wind_budget_load():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _wind_budget["date"] == today:
+        return _wind_budget
+    try:
+        if WIND_BUDGET_FILE.exists():
+            stored = json.loads(WIND_BUDGET_FILE.read_text())
+        else:
+            stored = {}
+    except Exception:
+        stored = {}
+    if stored.get("date") == today:
+        _wind_budget["date"] = today
+        _wind_budget["count"] = int(stored.get("count", 0))
+    else:
+        _wind_budget["date"] = today
+        _wind_budget["count"] = 0
+        _wind_budget_save()
+    return _wind_budget
+
+def _wind_budget_save():
+    try:
+        WIND_BUDGET_FILE.write_text(json.dumps(_wind_budget))
+    except Exception:
+        pass
+
+def _wind_budget_remaining():
+    return max(0, WIND_DAILY_MAX - _wind_budget_load()["count"])
+
+def _wind_budget_spend(n):
+    b = _wind_budget_load()
+    b["count"] += n
+    _wind_budget_save()
+
+
+# ---- Pressure tendency (3-hour rolling, survives restarts) -----------------
+# Log MSL pressure per location so the 3-hour trend persists across page
+# refreshes and server restarts. Tendency bands follow the standard synoptic /
+# Met Office 3-hour magnitudes (mb per 3h): steady <0.1, slowly 0.1-1.5,
+# (moderate) 1.6-3.5, rapidly >3.5. If <3h of history exists we use the longest
+# span available and scale it to a 3-hour-equivalent rate, so a fresh log still
+# gives a sensible trend rather than nothing.
+PRESSURE_LOG = Path(__file__).with_name("pressure_history.json")
+PRESSURE_LOG_HOURS = 4
+
+# Wind-direction history per location, for the dial's fading 3-hour tick ring.
+WINDDIR_LOG = Path(__file__).with_name("winddir_history.json")
+WINDDIR_LOG_HOURS = 3
+
+def _log_winddir(lat, lon, deg, speed_ms):
+    """Append current wind direction for this location, prune to 3h, and return
+    a list of {age_s, dir_deg, speed_ms} newest-last for the tick ring. The age
+    lets the client fade each tick by how old it is. Never raises."""
+    if deg is None:
+        return None
+    key = f"{round(lat,2)},{round(lon,2)}"
+    now = datetime.now(timezone.utc)
+    try:
+        store = {}
+        if WINDDIR_LOG.exists():
+            try:
+                store = json.loads(WINDDIR_LOG.read_text())
+            except Exception:
+                store = {}
+        series = store.get(key, {})
+        series[now.isoformat()] = {"d": round(deg, 1),
+                                   "s": round(speed_ms, 1) if speed_ms is not None else None}
+        cutoff = now - timedelta(hours=WINDDIR_LOG_HOURS)
+        series = {k: v for k, v in series.items() if _keep_after(k, cutoff)}
+        store[key] = series
+        store = {k: v for k, v in store.items() if v}
+        WINDDIR_LOG.write_text(json.dumps(store))
+        out = []
+        for k, v in sorted(series.items()):
+            try:
+                age = (now - datetime.fromisoformat(k.replace("Z", "+00:00"))).total_seconds()
+            except Exception:
+                continue
+            out.append({"age_s": round(age), "dir_deg": v.get("d"), "speed_ms": v.get("s")})
+        return out
+    except Exception as e:
+        dbg("winddir log failed:", e)
+        return None
+
+def _dir_range(dirs):
+    """Angular span (degrees) covered by a set of bearings, handling wrap-around
+    (e.g. 350 and 10 span 20, not 340). Returns {min_deg, max_deg, span_deg} or
+    None. min/max are the arc endpoints going clockwise from min to max."""
+    if not dirs or len(dirs) < 2:
+        return None
+    ds = sorted(d % 360 for d in dirs)
+    # largest gap between consecutive bearings (circular) -> the covered arc is
+    # the complement of that gap
+    gaps = []
+    for i in range(len(ds)):
+        a = ds[i]
+        b = ds[(i + 1) % len(ds)]
+        gap = (b - a) % 360
+        gaps.append((gap, a, b))
+    biggest = max(gaps, key=lambda g: g[0])
+    span = 360 - biggest[0]
+    # arc runs clockwise from the bearing after the biggest gap, to the one before
+    start = biggest[2]           # just after the gap
+    end = biggest[1]             # just before the gap
+    return {"min_deg": round(start), "max_deg": round(end), "span_deg": round(span)}
+
+def _log_pressure(lat, lon, hpa):
+    """Append current pressure for this location, prune to PRESSURE_LOG_HOURS,
+    and return the tendency dict {trend, change_3h, span_h} or None. Never raises."""
+    if hpa is None:
+        return None
+    key = f"{round(lat,2)},{round(lon,2)}"
+    now = datetime.now(timezone.utc)
+    try:
+        store = {}
+        if PRESSURE_LOG.exists():
+            try:
+                store = json.loads(PRESSURE_LOG.read_text())
+            except Exception:
+                store = {}
+        series = store.get(key, {})
+        series[now.isoformat()] = round(hpa, 1)
+        # prune this location's series
+        cutoff = now - timedelta(hours=PRESSURE_LOG_HOURS)
+        series = {k: v for k, v in series.items()
+                  if _keep_after(k, cutoff)}
+        store[key] = series
+        # also drop any location series that is now empty
+        store = {k: v for k, v in store.items() if v}
+        PRESSURE_LOG.write_text(json.dumps(store))
+        return _pressure_tendency(series, now)
+    except Exception as e:
+        dbg("pressure log failed:", e)
+        return None
+
+def _keep_after(iso, cutoff):
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")) >= cutoff
+    except Exception:
+        return False
+
+def _pressure_tendency(series, now):
+    """Given {iso: hPa} for one location, compute the 3-hour tendency (or the
+    longest span available, scaled to a 3h-equivalent). Returns a dict or None."""
+    pts = []
+    for k, v in series.items():
+        try:
+            pts.append((datetime.fromisoformat(k.replace("Z", "+00:00")), v))
+        except Exception:
+            continue
+    if len(pts) < 2:
+        return None
+    pts.sort()
+    latest_t, latest_v = pts[-1]
+    # find the earliest sample within the last 3h; if none older than a few
+    # minutes, we can't say anything yet
+    target = latest_t - timedelta(hours=3)
+    ref = None
+    for t, v in pts:
+        if t >= target:
+            ref = (t, v)
+            break
+    if ref is None:
+        ref = pts[0]
+    ref_t, ref_v = ref
+    span_h = (latest_t - ref_t).total_seconds() / 3600.0
+    if span_h < 0.25:            # need at least ~15 min of separation
+        return None
+    raw_change = latest_v - ref_v            # over the actual span
+    # For a short span, extrapolating to a full 3h rate can wildly overstate a
+    # brief fluctuation (e.g. -1mb in 40min -> "-4.6mb/3h rapidly"). So only scale
+    # up modestly: use the raw change directly once we have >=2h of span, and for
+    # shorter spans blend toward the raw change rather than the full projection.
+    if span_h >= 2.0:
+        change_3h = raw_change * (3.0 / span_h)
+    else:
+        # cap the projection at 1.5x the raw change so short bursts don't inflate
+        projected = raw_change * (3.0 / span_h)
+        change_3h = max(-abs(raw_change)*1.5, min(abs(raw_change)*1.5, projected)) \
+                    if raw_change else 0.0
+    mag = abs(change_3h)
+    if mag < 0.1:
+        word = "Steady"
+    elif change_3h > 0:
+        word = ("Rising rapidly" if mag > 3.5 else
+                "Rising" if mag > 1.5 else "Rising slowly")
+    else:
+        word = ("Falling rapidly" if mag > 3.5 else
+                "Falling" if mag > 1.5 else "Falling slowly")
+    return {"trend": word,
+            "change_3h": round(change_3h, 1),
+            "span_h": round(span_h, 1)}
 _ea_station_cache = {}    # keyed by station ref -> {"data":..., "ts":...}
 EA_STATION_TTL = 300
 # National latest-readings, fetched in ONE call and indexed by measure URI.
@@ -3883,13 +4241,13 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
             return rc["data"]
 
     out = {"lat": lat, "lon": lon, "dist": dist, "stations": [],
-           "rainfall": [], "attribution": EA_ATTRIB, "error": None,
+           "rainfall": [], "wind": None, "attribution": EA_ATTRIB, "error": None,
            "rain_only": rain_only,
            # Per-endpoint diagnostics: which of the underlying EA calls failed
            # and why. The dashboard can show this so a partial failure (floods
            # OK, stations/rainfall 503) is visible rather than a blank panel.
            "diag": {"latest_index": None, "stations": None, "rainfall": None,
-                    "latest_stale": False},
+                    "latest_stale": False, "wind": None},
            "generated": datetime.now(timezone.utc).isoformat()}
     try:
         latest = _ea_latest_index()
@@ -3899,6 +4257,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
         if not rain_only:
             _ea_collect_stations(out, lat, lon, dist, latest)
         _ea_collect_rainfall(out, lat, lon, dist, latest)
+        if not rain_only:
+            _ea_collect_wind(out, lat, lon)
     except Exception as e:
         out["error"] = _ea_errstr(e)
     # Roll a concise top-level error from whichever sub-call failed, so existing
@@ -4072,6 +4432,247 @@ def _ea_collect_rainfall(out, lat, lon, dist, latest):
         dbg("ea rainfall geocode failed (non-fatal):", _ea_errstr(e))
 
 
+# ---- Local wind field (Open-Meteo, keyless, batched) -----------------------
+# EA stations barely carry wind (~12 nationally, none near most users), so a
+# local wind field comes from Open-Meteo instead: MODELLED data, keyless, and
+# — critically — it returns many points in ONE batched call, so sampling a ring
+# around the user's location costs a single request per EA refresh and does not
+# touch the OpenWeather daily budget. Uniform coverage everywhere, so any user
+# in any area gets wind. Labelled modelled in the payload (honesty convention).
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+WIND_RING_KM = 18.0        # outer sample points ~15-20 km from home
+# 8 compass bearings for the outer ring (home is the 9th, central point).
+WIND_BEARINGS = [("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
+                 ("S", 180), ("SW", 225), ("W", 270), ("NW", 315)]
+
+
+def _offset_latlon(lat, lon, bearing_deg, dist_km):
+    """Point dist_km from (lat,lon) along a compass bearing. Small-distance
+    equirectangular offset — plenty accurate at ~18 km."""
+    R = 6371.0
+    b = math.radians(bearing_deg)
+    dlat = (dist_km * math.cos(b)) / R
+    dlon = (dist_km * math.sin(b)) / (R * math.cos(math.radians(lat)))
+    return (lat + math.degrees(dlat), lon + math.degrees(dlon))
+
+
+def _stale_wind(cached, reason=None):
+    """Return a copy of a cached wind reading marked stale, with its age in
+    seconds computed from the cache timestamp. Used whenever block 4 falls back
+    to a cached OpenWeather reading (TTL hit, budget/key unavailable, or a failed
+    fetch) so the dashboard can show the reading's age and a stale marker rather
+    than presenting an old sky observation as if it were live. Honesty over
+    plausibility: an unlabelled stale reading (e.g. '99% overcast' hours after it
+    cleared) is exactly the failure this guards against."""
+    if not cached or not cached.get("wind"):
+        return None
+    w = dict(cached["wind"])
+    ts = cached.get("ts")
+    w["stale"] = True
+    if ts is not None:
+        w["stale_age_s"] = round(time.time() - ts)
+    if reason:
+        w["stale_reason"] = reason
+    return w
+
+
+_om_cloud_cache = {}          # keyed by (round(lat,2), round(lon,2)) -> {"data":..., "ts":...}
+OM_CLOUD_TTL = 900            # 15 min: matches Open-Meteo's own update cadence
+
+# WMO weather-code -> (main, description). Descriptions use the SAME vocabulary
+# family as OpenWeather ("clear sky", "…clouds", "rain") so the dashboard's
+# colour logic and labels keep working unchanged. Cloud-only codes (0-3) get a
+# more precise description from the numeric cloud % below.
+_WMO = {
+    0: ("Clear", "clear sky"), 1: ("Clouds", "mainly clear"),
+    2: ("Clouds", "partly cloudy"), 3: ("Clouds", "overcast clouds"),
+    45: ("Fog", "fog"), 48: ("Fog", "depositing rime fog"),
+    51: ("Drizzle", "light drizzle"), 53: ("Drizzle", "drizzle"),
+    55: ("Drizzle", "dense drizzle"),
+    56: ("Drizzle", "freezing drizzle"), 57: ("Drizzle", "dense freezing drizzle"),
+    61: ("Rain", "light rain"), 63: ("Rain", "rain"), 65: ("Rain", "heavy rain"),
+    66: ("Rain", "freezing rain"), 67: ("Rain", "heavy freezing rain"),
+    71: ("Snow", "light snow"), 73: ("Snow", "snow"), 75: ("Snow", "heavy snow"),
+    77: ("Snow", "snow grains"),
+    80: ("Rain", "light rain showers"), 81: ("Rain", "rain showers"),
+    82: ("Rain", "violent rain showers"),
+    85: ("Snow", "snow showers"), 86: ("Snow", "heavy snow showers"),
+    95: ("Thunderstorm", "thunderstorm"),
+    96: ("Thunderstorm", "thunderstorm with hail"),
+    99: ("Thunderstorm", "thunderstorm with heavy hail"),
+}
+
+def _cloud_band_desc(pct):
+    """Map a cloud-cover percentage to an OpenWeather-style description.
+    Bands mirror OWM's own (few 11-25, scattered 25-50, broken 51-84,
+    overcast 85+) so labels read consistently across sources."""
+    if pct is None:
+        return None
+    if pct <= 10:  return "clear sky"
+    if pct <= 25:  return "few clouds"
+    if pct <= 50:  return "scattered clouds"
+    if pct <= 84:  return "broken clouds"
+    return "overcast clouds"
+
+def _openmeteo_cloud(lat, lon, timeout=12):
+    """Fetch current cloud cover + weather code from Open-Meteo (keyless).
+    Returns {clouds_pct, cond_main, cond_desc, source} or None on failure.
+    Used as the PRIMARY source for block 4's cloud/description because OWM's
+    Current Weather cloud field has proved unreliable for this location; OWM
+    remains the backup when Open-Meteo is unavailable."""
+    key = (round(lat, 2), round(lon, 2))
+    c = _om_cloud_cache.get(key)
+    if c and time.time() - c["ts"] < OM_CLOUD_TTL:
+        return c["data"]
+    try:
+        url = ("https://api.open-meteo.com/v1/forecast"
+               f"?latitude={lat}&longitude={lon}"
+               "&current=cloud_cover,weather_code")
+        d = fetch_json(url, timeout=timeout)
+        cur = (d or {}).get("current") or {}
+        pct = cur.get("cloud_cover")
+        code = cur.get("weather_code")
+        main, wdesc = _WMO.get(code, (None, None))
+        # For plain cloud codes, prefer the numeric-band description (finer than
+        # the code's coarse label); for weather codes (rain/fog/etc) keep the code.
+        if code in (0, 1, 2, 3) or code is None:
+            desc = _cloud_band_desc(pct) or wdesc
+            main = "Clear" if (pct is not None and pct <= 10) else "Clouds"
+        else:
+            desc = wdesc
+        data = {"clouds_pct": pct, "cond_main": main, "cond_desc": desc,
+                "source": "Open-Meteo"}
+        _om_cloud_cache[key] = {"data": data, "ts": time.time()}
+        return data
+    except Exception as e:
+        dbg("open-meteo cloud fetch failed:", _ea_errstr(e))
+        return None
+
+
+def _ea_collect_wind(out, lat, lon):
+    """Attach the local wind reading (home point only) from OpenWeather's Current
+    Weather Data endpoint to out['wind']. Cached on its OWN 15-min TTL
+    (EA_WIND_TTL, 4 fetches/hour) and its OWN daily budget (WIND_DAILY_MAX,
+    separate from Resource Conditions). Non-fatal: a failure leaves the last good
+    cached reading in place rather than blanking the dials.
+
+    Note: OpenWeather's current-weather endpoint is single-point only (no batched
+    multi-coordinate call), so the former 8-point Open-Meteo area-spread ring is
+    not available here — the ring is omitted and the dials show the home point."""
+    wkey = (round(lat, 2), round(lon, 2))
+    cached = _ea_wind_cache.get(wkey)
+    if cached and time.time() - cached["ts"] < EA_WIND_TTL:
+        out["wind"] = cached["wind"]
+        return
+    key = _load_weather_key()
+    if not key:
+        out["diag"]["wind"] = "no OpenWeather key"
+        if cached:
+            out["wind"] = _stale_wind(cached, "no OpenWeather key")
+        return
+    if _wind_budget_remaining() < 1:
+        out["diag"]["wind"] = "wind daily budget reached"
+        if cached:
+            out["wind"] = _stale_wind(cached, "daily fetch budget reached")
+        return
+    try:
+        data = _openweather_one(lat, lon, key, timeout=12)
+        _wind_budget_spend(1)
+        w = (data or {}).get("wind") or {}
+        home = {
+            "speed_ms": w.get("speed"),
+            "dir_deg": w.get("deg"),
+            "gust_ms": w.get("gust"),
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+        # Everything below comes free in the SAME response we already fetch for
+        # wind — no extra API cost. Dew point is not supplied by this endpoint,
+        # so it's DERIVED from temp+humidity (Magnus formula) and tagged derived.
+        m = (data or {}).get("main") or {}
+        clouds = (data or {}).get("clouds") or {}
+        rain = (data or {}).get("rain") or {}
+        snow = (data or {}).get("snow") or {}
+        wx = ((data or {}).get("weather") or [{}])[0]
+        sysd = (data or {}).get("sys") or {}
+        temp = m.get("temp")
+        rh = m.get("humidity")
+        dew = None
+        if temp is not None and rh:
+            try:
+                import math as _math
+                a, b = 17.62, 243.12
+                g_ = (a * temp) / (b + temp) + _math.log(max(rh, 1) / 100.0)
+                dew = round((b * g_) / (a - g_), 1)
+            except Exception:
+                dew = None
+        cond = {
+            "temp": temp,
+            "feels_like": m.get("feels_like"),
+            "temp_min": m.get("temp_min"),
+            "temp_max": m.get("temp_max"),
+            "pressure": m.get("pressure"),          # hPa == mB
+            "humidity": rh,
+            "dew_point": dew,                        # derived
+            "dew_point_derived": dew is not None,
+            "clouds_pct": clouds.get("all"),
+            "visibility_m": (data or {}).get("visibility"),
+            "rain_1h": rain.get("1h"),
+            "snow_1h": snow.get("1h"),
+            "cond_main": wx.get("main"),
+            "cond_desc": wx.get("description"),
+            "sunrise": sysd.get("sunrise"),          # Unix UTC
+            "sunset": sysd.get("sunset"),
+            "tz_offset": (data or {}).get("timezone"),  # location's UTC offset (s)
+        }
+        # Cloud + description: OWM's Current Weather cloud field has proved
+        # unreliable for this location (repeatedly reporting overcast against a
+        # clear sky and satellite). Open-Meteo is the PRIMARY source for these two
+        # fields; OWM values above stay only as the backup when OM is unavailable.
+        # cloud_source records which one actually supplied the shown value, so the
+        # dashboard can stay honest about provenance. Temp/pressure/wind remain OWM.
+        om = _openmeteo_cloud(lat, lon)
+        if om and om.get("clouds_pct") is not None:
+            cond["clouds_pct"] = om["clouds_pct"]
+            cond["cond_main"] = om["cond_main"]
+            cond["cond_desc"] = om["cond_desc"]
+            cond["cloud_source"] = "Open-Meteo"
+        else:
+            cond["cloud_source"] = "OpenWeather (Open-Meteo unavailable)"
+        # 3-hour pressure tendency (persisted per location so it survives refresh)
+        try:
+            cond["pressure_tendency"] = _log_pressure(lat, lon, m.get("pressure"))
+        except Exception:
+            cond["pressure_tendency"] = None
+        wind = {
+            "home": home,
+            "ring": [],                    # no ring: OpenWeather can't batch points
+            "ring_km": None,
+            "modelled": False,             # this is a station-model current obs
+            "source": "OpenWeather",
+            "generated": datetime.now(timezone.utc).isoformat(),
+            "conditions": cond,
+        }
+        # 3-hour direction history for the dial's fading tick ring (persisted)
+        try:
+            hist = _log_winddir(lat, lon, w.get("deg"), w.get("speed"))
+            wind["dir_history"] = hist
+            if hist:
+                dirs = [h["dir_deg"] for h in hist if h.get("dir_deg") is not None]
+                wind["dir_range"] = _dir_range(dirs)
+        except Exception:
+            wind["dir_history"] = None
+        out["wind"] = wind
+        _ea_wind_cache[wkey] = {"wind": wind, "ts": time.time()}
+    except Exception as e:
+        out["diag"]["wind"] = _ea_errstr(e)
+        dbg("ea wind (openweather) failed:", out["diag"]["wind"])
+        # reuse the last good reading if we have one, so a transient failure or a
+        # hit daily limit doesn't blank the dials — clearly marked as the cached
+        # (stale) copy so an old sky reading can't masquerade as live.
+        if cached:
+            out["wind"] = _stale_wind(cached, "last fetch failed")
+
+
 def get_ea_station(ref):
     """Drill-down for one station: its measures plus a recent readings trace
     (last ~day) for each, and the station's typical-range scale for context."""
@@ -4164,6 +4765,12 @@ MARGIN_ALERT_MW = 2000    # below this = seriously tight
 DEMAND_RAMP_WARN_MW = 3000  # >3 GW swing in an hour is a steep national ramp
 IMPORT_SHARE_WARN = 25.0    # net imports supplying >25% of demand = concentrated
 IMPORT_SHARE_ALERT = 35.0   # >35% = interconnector trip is a very large infeed
+# Export-side mirror: when GB is a large NET EXPORTER, domestic generation runs
+# well above demand and the interconnectors are carrying a big share of that
+# surplus out. Same magnitudes as the import thresholds (share is negative when
+# exporting, so we compare the magnitude).
+EXPORT_SHARE_WARN = 25.0    # exports absorbing >25% of demand-equivalent
+EXPORT_SHARE_ALERT = 35.0   # >35% = losing export capability sheds a large surplus
 
 # Severity ranking so the bar is ordered worst-first, matching how an alarm
 # list is triaged. Higher = more urgent.
@@ -4369,10 +4976,10 @@ def build_alerts(snap):
                 "hour) while margin is already tightening — dispatch is working "
                 "hard to keep pace.", tag="DEMAND"))
 
-    # ---- 5. Import dependence (interconnector concentration) ----------------
+    # ---- 5. Import / export dependence (interconnector concentration) -------
     ss = snap.get("supply_stack")
     if ss and ss.get("import_share_pct") is not None:
-        share = ss["import_share_pct"]
+        share = ss["import_share_pct"]        # +ve = importing, -ve = exporting
         infeed = (r or {}).get("largest_infeed_mw")
         if share >= IMPORT_SHARE_ALERT:
             alerts.append(_a("warning", "High import dependence",
@@ -4383,6 +4990,18 @@ def build_alerts(snap):
             alerts.append(_a("notice", "Notable import dependence",
                 f"Net imports are supplying {share:.0f}% of demand "
                 f"({ss.get('net_imports_mw', 0):,} MW).", tag="IMPORT"))
+        elif share <= -EXPORT_SHARE_ALERT:
+            exp_mw = -ss.get("net_imports_mw", 0)
+            alerts.append(_a("warning", "High export level",
+                f"GB is a large net exporter — exports equal {abs(share):.0f}% of "
+                f"demand ({exp_mw:,} MW). Domestic generation is running well above "
+                "demand; loss of export capability would leave a large surplus to "
+                "shed.", tag="EXPORT"))
+        elif share <= -EXPORT_SHARE_WARN:
+            exp_mw = -ss.get("net_imports_mw", 0)
+            alerts.append(_a("notice", "Notable net export",
+                f"GB is net exporting — exports equal {abs(share):.0f}% of demand "
+                f"({exp_mw:,} MW).", tag="EXPORT"))
 
     # ---- 6. Official NESO system warnings (layered on top) ------------------
     for w in (snap.get("warnings") or []):
@@ -4665,6 +5284,7 @@ SNAP_SOURCES = [
 def build_snapshot():
     snap = {"generated": datetime.now(timezone.utc).isoformat(),
             "backend_version": "2026-08-07a",   # bump when adding data fields
+            "server_build": SERVER_BUILD,       # shown in the dashboard footer
             "features": ["solar", "freq_trace_points", "weather_batch",
                          "operating_reserve", "supply_stack", "weather_openweather",
                          "weather_resource_sites", "generator_units"],
@@ -4977,7 +5597,10 @@ class Handler(BaseHTTPRequestHandler):
                 "elec_standing_p": cfg.get("elec_standing_p", ""),
                 "gas_unit_p": cfg.get("gas_unit_p", ""),
                 "gas_standing_p": cfg.get("gas_standing_p", ""),
-                "gas_units": cfg.get("gas_units", "auto"),
+                # Report the raw stored value; empty means unset (the resolver
+                # treats unset as kWh-but-unconfirmed). This matches the actual
+                # runtime behaviour rather than the old misleading "auto".
+                "gas_units": cfg.get("gas_units", ""),
             })
         elif self.path.startswith("/api/octopus"):
             # On-demand home consumption data (the pop-out fetches when opened).
@@ -4986,6 +5609,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"needs_config": False,
                                  "errors": [f"{type(e).__name__}: {e}"]}, 500)
+        elif self.path.startswith("/api/frequency"):
+            # Lightweight, phase-learned frequency feed for the fast dial poll.
+            # Cheap between due times (serves cache); only hits upstream when a
+            # new 15s sample is expected. Keeps the rest of the page on 60s.
+            try:
+                self._send_json(get_frequency_fast() or {"error": "no frequency data"})
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/units"):
             # Generator drill-down data, served on demand (the pop-out fetches
             # this only when opened, so it doesn't bloat the 60s snapshot).

@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260819.15  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260823.8  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -253,6 +253,8 @@
     letter-spacing:.05em;margin-top:3px}
   .freq-dial-read .fdr-range{font-family:var(--mono);font-size:10px;color:var(--ink-dim);
     margin-top:9px;letter-spacing:.03em}
+  .freq-dial-read .fdr-rocof{font-family:var(--mono);font-size:10px;color:var(--ink-faint);
+    margin-top:3px;letter-spacing:.03em}
   #freqTrace{width:100%;height:120px;display:block;margin-top:6px}
   .freq-yaxis{display:none}
   #freqTimeAxis{padding-left:30px}  /* align with canvas plot area (past y-gutter) */
@@ -330,13 +332,18 @@
     background:repeating-linear-gradient(45deg,rgba(255,92,108,.85),
       rgba(255,92,108,.85) 6px,rgba(255,92,108,.6) 6px,rgba(255,92,108,.6) 12px);
     border-right:2px solid #fff}
-  .cvd-bar{display:flex;height:22px;border-radius:7px;overflow:hidden;
+  .cvd-bar{display:flex;height:22px;border-radius:7px;overflow:hidden;position:relative;
     border:1px solid var(--line);margin-top:8px;background:var(--panel2)}
   .cvd-bar span{height:100%;transition:width .8s cubic-bezier(.4,0,.2,1)}
   .cvd-demand{background:linear-gradient(90deg,#3a5aa8,#5b8def)}
   .cvd-margin{background:linear-gradient(90deg,#2f9e6a,#39d98a)}
   .sb-dom{background:linear-gradient(90deg,#2b8a99,#3fb6c9)}
   .sb-imp{background:linear-gradient(90deg,#7a5cc9,#a06fe0)}
+  .sb-sto{background:linear-gradient(90deg,#2f9e6a,#39d98a)}
+  .sb-exp{background:linear-gradient(90deg,#e07f36,#f5934a)}
+  /* 100%-of-demand marker, shown only when the bar runs past 100% (net export) */
+  .sb-demmark{position:absolute;top:0;bottom:0;width:0;
+    border-left:2px dashed var(--ink);opacity:.85;pointer-events:none;transition:left .8s cubic-bezier(.4,0,.2,1)}
   .cvd-stats{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:9px;
     font-family:var(--mono);font-size:11px;color:var(--ink-dim);align-items:center}
   .cvd-stats i{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:5px}
@@ -569,6 +576,18 @@
   .octo-card.elec-month .big{color:#3fb6c9}
   .octo-card.gas-month{border:2px solid #f5b942}
   .octo-card.gas-month .big{color:#f5b942}
+  /* gas unit-check flag: a small amber pill shown on gas value cards when the
+     data magnitude looks inconsistent with the configured m3/kWh setting. It is
+     a nudge to verify the setting, never an automatic override. */
+  .octo-card{position:relative}
+  .unit-flag{position:absolute;top:8px;right:8px;display:inline-flex;align-items:center;
+    gap:4px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;line-height:1;
+    padding:3px 6px;border-radius:10px;cursor:pointer;border:1px solid rgba(245,185,66,.45);
+    background:rgba(245,185,66,.14);color:#f5b942;transition:background .15s,border-color .15s}
+  .unit-flag:hover{background:rgba(245,185,66,.28);border-color:rgba(245,185,66,.75)}
+  .unit-flag:focus-visible{outline:2px solid rgba(245,185,66,.6);outline-offset:1px}
+  .unit-flag .dotwarn{width:5px;height:5px;border-radius:50%;background:#f5b942;
+    box-shadow:0 0 5px rgba(245,185,66,.8)}
 
   /* derived cost breakdown: monthly estimates + standing + % splits */
   .octo-breakdown{margin-bottom:16px}
@@ -627,7 +646,7 @@
     background:linear-gradient(90deg,rgba(63,182,201,.05),var(--panel2))}
   .octo-stats section.gas .octo-stat{border-left:3px solid rgba(245,185,66,.5);
     background:linear-gradient(90deg,rgba(245,185,66,.05),var(--panel2))}
-  .octo-stat{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 12px}
+  .octo-stat{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 12px;position:relative}
   .octo-stat .k{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
     color:var(--ink-faint);margin-bottom:6px}
   .octo-stat .v{font-size:19px;font-weight:600;line-height:1.1}
@@ -794,6 +813,9 @@
   .gas-b2 .fill{display:block;height:100%;border-radius:5px}
   .gas-b2 .val{flex:0 0 60px;text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--ink)}
   .ea-overlay{position:fixed;inset:0;background:var(--bg);z-index:200;display:none;flex-direction:column}
+  .ea-rainchip{display:inline-flex;align-items:center}
+  .ea-rainchip:empty{display:none}
+  .ea-rainchip .hdr-sum{cursor:default}
   .ea-overlay.open{display:flex}
   .ea-bar{display:flex;align-items:center;gap:14px;padding:14px 22px;
     border-bottom:1px solid var(--line);flex:none;
@@ -867,6 +889,20 @@
   .ea-flood-item .fi-tag{display:inline-block;margin-left:7px;font-size:9px;
     letter-spacing:.06em;text-transform:uppercase;color:var(--accent2);
     background:rgba(91,141,239,.14);border-radius:4px;padding:1px 6px;vertical-align:middle}
+  /* ---- Rainfall alert — a header summary chip (like the flood chip), driven
+     by the armed rain alarm engine. Sits in the header flow, so it never
+     overlaps the action buttons. Colours by intensity; heavy+ pulses. ---- */
+  .hdr-sum.rain-light{color:#7ea2f0;border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.09)}
+  .hdr-sum.rain-mod{color:var(--accent);border-color:rgba(63,182,201,.5);background:rgba(63,182,201,.10)}
+  .hdr-sum.rain-heavy{color:#f5934a;border-color:rgba(245,140,66,.55);background:rgba(245,140,66,.12)}
+  .hdr-sum.rain-extreme{color:var(--crit);border-color:rgba(255,92,108,.55);background:rgba(255,92,108,.12)}
+  .hdr-sum.rain-stopped{color:var(--ink-faint);border-color:var(--line2);background:var(--panel)}
+  .hdr-sum.rain-flash{animation:rainchipflash 1.15s ease-in-out infinite}
+  .hdr-sum.rain-flash .ic{animation:rainchipic 1.15s ease-in-out infinite}
+  @keyframes rainchipflash{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 2px currentColor}}
+  @keyframes rainchipic{0%,100%{opacity:1}50%{opacity:.4}}
+  .hdr-sum .rbadge{font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;
+    border:1px solid currentColor;border-radius:4px;padding:0 4px;opacity:.85}
   .ea-sec-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
   .ea-sec-title .note{text-transform:none;letter-spacing:0;font-size:10.5px}
@@ -894,6 +930,10 @@
   .ea-detail{position:sticky;top:0}
   .ea-detail-card{background:var(--panel2);border:1px solid var(--line);border-radius:13px;padding:16px}
   .ea-detail-card h3{margin:0 0 3px;font-size:15px}
+  .ea-clearsel{font-family:var(--mono);font-size:12px;line-height:1;color:var(--ink-faint);
+    background:var(--panel);border:1px solid var(--line);border-radius:5px;
+    width:22px;height:22px;cursor:pointer;padding:0;margin-right:8px;vertical-align:middle}
+  .ea-clearsel:hover{color:var(--ink);border-color:var(--accent)}
   .ea-detail-card .meta{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-bottom:12px}
   .ea-detail-card canvas{width:100%;height:170px;display:block}
   .ea-detail-empty{font-family:var(--mono);font-size:12px;color:var(--ink-faint);
@@ -904,11 +944,37 @@
   .ea-badge.normal{color:var(--ok);background:rgba(57,217,138,.12)}
   .ea-badge.low{color:var(--accent2);background:rgba(91,141,239,.14)}
   .ea-rain{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:7px}
+  /* local wind dials */
+  .ea-wind-dials{display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;margin-top:4px}
+  @media (max-width:760px){ .ea-wind-dials{grid-template-columns:1fr 1fr} }
+  .wd-cell{display:flex;flex-direction:column;align-items:center;gap:6px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px 8px}
+  /* data blocks (3 & 4) — same box style/height as the dial cells */
+  .wd-data{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:12px 14px;display:flex;flex-direction:column;justify-content:center}
+  .wd-data .wd-drow{display:flex;justify-content:space-between;align-items:baseline;
+    font-family:var(--mono);font-size:12px;padding:2.5px 0;gap:10px}
+  .wd-data .wd-dl{color:var(--ink)}
+  .wd-data .wd-dv{color:var(--ink);font-weight:600;text-align:right}
+  .wd-data .wd-dv .wd-du{font-size:10px;color:var(--ink-faint);font-weight:400;margin-left:2px}
+  .wd-svg{width:116px;height:116px}
+  .wd-card{font-family:var(--mono);font-size:12px;fill:var(--ink-faint)}
+  .wd-read{text-align:center;line-height:1.25}
+  .wd-main{font-family:var(--mono);font-size:17px;color:var(--ink);font-weight:600}
+  .wd-main .wd-u{font-size:11px;color:var(--ink-faint);font-weight:400}
+  .wd-sub{font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+  .wd-gust{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-top:2px;opacity:.85}
+  .wd-area{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);text-align:center;
+    margin-top:10px;letter-spacing:.03em}
   /* directional map view */
   .rn-viewtoggle{margin-left:10px;display:inline-flex;gap:2px;vertical-align:middle}
   .rn-vt{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
     border:1px solid var(--line);border-radius:5px;padding:2px 7px;cursor:pointer}
   .rn-vt.on{color:var(--ink);border-color:var(--accent);background:var(--panel)}
+  .ea-swapbtn{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
+    border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
+  .ea-swapbtn:hover{color:var(--ink);border-color:var(--accent)}
+  .ea-swapbtn.pinned{position:absolute;top:10px;right:10px;z-index:2}
   .ea-rainmap .rmnote{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:2px 0 8px}
   .rmgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
   .rmcell{min-width:0;display:flex}
@@ -1018,6 +1084,7 @@
               <span class="fdr-val" id="freqDialVal">—</span>
               <span class="fdr-lbl">Hz from 50.000</span>
               <span class="fdr-range" id="freqDialRange">2h band —</span>
+              <span class="fdr-rocof" id="freqDialRocof"></span>
             </div>
           </div>
         </div>
@@ -1140,12 +1207,19 @@
         <div class="cvd-bar" id="supplyBar">
           <span class="sb-dom" id="sbDom"></span>
           <span class="sb-imp" id="sbImp"></span>
+          <span class="sb-sto" id="sbSto"></span>
+          <span class="sb-exp" id="sbExp"></span>
+          <span class="sb-demmark" id="sbDemMark" title="100% of demand"></span>
         </div>
         <div class="cvd-stats">
           <span><i style="background:var(--accent)"></i>Domestic
             <b id="sbDomV">—</b></span>
           <span><i style="background:#a06fe0"></i>Net imports
             <b id="sbImpV">—</b> <span id="sbImpPct" class="muted"></span></span>
+          <span id="sbExpLeg" style="display:none"><i style="background:#f5934a"></i>Exported
+            <b id="sbExpV">—</b> <span id="sbExpPct" class="muted"></span></span>
+          <span id="sbStoLeg" style="display:none"><i style="background:#39d98a"></i>Storage
+            <b id="sbStoV">—</b></span>
           <span>Demand <b id="sbDemV">—</b></span>
           <span>Price <b id="sbPrice">—</b> <span id="sbPriceTrend" class="muted"></span></span>
         </div>
@@ -1171,7 +1245,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260819.15 · Server build 260819.10 · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260823.8 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1464,6 +1538,145 @@ let freqTimes = [];     // parallel timestamps for the x-axis
 // 120 points / ~30 min) so the band can span the full 2 hours.
 let freqDevHist = [];
 const FREQ_DEV_WINDOW = 2*3600*1000;  // 2 hours in ms
+// ---- Frequency: one single flow ---------------------------------------------
+// BMRS frequency is 15s-resolution but arrives in ~2-min bursts (the newest
+// sample sits still, then jumps ~2 min forward bringing ~8 points at once). One
+// simple design handles it:
+//   • freqSamples: the rolling set of known {t,hz} points, newest last.
+//   • A fast poll merges any new points into freqSamples (no animation logic).
+//   • A single 1s ticker (freqTick) owns ALL display: it advances a playback
+//     cursor toward the newest sample about one 15s-step at a time so the needle
+//     moves smoothly, and it refreshes the "measured N ago" stamp EVERY second
+//     so the age is never frozen. If playback falls >~30s behind the newest
+//     point it snaps forward (never lets the shown value get stale).
+// Honesty: the age stamp always shows the true age of the point on the dial, so
+// this is smooth replay of real recent history, never faked real-time.
+let freqSamples = [];        // [{t(ms), hz}] ascending, deduped — 2h (for the plot)
+let freqPlaylist = [];       // the current burst's points to display, d1..dN order
+let freqPlayIdx = 0;         // which point in the playlist is showing
+let freqLastAdvance = 0;     // wall-clock ms of the last step
+let freqSeenMaxT = 0;        // newest timestamp we've ever queued (burst detector)
+let freqStepMs = 15000;      // step interval, gently retuned to the pull cadence
+let freqLastPullWall = 0;    // wall-clock of the last new-burst arrival
+
+// Merge a frequency payload. When a pull brings NEW points (a fresh burst), load
+// them as the playlist d1..dN and restart the sweep at d1 — exactly the spec:
+//   pull → show d1 (oldest) → +15s d2 → … → d8 (newest) → next pull → new d1 …
+// Each point is shown with its OWN timestamp, so the age reads that point's true
+// age (d1 oldest ≈ ~105s, d8 freshest ≈ ~25s).
+function freqMerge(fq){
+  if(!fq) return;
+  const rows=[];
+  const push=arr=>{ if(Array.isArray(arr)) arr.forEach(p=>{
+    const t=new Date(p.t).getTime(); if(!isNaN(t)&&p.hz!=null) rows.push({t,hz:p.hz}); }); };
+  push(fq.recent_points); push(fq.trace_points);
+  if(!rows.length && fq.hz!=null && fq.time){ const t=new Date(fq.time).getTime(); if(!isNaN(t)) rows.push({t,hz:fq.hz}); }
+  if(!rows.length) return;
+
+  // On the very first pull, seed the "seen" marker to just before the latest
+  // burst (~one burst back from newest) so the opening playlist is the freshest
+  // ~8 points, not all 10 min of history.
+  if(!freqSeenMaxT && freqSamples.length===0){
+    const nT=Math.max(...rows.map(p=>p.t));
+    freqSeenMaxT = nT-125000;   // one burst back; the new-point filter picks the rest
+  }
+
+  // keep the 2h plot buffer fed (dedup by timestamp)
+  const known=new Set(freqSamples.map(s=>s.t));
+  let addedAny=false;
+  rows.forEach(p=>{ if(!known.has(p.t)){ freqSamples.push(p); known.add(p.t); addedAny=true; } });
+  if(addedAny){
+    freqSamples.sort((a,b)=>a.t-b.t);
+    freqSamples = freqSamples.filter(s=>s.t>=Date.now()-FREQ_DEV_WINDOW);
+    freqHistory = freqSamples.map(s=>s.hz);
+    freqTimes   = freqSamples.map(s=>new Date(s.t).toISOString());
+    freqDevHist = freqSamples.map(s=>({t:s.t, dev:s.hz-50}));
+    drawFreq(); drawFreqAxis();
+  }
+
+  // A fresh burst = points newer than the newest we've already queued. Play the
+  // NEW points only (d1..dN), oldest→newest, restarting at d1 — per the spec.
+  // (We don't reach back over already-shown points, which was pinning the age
+  // high.) If somehow only 1 new point arrived, still show it.
+  const prevMax = freqSeenMaxT;
+  const newestT = Math.max(...rows.map(p=>p.t));
+  if(newestT > prevMax){
+    const nowWall=Date.now();
+    // the new points this burst delivered, in time order
+    let list = freqSamples.filter(s=>s.t>prevMax).sort((a,b)=>a.t-b.t);
+    if(!list.length) list = freqSamples.slice(-1);
+    // pace: spread these new points across the measured pull gap so the last one
+    // (freshest) is reached just before the next pull; default ~15s each.
+    if(freqLastPullWall>0){
+      const pull=nowWall-freqLastPullWall;
+      if(pull>30000 && pull<600000){
+        const per = pull / Math.max(1,list.length);
+        freqStepMs = Math.min(Math.max(per, 10000), 20000);
+      }
+    } else {
+      freqStepMs = 15000;
+    }
+    freqLastPullWall=nowWall;
+    freqPlaylist = list;
+    freqPlayIdx = 0;
+    freqLastAdvance = nowWall;
+    freqSeenMaxT = newestT;
+    freqPaint(freqPlaylist[0]);                          // show d1 (oldest new) now
+  }
+}
+
+// Single ticker (every 1s). Steps the playlist d1→dN one point every freqStepMs
+// (~15s). Holds on dN once reached (age creeps up) until the next pull rebuilds
+// the playlist. Repaints every second so the age stamp is live. Honest: each
+// shown point carries its own true measured age.
+function freqTick(){
+  if(!freqPlaylist.length) return;
+  const now=Date.now();
+  if(freqPlayIdx < freqPlaylist.length-1 && (now-freqLastAdvance)>=freqStepMs){
+    freqPlayIdx++;
+    freqLastAdvance=now;
+  }
+  freqPaint(freqPlaylist[freqPlayIdx]);
+}
+
+// Paint one sample onto value, delta, age stamp, dial and drift.
+function freqPaint(s){
+  if(!s) return;
+  const hz=s.hz, dev=hz-50;
+  $("#freqVal").textContent = hz.toFixed(3);
+  const del=$("#freqDelta");
+  if(del){ del.textContent=(dev>=0?"+":"")+dev.toFixed(3); del.className="delta "+(dev>=0?"up":"down"); }
+  $("#freqTime").innerHTML = "measured "+timeAgo(new Date(s.t).toISOString());
+  drawFreqDial(dev, freqDevHist);
+  // drift (mHz/s) over the last ~1 min (4×15s) up to the displayed sample
+  const rEl=$("#freqDialRocof");
+  if(rEl){
+    const upto=freqSamples.filter(p=>p.t<=s.t);
+    const recent=upto.slice(-4);
+    if(recent.length>=2){
+      const t0=recent[0].t;
+      const xs=recent.map(p=>(p.t-t0)/1000), ys=recent.map(p=>(p.hz-50)*1000);
+      const n=xs.length, sx=xs.reduce((a,b)=>a+b,0), sy=ys.reduce((a,b)=>a+b,0);
+      const sxx=xs.reduce((a,b)=>a+b*b,0), sxy=xs.reduce((a,b,i)=>a+b*ys[i],0);
+      const denom=(n*sxx-sx*sx);
+      const slope = denom!==0 ? (n*sxy-sx*sy)/denom : 0;
+      const mag=Math.abs(slope), arrow=mag<0.5?"→":(slope>0?"↗":"↘"), sign=slope>0?"+":(slope<0?"−":"");
+      rEl.textContent = mag<0.5 ? "drift → steady" : "drift "+sign+mag.toFixed(1)+" mHz/s "+arrow;
+    } else rEl.textContent="";
+  }
+}
+
+// Fast poll — fetches the lightweight endpoint every 5s and merges new points.
+// The endpoint itself is phase-learned server-side, so most calls are cache hits;
+// the client stays simple and just merges whatever it gets.
+let freqPollTimer=null;
+async function pollFrequencyFast(){
+  try{
+    const r=await fetch("/api/frequency",{cache:"no-store"});
+    if(r.ok){ const fq=await r.json(); if(fq && !fq.error) freqMerge(fq); }
+  }catch(e){ /* transient; next tick retries */ }
+  freqPollTimer=setTimeout(pollFrequencyFast, 2000);
+}
 
 const $ = s => document.querySelector(s);
 const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#888";
@@ -1508,6 +1721,7 @@ async function tick(){
 let elecSummary={level:"ok",count:0,title:null};
 let gasSummary=null;      // {level,text} or null when clear/unknown
 let floodSummary=null;    // {sev,text} or null when clear
+let rainSummary=null;     // {cls,text,badge,flash} or null — set by the rain alarm engine
 
 async function refreshUtilData(){
   // gas (derived margin) + flood (EA) — fetched here; elec is set by render
@@ -1560,7 +1774,23 @@ function buildHeaderSummaries(){
     chips.push('<div class="hdr-sum sev'+floodSummary.sev+'" data-act="ea" title="Open Environment Agency page">'+
       '<span class="ic">💧</span><span><b>'+floodSummary.text+'</b></span></div>');
   }
+  // Rainfall — set by the armed rain alarm engine (only shows while armed).
+  if(rainSummary){
+    chips.push(rainChipHtml());
+  }
   host.innerHTML=chips.join("");
+  // Mirror the rain chip onto the EA sub-page bar (hidden behind the overlay
+  // otherwise), so it's visible in both places from the one rainSummary state.
+  const eaSlot=$("#eaRainChip");
+  if(eaSlot) eaSlot.innerHTML = rainSummary ? rainChipHtml().replace(' data-act="ea"','') : "";
+}
+// Rain chip markup, shared by the main header strip and the EA-bar copy.
+function rainChipHtml(){
+  if(!rainSummary) return "";
+  return '<div class="hdr-sum '+rainSummary.cls+(rainSummary.flash?' rain-flash':'')+
+    '" data-act="ea" title="Open Environment Agency page">'+
+    '<span class="ic">'+(rainSummary.icon||'🌧')+'</span><span><b>'+rainSummary.text+'</b></span>'+
+    (rainSummary.badge?'<span class="rbadge">'+rainSummary.badge+'</span>':'')+'</div>';
 }
 
 // Delegated click handler on the summary strip — bound once, survives rebuilds.
@@ -1620,56 +1850,10 @@ function render(d){
     title: worst?worst.title:null };
   buildHeaderSummaries();
 
-  // ---- frequency ----
-  if(d.frequency){
-    const hz=d.frequency.hz;
-    $("#freqVal").textContent = hz.toFixed(3);
-    const dev = hz-50;
-    const del=$("#freqDelta");
-    del.textContent = (dev>=0?"+":"")+dev.toFixed(3);
-    del.className = "delta "+(dev>=0?"up":"down");
-    $("#freqTime").innerHTML = "measured "+timeAgo(d.frequency.time);
-    // seed the trace (with timestamps) from backend history on first load,
-    // then append live samples with the current time. Fall back to the flat
-    // trace array (no timestamps) if trace_points isn't present.
-    const pts=d.frequency.trace_points;
-    if(!freqHistory.length && Array.isArray(pts) && pts.length){
-      freqHistory = pts.map(p=>p.hz).slice(-120);
-      freqTimes   = pts.map(p=>p.t).slice(-120);
-    } else if(!freqHistory.length && Array.isArray(d.frequency.trace) && d.frequency.trace.length){
-      // older backend without timestamps: seed values, synthesise even times
-      freqHistory = d.frequency.trace.slice(-120);
-      const end=new Date(d.frequency.time).getTime();
-      freqTimes = freqHistory.map((_,i)=>
-        new Date(end-(freqHistory.length-1-i)*15000).toISOString());  // ~15s spacing
-    } else {
-      freqHistory.push(hz); freqTimes.push(d.frequency.time);
-      if(freqHistory.length>120){ freqHistory.shift(); freqTimes.shift(); }
-    }
-    // ---- 2h deviation buffer (feeds the dial's grey band) ----
-    // On first load, seed from whatever backend history we have so the band is
-    // meaningful immediately; afterwards append the current sample. Reconstruct
-    // timestamps the same way the trace does when only a flat trace is present.
-    if(!freqDevHist.length){
-      const pts=d.frequency.trace_points;
-      if(Array.isArray(pts) && pts.length){
-        freqDevHist = pts.map(p=>({t:new Date(p.t).getTime(), dev:p.hz-50}));
-      } else if(Array.isArray(d.frequency.trace) && d.frequency.trace.length){
-        const end=new Date(d.frequency.time).getTime(), arr=d.frequency.trace;
-        freqDevHist = arr.map((v,i)=>({t:end-(arr.length-1-i)*15000, dev:v-50}));
-      } else {
-        freqDevHist = [{t:new Date(d.frequency.time).getTime(), dev}];
-      }
-    } else {
-      freqDevHist.push({t:new Date(d.frequency.time).getTime(), dev});
-    }
-    // drop anything older than the 2h window
-    const cutoff=Date.now()-FREQ_DEV_WINDOW;
-    freqDevHist = freqDevHist.filter(s=>s.t>=cutoff);
-    drawFreq();
-    drawFreqAxis();
-    drawFreqDial(dev, freqDevHist);
-  }
+  // ---- frequency ---- (single flow: freqMerge collects points from BOTH this
+  // 60s snapshot (full 2h trace) and the fast poll (fresh 15s points); one
+  // freqTick ticker owns all display and repaints every second)
+  if(d.frequency) freqMerge(d.frequency);
 
   // ---- margin ----
   if(d.margin){
@@ -1730,19 +1914,63 @@ function render(d){
       : "Reserve data unavailable.";
   }
 
-  // ---- supply stack (how demand is met, incl. imports) ----
+  // ---- supply stack (how demand is met, incl. imports/exports) ----
   const ss=d.supply_stack;
   if(ss && ss.demand_mw){
     const dem=ss.demand_mw;
-    // bar spans domestic + net imports as proportions of demand
-    const domPct=Math.max(0,100*ss.domestic_mw/dem);
-    const impPct=Math.max(0,100*ss.net_imports_mw/dem);
+    const dom=ss.domestic_mw, imp=ss.net_imports_mw;
+    // Two regimes:
+    //  * NET IMPORTING (imp >= 0): domestic + imports together meet demand.
+    //    Domestic and imports are shares of demand; the bar fills to 100%.
+    //  * NET EXPORTING (imp < 0): interconnectors are an EXTRA load on top of
+    //    demand, so domestic generation must cover demand + exports (>100%).
+    //    The bar runs past 100% to (demand+exports); domestic fills its true
+    //    share, an export block sits on the end, and a marker shows the 100%
+    //    (demand) line where the cyan should reach. This is the honest picture:
+    //    "generation exceeded demand, and the surplus was exported."
+    const exporting = imp < 0;
+    const exp = exporting ? -imp : 0;              // export magnitude (MW)
+    const stoDis = Math.max(0, ss.storage_mw||0);  // storage discharge = a source
+    // total span the bar represents, in MW, and a %-of-span helper
+    const spanMw = exporting ? (dem + exp) : dem;  // exporting -> >demand
+    const pctOf = mw => 100*Math.max(0,mw)/spanMw;
+    const domPct = pctOf(dom);
+    const impPct = exporting ? 0 : pctOf(imp);
+    const stoPct = pctOf(stoDis);                  // storage discharge share
+    const expPct = exporting ? pctOf(exp) : 0;
     $("#sbDom").style.width=domPct+"%";
     $("#sbImp").style.width=impPct+"%";
-    $("#sbDomV").textContent=gw(ss.domestic_mw)+" GW";
-    $("#sbImpV").textContent=gw(ss.net_imports_mw)+" GW";
-    $("#sbImpPct").textContent="("+(ss.import_share_pct??"—")+"% of demand)";
+    $("#sbSto").style.width=stoPct+"%";
+    $("#sbExp").style.width=expPct+"%";
+    // demand (100%) marker: only meaningful when the bar exceeds 100% (export).
+    const dm=$("#sbDemMark");
+    if(exporting && dm){ dm.style.left=(100*dem/spanMw)+"%"; dm.style.display=""; }
+    else if(dm){ dm.style.display="none"; }
+    $("#sbDomV").textContent=gw(dom)+" GW";
+    // Regime-aware legend: when exporting, hide the "net imports" figure (it's
+    // negative/misleading) and show an "Exported" figure instead.
+    const impLeg=$("#sbImpV") && $("#sbImpV").closest("span");
+    const expLeg=$("#sbExpLeg"), expV=$("#sbExpV");
+    if(exporting){
+      if(impLeg) impLeg.style.display="none";
+      if(expLeg) expLeg.style.display="";
+      if(expV) expV.textContent=gw(exp)+" GW";
+      const ep=$("#sbExpPct"); if(ep) ep.textContent="("+Math.round(100*exp/dem)+"% of demand)";
+    } else {
+      if(impLeg) impLeg.style.display="";
+      if(expLeg) expLeg.style.display="none";
+      $("#sbImpV").textContent=gw(imp)+" GW";
+      $("#sbImpPct").textContent="("+(ss.import_share_pct??"—")+"% of demand)";
+    }
     $("#sbDemV").textContent=gw(dem)+" GW";
+    // storage discharge appears as its own segment + legend only when it's
+    // actually discharging (a source meeting demand). Charging storage is a
+    // load, not a source, so no segment then.
+    const stoLeg=$("#sbStoLeg"), stoV=$("#sbStoV");
+    if(stoDis>50){
+      if(stoLeg) stoLeg.style.display="";
+      if(stoV) stoV.textContent=gw(stoDis)+" GW";
+    } else if(stoLeg){ stoLeg.style.display="none"; }
     // wholesale price — the economic reason imports flow despite spare margin
     const pr=d.price;
     if(pr && pr.gbp_per_mwh!=null){
@@ -1792,7 +2020,10 @@ function render(d){
     const parts=[];
     parts.push("transmission "+gw(nc.basis_mw));
     if(nc.added_solar_mw) parts.push("+ solar "+gw(nc.added_solar_mw));
-    if(nc.added_net_imports_mw) parts.push("+ imports "+gw(nc.added_net_imports_mw));
+    if(nc.added_net_imports_mw){
+      const ani=nc.added_net_imports_mw;
+      parts.push(ani>=0 ? "+ imports "+gw(ani) : "− exports "+gw(-ani));
+    }
     $("#reconSub").innerHTML = "est. consumption<br>excl. embedded wind";
     $("#reconSub").title = parts.join("  ")+" GW  (embedded wind not included — "+
       "reads slightly below Gridwatch on windy days)";
@@ -1834,6 +2065,10 @@ function render(d){
   // ---- footer freshness ----
   const age = d.generation? d.generation.publishTime : d.generated;
   $("#dataAge").innerHTML = "generation data "+timeAgo(age);
+  // real running-server build, straight from the snapshot (no hard-coded string
+  // that can silently drift). Older servers won't send it — show "unknown" then.
+  const sb=$("#serverBuild");
+  if(sb) sb.textContent = d.server_build || "unknown";
 
   // ---- per-source status strip (makes a failing feed visible + its reason) ----
   const ok=d.sources_ok||{};
@@ -2215,22 +2450,34 @@ function drawFreqDial(dev, devHist){
     lo=Math.max(-MAX,Math.min(...devs)); hi=Math.min(MAX,Math.max(...devs));
     // guard against a zero-width span (single sample): give it a hairline width
     if(Math.abs(hi-lo)<1e-4){ const pad=0.004; lo=Math.max(-MAX,lo-pad); hi=Math.min(MAX,hi+pad); }
-    g.lineCap="butt";
+    // Paint the active range with zone colours. A segment that touches the
+    // extreme lo or hi end is drawn with round caps so the OUTER end of the
+    // whole range is rounded (matching the margin gauge); its inner end is
+    // overpainted by the adjacent zone, so internal boundaries still read crisp.
+    // Interior-only segments use butt caps. Drawn outer zones first so later
+    // inner zones cover the inner rounding.
+    const segs=[];
     zones.forEach(([za,zb,col])=>{
       const a0=Math.max(za,lo), a1=Math.min(zb,hi);            // intersection
-      if(a1<=a0) return;                                        // zone not in range
-      g.beginPath(); g.arc(cx,cy,r,A(a0),A(a1)); g.lineWidth=lw;
-      g.strokeStyle=col; g.stroke();
+      if(a1<=a0) return;
+      segs.push({a0,a1,col});
     });
-    // rounded caps at the two extreme ends only. A round-capped zero-length
-    // stroke renders a filled semicircle of the line width, giving the same
-    // rounded end as the margin gauge without rounding internal joins.
-    const endCol=v=>{ const av=Math.abs(v); return av<=0.2?"#39d98a":av<=0.3?"#f5b942":"#ff5c6c"; };
-    g.lineCap="round";
-    [lo,hi].forEach(v=>{
-      const ang=A(v);
-      g.beginPath(); g.arc(cx,cy,r,ang,ang); g.lineWidth=lw;
-      g.strokeStyle=endCol(v); g.stroke();
+    // draw round-capped END segments first, then butt INTERIOR segments over
+    // them so the shared inner boundaries stay crisp (the interior fill covers
+    // any inward bulge from the round cap; the outward cap remains rounded).
+    segs.forEach(s=>{
+      const touchesEnd = (Math.abs(s.a0-lo)<1e-9) || (Math.abs(s.a1-hi)<1e-9);
+      if(!touchesEnd) return;
+      g.lineCap="round";
+      g.beginPath(); g.arc(cx,cy,r,A(s.a0),A(s.a1)); g.lineWidth=lw;
+      g.strokeStyle=s.col; g.stroke();
+    });
+    segs.forEach(s=>{
+      const touchesEnd = (Math.abs(s.a0-lo)<1e-9) || (Math.abs(s.a1-hi)<1e-9);
+      if(touchesEnd) return;                                    // already drawn
+      g.lineCap="butt";
+      g.beginPath(); g.arc(cx,cy,r,A(s.a0),A(s.a1)); g.lineWidth=lw;
+      g.strokeStyle=s.col; g.stroke();
     });
     g.lineCap="butt";
   }
@@ -2662,6 +2909,30 @@ function octoShowSetup(){
   $("#octoContent").style.display="none"; $("#octoLoading").style.display="none";
   $("#octoSetup").style.display=""; octoLoadCfgInto();
 }
+// Shared gas unit-check flag builder. The server (_resolve_gas_units) reports
+// how gas was interpreted (unit_is_m3), whether the user explicitly confirmed
+// the unit (unit_confirmed), and whether the data magnitude looks inconsistent
+// with that setting (unit_warning). Returns an amber pill (clickable → opens the
+// setup panel, with hover text) when there's reason to double-check, else "".
+// It never changes any value; it only prompts verification of the ⚙ setting.
+function octoUnitFlag(g){
+  if(!g) return "";
+  const mism = !!g.unit_warning;                    // magnitude looks wrong for the setting
+  const unconfirmed = (g.unit_confirmed===false);   // running on a default, not an explicit choice
+  if(!(mism || unconfirmed)) return "";
+  const isM3 = !!g.unit_is_m3;
+  const tip = g.unit_warning
+    ? g.unit_warning + "  →  click to open settings and check Gas Units."
+    : ("Gas is being read as "+(isM3?"m³ (×11.22 to kWh)":"kWh directly")+
+       " but the unit hasn't been explicitly confirmed. If the gas cost looks ~11× "+
+       (isM3?"too high, set Units to kWh":"too low, set Units to m³")+
+       ". Click to open settings.");
+  const lab = mism ? "check unit?" : "confirm unit";
+  // a real button so it's keyboard-focusable; onclick opens the setup panel.
+  return '<button type="button" class="unit-flag" onclick="octoShowSetup()" '+
+         'title="'+tip.replace(/"/g,"&quot;")+'" aria-label="'+tip.replace(/"/g,"&quot;")+'">'+
+         '<span class="dotwarn"></span>'+lab+'</button>';
+}
 function octoRender(){
   if(!octoData){ return; }
   if(octoData.needs_config){ octoShowSetup(); return; }
@@ -2700,15 +2971,22 @@ function octoRender(){
       ce.month?(ce.month.label+" · "+arrow(ce.month.delta_p)+" · inc. standing"):"");
   }
   // Row 2 — Gas: standing · day · 7 days · month
+  // Gas unit-check flag (see octoUnitFlag): a clickable amber pill shown on the
+  // gas cards when the configured m³/kWh unit is worth verifying.
+  const gasFlag = octoUnitFlag(g);
+  // helper: splice the flag badge into a finished gas card's markup (right after
+  // the opening card div, so it positions absolutely within it)
+  const withFlag=(cardHtml)=> (gasFlag && cardHtml)
+    ? cardHtml.replace(/^(<div class="octo-card[^"]*">)/, '$1'+gasFlag) : cardHtml;
   let row2="";
   if(g){
-    row2+=standCard("gold","Gas", g);
-    row2+=card("gold","Gas · last full day", cg.day&&cg.day.cost_p,
-      cg.day?(arrow(cg.day.delta_p)+" vs day before"):"");
-    row2+=card("gold","Gas · last full 7 days", cg.week&&cg.week.cost_p,
-      cg.week?(arrow(cg.week.delta_p)+" vs prev 7"):"");
-    row2+=card("gas-month","Gas · last full month", cg.month&&cg.month.cost_p,
-      cg.month?(cg.month.label+" · "+arrow(cg.month.delta_p)+" · inc. standing"):"");
+    row2+=withFlag(standCard("gold","Gas", g));
+    row2+=withFlag(card("gold","Gas · last full day", cg.day&&cg.day.cost_p,
+      cg.day?(arrow(cg.day.delta_p)+" vs day before"):""));
+    row2+=withFlag(card("gold","Gas · last full 7 days", cg.week&&cg.week.cost_p,
+      cg.week?(arrow(cg.week.delta_p)+" vs prev 7"):""));
+    row2+=withFlag(card("gas-month","Gas · last full month", cg.month&&cg.month.cost_p,
+      cg.month?(cg.month.label+" · "+arrow(cg.month.delta_p)+" · inc. standing"):""));
   }
   // Row 3 — cost splits (cols 1–3) + combined billed total (col 4).
   // Splits show where the money goes over the readings window.
@@ -2748,8 +3026,10 @@ function octoRender(){
   $("#octoGasTitle").textContent = g? "Gas · "+(octoRange==="48h"?"48h":"2 weeks") : "Gas — not configured";
   let note="Cost = usage × unit rate + standing charge, from the tariff rates you entered. ";
   if(g && g.unit_is_m3) note+="Gas converted m³→kWh (×11.22)"+
-    (g.unit_autodetected?" — auto-detected from low readings. If your gas cost looks ~11× too high, set units to kWh in ⚙.":".")+" ";
-  else if(g) note+="Gas read directly in kWh. If your gas cost looks ~11× too low, set units to m³ in ⚙. ";
+    (g.unit_confirmed===false?" — unit not explicitly confirmed; verify in ⚙.":".")+" ";
+  else if(g) note+="Gas read directly in kWh"+
+    (g.unit_confirmed===false?" (default — if cost looks ~11× too low, set units to m³ in ⚙).":".")+" ";
+  if(g && g.unit_warning) note+=" ⚠ "+g.unit_warning+". ";
   if((octoData.errors||[]).length) note+=" · "+octoData.errors.join(" · ");
   $("#octoNote").textContent=note;
   octoRenderStats(e, g);
@@ -2900,7 +3180,8 @@ function octoRenderStats(e, g){
   // ---- Tariff and Estimated Costs panel (below patterns) ----
   const tw=$("#octoTariff"); if(!tw) return;
   const T=(octoData&&octoData.tariffs)||{};
-  function tariffCard(label,cls,s,ti){
+  function tariffCard(label,cls,s,ti,flag){
+    flag = flag||"";
     const rows=[];
     // tariff name / code
     if(ti && ti.tariff_code && !ti.error){
@@ -2933,11 +3214,11 @@ function octoRenderStats(e, g){
         rows.push('<div class="d">typed flat rate (live tariff not resolved)</div>');
       }
     }
-    return '<div class="octo-stat"><div class="k">'+label+'</div>'+rows.join("")+'</div>';
+    return '<div class="octo-stat">'+flag+'<div class="k">'+label+'</div>'+rows.join("")+'</div>';
   }
   const tcards=[
-    tariffCard("Electricity","elec",octoData.electricity,T.electricity),
-    tariffCard("Gas","gas",octoData.gas,T.gas)
+    tariffCard("Electricity","elec",octoData.electricity,T.electricity,""),
+    tariffCard("Gas","gas",octoData.gas,T.gas, octoUnitFlag(octoData.gas))
   ];
   tw.innerHTML='<section><h3>Tariff and Estimated Costs</h3>'+
     '<div class="grid">'+tcards.join("")+'</div>'+
@@ -3820,7 +4101,7 @@ function gasDrawTrend(g){
   const dpr=devicePixelRatio||1, W=c.clientWidth||600, H=220;
   c.width=W*dpr;c.height=H*dpr;c.style.height=H+"px";
   const ctx=c.getContext("2d"); ctx.scale(dpr,dpr);
-  const padL=54,padR=60,padT=22,padB=40;
+  const padL=54,padR=60,padT=30,padB=40;
   const ts=h.map(p=>new Date(p.t).getTime());
   const lp=h.map(p=>p.lp);
   // Supply−demand balance line. PRIMARY: the real measured value (supply minus
@@ -3907,17 +4188,18 @@ function gasDrawTrend(g){
   }
   ctx.setLineDash([]);
   // linepack line (accent, thicker). Two provenances, both measured but from
-  // different sources: the official hourly-actual archive (D+1 publication,
-  // solid) and the LIVE bridge tail we log locally to fill the ~13-14h gap up
-  // to now (dashed, so it's honestly distinguished from the official series —
-  // same convention as the balance line). Drawn as one path but the dash state
-  // flips at the archive→bridge boundary.
-  const isBridge=h.map(p=>!!p.bridge);
+  // different sources: our locally-logged LIVE samples (high-res, now the
+  // PRIMARY series — drawn solid) and the official hourly-actual archive used
+  // only to fill stretches with no live data (drawn dashed, so archive backfill
+  // is honestly distinguished from the live measured line — same convention as
+  // the balance line). Drawn as one path; the dash state flips per segment.
+  const isArch=h.map(p=>!p.bridge);   // archive-fill points (bridge=false)
   ctx.strokeStyle=cssv("--accent");ctx.lineWidth=2;
   for(let i=0;i<h.length-1;i++){
-    // a segment is "bridge" (dashed) if either endpoint is a live bridge point
-    const seg=isBridge[i]||isBridge[i+1];
-    ctx.setLineDash(seg?[3,3]:[]);
+    // a segment is dashed only if BOTH endpoints are archive-fill; any live
+    // endpoint keeps it solid, so the primary live line dominates visually.
+    const seg=isArch[i]&&isArch[i+1];
+    ctx.setLineDash(seg?[4,3]:[]);
     ctx.beginPath();
     ctx.moveTo(X(ts[i]),YL(lp[i]));
     ctx.lineTo(X(ts[i+1]),YL(lp[i+1]));
@@ -3957,10 +4239,11 @@ function gasDrawTrend(g){
   // right end: the latest actual plot time (UT), not the word 'now'
   ctx.textAlign="right";ctx.fillStyle=cssv("--ink-dim");
   ctx.fillText(utcHH(t1)+" UT",W-padR,axisY+6);
-  // legend
-  ctx.textAlign="left";ctx.textBaseline="top";ctx.font="12px "+mono;
-  ctx.fillStyle=cssv("--accent");ctx.fillText("— linepack (mcm): solid archive · dashed live",padL,3);
-  ctx.fillStyle=cssv("--warn");ctx.fillText("— supply−demand (mcm/d): solid measured · dashed derived",padL+230,3);
+  // legend — the two descriptions are too long to sit side by side on this
+  // canvas, so stack them on two short lines at the top-left instead.
+  ctx.textBaseline="top";ctx.font="11px "+mono;ctx.textAlign="left";
+  ctx.fillStyle=cssv("--accent");ctx.fillText("— linepack mcm (solid live · dashed archive fill)",padL,3);
+  ctx.fillStyle=cssv("--warn");ctx.fillText("— supply−demand mcm/d (solid meas · dashed calc)",padL,15);
 }
 
 // Wholesale gas price trend: SAP + SMP buy/sell (p/kWh on the left axis, with a
@@ -4544,6 +4827,9 @@ function eaRainBand(mm){
 
 // Rainfall view: "list" (nearest-first grid) or "map" (rough directional grid).
 let eaRainView = (function(){ try{ return localStorage.getItem("eaRainView")||"list"; }catch(e){ return "list"; } })();
+// order of the two lower-right panels: "weather" (default) puts local weather
+// above the rainfall grid; "rain" swaps them. Plot panel stays pinned at top.
+let eaLowerOrder = (function(){ try{ return localStorage.getItem("eaLowerOrder")||"weather"; }catch(e){ return "weather"; } })();
 
 // Build one rainfall card's HTML (shared by list and map views). `near` adds a
 // subtle highlight for gauges essentially at "here" (<5 km).
@@ -4565,6 +4851,359 @@ function eaRainCard(r, near){
 // north/south + distance drive the row. Cells that collide spill to the nearest
 // free cell (fuzzy edges). Bearing/distance come from each gauge's lat/lon
 // relative to the chosen location.
+// Wind conversion + helpers. Alerts speak mph; dials show mph primary, m/s
+// secondary. Wind data is MODELLED (Open-Meteo) — labelled as such.
+function msToMph(ms){ return ms==null? null : ms*2.236936; }
+const WIND_COMPASS16=["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+function windCompassName(deg){ if(deg==null) return "—"; return WIND_COMPASS16[Math.round(deg/22.5)%16]; }
+
+// Two SVG dials for the HOME location: a direction compass and a speed gauge.
+// Sits below the rainfall grid, in the rainfall column.
+function eaRenderWindDials(){
+  const w=eaData && eaData.wind;
+  if(!w || !w.home || w.home.dir_deg==null){
+    if(eaData && eaData.diag && eaData.diag.wind){
+      return '<div class="ea-wind"><div class="ea-sec-title" style="margin-top:22px">Local wind'+
+        '<span class="note">modelled · unavailable this cycle</span></div>'+
+        '<div class="ea-softerr">Wind field did not return: '+
+        String(eaData.diag.wind).replace(/</g,"&lt;")+' — retrying automatically.</div></div>';
+    }
+    return '';
+  }
+  const h=w.home;
+  const dir=h.dir_deg, spdMs=h.speed_ms, gustMs=h.gust_ms;
+  const spdMph=msToMph(spdMs), gustMph=msToMph(gustMs);
+  const compass=windCompassName(dir);
+
+  // ---- direction compass (SVG) ----
+  // Arrow points in the direction the wind is blowing TOWARDS is a common
+  // confusion; meteorological convention is "from". We draw an arrow pointing
+  // the way the wind comes FROM (the reported bearing), labelled to be clear.
+  const cx=52, cy=52, r=42;
+  const ticks=[];
+  for(let a=0;a<360;a+=30){
+    const rad=(a-90)*Math.PI/180;
+    const x1=cx+Math.cos(rad)*r, y1=cy+Math.sin(rad)*r;
+    const x2=cx+Math.cos(rad)*(r-(a%90===0?8:5)), y2=cy+Math.sin(rad)*(r-(a%90===0?8:5));
+    ticks.push('<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'" stroke="rgba(120,140,170,.4)" stroke-width="'+(a%90===0?1.5:1)+'"/>');
+  }
+  const arad=(dir-90)*Math.PI/180;
+  // ---- fading 3-hour direction history ring ----
+  // Each logged direction over the last 3h is a short tick just OUTSIDE the main
+  // ring (so it never clashes with the inward cardinal ticks), fading with age.
+  // The result is a ring of tick marks showing how the wind direction has swung.
+  const histTicks=[];
+  const hist=(w.dir_history||[]);
+  if(hist.length){
+    const maxAge=3*3600;           // 3h fade window
+    hist.forEach(h=>{
+      if(h.dir_deg==null) return;
+      const age=Math.min(h.age_s||0, maxAge);
+      const op=Math.max(0.06, 0.85*(1-age/maxAge));   // newest brightest, fades out
+      const hr=(h.dir_deg-90)*Math.PI/180;
+      const ri=r+2, ro=r+7;        // sit just outside the main ring
+      const x1=cx+Math.cos(hr)*ri, y1=cy+Math.sin(hr)*ri;
+      const x2=cx+Math.cos(hr)*ro, y2=cy+Math.sin(hr)*ro;
+      histTicks.push('<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'" stroke="#5bd6e0" stroke-width="1.6" stroke-linecap="round" opacity="'+op.toFixed(2)+'"/>');
+    });
+  }
+  // Origami/paper-plane arrow, pointing FROM the wind bearing (tip = the
+  // direction the wind comes from). Two facets: a light "lit" side and a darker
+  // "shadow" side down the centre fold, giving the folded-paper look. Built in
+  // arrow-local coords (tip up the -y axis) then rotated by the bearing.
+  const aLen=34, aHalf=8, aNotch=10;   // tip length, half-width, tail notch depth
+  // local points: tip, right barb, tail centre (notch), left barb
+  const local=[[0,-aLen],[aHalf,aLen*0.6],[0,aLen*0.6-aNotch],[-aHalf,aLen*0.6]];
+  const rot=(px,py)=>{
+    // rotate local (tip up) so the tip points along the "from" bearing, and
+    // translate to the dial centre. Local -y maps to the bearing direction.
+    const rx=px*Math.cos(arad+Math.PI/2)-py*Math.sin(arad+Math.PI/2);
+    const ry=px*Math.sin(arad+Math.PI/2)+py*Math.cos(arad+Math.PI/2);
+    return [(cx+rx).toFixed(1),(cy+ry).toFixed(1)];
+  };
+  const P=local.map(p=>rot(p[0],p[1]));
+  const tip=P[0], rb=P[1], tc=P[2], lb=P[3];
+  // full arrow outline (lit facet) + right half as the shadow facet (fold line
+  // runs tip -> tail centre)
+  const litPts=[tip,rb,tc,lb].map(p=>p.join(',')).join(' ');
+  const shadowPts=[tip,rb,tc].map(p=>p.join(',')).join(' ');
+  const dirSvg='<svg viewBox="-6 -6 116 116" class="wd-svg">'+
+    '<circle cx="52" cy="52" r="42" fill="none" stroke="var(--line)" stroke-width="1"/>'+
+    histTicks.join('')+
+    ticks.join('')+
+    '<text x="52" y="19" text-anchor="middle" class="wd-card">N</text>'+
+    '<text x="52" y="92" text-anchor="middle" class="wd-card">S</text>'+
+    '<text x="90" y="56" text-anchor="middle" class="wd-card">E</text>'+
+    '<text x="14" y="56" text-anchor="middle" class="wd-card">W</text>'+
+    '<polygon points="'+litPts+'" fill="#5bd6e0"/>'+          // lit facet (cyan)
+    '<polygon points="'+shadowPts+'" fill="#3a6ea5"/>'+       // shadow facet (indigo)
+    '<circle cx="52" cy="52" r="2.5" fill="var(--ink-dim)"/>'+
+    '</svg>';
+
+  // ---- speed gauge (270° arc, SVG) ----
+  // Fixed logarithmic scale 0..100 mph: log(v+10)-based, so the low end (where
+  // most winds sit) gets good resolution while gales still fit on a stable dial
+  // that never shifts or saturates. 10-mph ticks; number labels at readable
+  // points. f(0)=0, f(100)=1.
+  const SPD_MAX=100;
+  const _lgA=Math.log10(10), _lgB=Math.log10(SPD_MAX+10);
+  const spdFrac = v => {
+    const c=Math.max(0,Math.min(SPD_MAX, v||0));
+    return (Math.log10(c+10)-_lgA)/(_lgB-_lgA);
+  };
+  const startA=135, sweep=270;              // 135deg..405deg
+  const needleA=startA+sweep*spdFrac(spdMph);
+  const gcx=52, gcy=52, gr=42;
+  function arcPt(ang,rr){ const rad=ang*Math.PI/180; return [gcx+Math.cos(rad)*rr, gcy+Math.sin(rad)*rr]; }
+  function arcPath(a0,a1,rr){
+    const [x0,y0]=arcPt(a0,rr), [x1,y1]=arcPt(a1,rr);
+    const large=(a1-a0)>180?1:0;
+    return 'M '+x0.toFixed(1)+' '+y0.toFixed(1)+' A '+rr+' '+rr+' 0 '+large+' 1 '+x1.toFixed(1)+' '+y1.toFixed(1);
+  }
+  const [nx,ny]=arcPt(needleA, gr-10);
+  // tick marks around the arc; number labels only where they stay legible.
+  const tickVals=[5,10,20,30,40,50,60,70,80,90,100];
+  const labelAt=new Set([5,10,20,30,40,50,60,80,100]);
+  let scaleTicks='';
+  for(const v of tickVals){
+    const a=startA+sweep*spdFrac(v);
+    const [tx0,ty0]=arcPt(a, gr+3), [tx1,ty1]=arcPt(a, gr-1);
+    scaleTicks+='<line x1="'+tx0.toFixed(1)+'" y1="'+ty0.toFixed(1)+'" x2="'+tx1.toFixed(1)+'" y2="'+ty1.toFixed(1)+'" stroke="var(--ink-faint)" stroke-width="1"/>';
+    if(labelAt.has(v)){
+      const [lx,ly]=arcPt(a, gr+9);
+      scaleTicks+='<text x="'+lx.toFixed(1)+'" y="'+(ly+2.5).toFixed(1)+'" text-anchor="middle" class="wd-card" style="font-size:8px">'+v+'</text>';
+    }
+  }
+  // gust tick: a short radial mark on the arc at the gust value. Amber so it
+  // reads as "gust" distinct from the cyan mean arc.
+  let gustTick='';
+  if(gustMph!=null){
+    const gA=startA+sweep*spdFrac(gustMph);
+    const [gx0,gy0]=arcPt(gA, gr+3), [gx1,gy1]=arcPt(gA, gr-5);
+    gustTick='<line x1="'+gx0.toFixed(1)+'" y1="'+gy0.toFixed(1)+'" x2="'+gx1.toFixed(1)+'" y2="'+gy1.toFixed(1)+'" stroke="#f5b942" stroke-width="2" stroke-linecap="round"/>';
+  }
+  const spdSvg='<svg viewBox="-6 -6 116 116" class="wd-svg">'+
+    '<path d="'+arcPath(startA,startA+sweep,gr)+'" fill="none" stroke="var(--line)" stroke-width="6" stroke-linecap="round"/>'+
+    '<path d="'+arcPath(startA,needleA,gr)+'" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/>'+
+    scaleTicks+
+    gustTick+
+    '<line x1="52" y1="52" x2="'+nx.toFixed(1)+'" y2="'+ny.toFixed(1)+'" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"/>'+
+    '<circle cx="52" cy="52" r="3" fill="var(--ink)"/>'+
+    '<text x="52" y="70" text-anchor="middle" class="wd-card" style="font-size:10px">MPH</text>'+
+    '</svg>';
+
+  const gustTxt = (gustMph!=null && gustMs!=null)
+    ? '<div class="wd-gust">gusts '+Math.round(gustMph)+' mph · '+gustMs.toFixed(1)+' m/s</div>' : '';
+
+  // ---- area spread across the 8-point ring (uses the surrounding field, not
+  // just home) — surfaces whether wind is uniform over the area or changing
+  // across it (a veer/speed gradient often means a front moving through). All
+  // modelled; a genuinely-honest use of the ring we already fetch. ----
+  let areaLine='';
+  const ring=(w.ring||[]).filter(r=>r && r.speed_ms!=null && r.dir_deg!=null);
+  if(ring.length>=4){
+    const allSpd=[spdMs].concat(ring.map(r=>r.speed_ms)).filter(v=>v!=null);
+    const loMph=msToMph(Math.min(...allSpd)), hiMph=msToMph(Math.max(...allSpd));
+    // circular spread of direction: length of the mean unit vector (R). R~1 =
+    // tightly aligned; lower R = directions fanning out across the area.
+    const dirs=[dir].concat(ring.map(r=>r.dir_deg));
+    let sx=0, sy=0;
+    dirs.forEach(dg=>{ const a=dg*Math.PI/180; sx+=Math.cos(a); sy+=Math.sin(a); });
+    const R=Math.sqrt(sx*sx+sy*sy)/dirs.length;         // 0..1 alignment
+    const spdRange=hiMph-loMph;
+    // classify honestly
+    let uniform;
+    if(R>=0.97 && spdRange<=4) uniform="uniform across area";
+    else if(R>=0.9 && spdRange<=8) uniform="fairly even across area";
+    else uniform="varying across area";
+    areaLine='<div class="wd-area">Area '+Math.round(loMph)+'–'+Math.round(hiMph)+
+      ' mph · '+uniform+'</div>';
+  }
+
+  // ---- data blocks 3 & 4 from the same OpenWeather pull (no extra API cost) ----
+  const c = w.conditions || {};
+  const tC = v => (v==null?'—':Math.round(v)+'°');
+  // temperature -> colour, cold(blue) to warm(red) across -20..+40C, with the
+  // cold/warm crossover around 15-20C. Kept bright enough for the dark bg.
+  const tempColour = v => {
+    if(v==null) return 'var(--ink)';
+    // piecewise: <=15 cools toward blue; >=20 warms toward red; 15-20 crossover
+    const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+    let hue;
+    if(v<=15){ // -20..15 -> 220(blue) .. 170(cyan-green)
+      const f=clamp((v-(-20))/(15-(-20)),0,1); hue=220-50*f;
+    } else if(v>=20){ // 20..40 -> 45(amber) .. 0(red)
+      const f=clamp((v-20)/(40-20),0,1); hue=45-45*f;
+    } else { // 15..20 crossover: 170 -> 45 through green/yellow
+      const f=clamp((v-15)/5,0,1); hue=170-125*f;
+    }
+    return 'hsl('+Math.round(hue)+',85%,62%)';
+  };
+  // value + unit sharing one colour (unit slightly dimmer via opacity so it's
+  // clearly the "same colour as the value it represents").
+  const cVal = (txt, colour, unit) => '<span style="color:'+colour+'">'+txt+
+    (unit?'<span class="wd-du" style="color:'+colour+';opacity:.7">'+unit+'</span>':'')+'</span>';
+  const tVal = v => v==null ? '—' : cVal(Math.round(v)+'°', tempColour(v));
+  // humidity comfort colour: dry (amber) / comfortable (green) / humid (blue)
+  const humColour = rh => {
+    if(rh==null) return 'var(--ink)';
+    if(rh<40)  return 'hsl(40,85%,62%)';    // dry — amber
+    if(rh<=65) return 'hsl(140,70%,58%)';   // comfortable — green
+    if(rh<=80) return 'hsl(200,85%,62%)';   // humid — light blue
+    return 'hsl(220,85%,64%)';              // very humid — blue
+  };
+  // THI (temperature-humidity index), Celsius human-comfort form:
+  //   THI = T - (0.55 - 0.0055*RH)(T - 14.5)   [T in C, RH in %]
+  // Reported in its accepted index units (°C-equivalent), NOT a percentage.
+  const thiVal = (T, RH) => (T==null||RH==null) ? null
+    : T - (0.55 - 0.0055*RH)*(T - 14.5);
+  const thiBand = x => {
+    if(x==null) return {word:'—', colour:'var(--ink)'};
+    if(x<20)   return {word:'Comfortable', colour:'hsl(140,70%,58%)'};
+    if(x<24)   return {word:'Warm',        colour:'hsl(48,88%,60%)'};
+    if(x<27)   return {word:'Uncomfortable',colour:'hsl(28,88%,60%)'};
+    return {word:'Oppressive', colour:'hsl(5,85%,62%)'};
+  };
+  const thi = thiVal(c.temp, c.humidity);
+  const tb = thiBand(thi);
+  const thiRow = thi==null ? '—'
+    : cVal(Math.round(thi)+'<span style="opacity:0">°</span>', tb.colour)+
+      ' <span style="color:'+tb.colour+';font-weight:400;font-size:11px">'+tb.word+'</span>';
+  const row = (label, val) => '<div class="wd-drow"><span class="wd-dl">'+label+'</span>'+
+                              '<span class="wd-dv">'+val+'</span></div>';
+  // block 3: temperature, humidity, THI & pressure. "Dew point" on one line, cyan.
+  const dewVal = c.dew_point==null ? '—' : cVal(Math.round(c.dew_point)+'°', '#5bd6e0');
+  const block3 =
+    '<div class="wd-data">'+
+      row('Temp', tVal(c.temp))+
+      row('<span style="white-space:nowrap">Dew point</span>', dewVal)+
+      row('Humidity', c.humidity==null?'—':cVal(Math.round(c.humidity), humColour(c.humidity), '%'))+
+      row('THI', thiRow)+
+      row('Feels like', tVal(c.feels_like))+
+      row('Min temp', tVal(c.temp_min))+
+      row('Max temp', tVal(c.temp_max))+
+    '</div>';
+  // block 4: sky, precip & sun. Rainfall value coloured like the rain gauge
+  // bands (dry grey -> light blue -> mid blue -> heavy indigo/violet).
+  const rainColour = mm => {
+    if(mm==null || mm<=0) return 'var(--ink-faint)';
+    if(mm<0.5) return '#7fb6e0';      // light
+    if(mm<2)   return '#4a90d9';      // moderate
+    if(mm<8)   return '#3a5fc0';      // heavy
+    return '#7a4fd0';                 // very heavy / violet
+  };
+  const isSnow = (c.snow_1h!=null && c.snow_1h>0);
+  const precip = isSnow
+      ? {label:'Snow 1h', val:cVal(c.snow_1h.toFixed(1), rainColour(c.snow_1h), 'mm')}
+      : {label:'Rain 1h',
+         val:(c.rain_1h!=null&&c.rain_1h>0)
+            ? cVal(c.rain_1h.toFixed(1), rainColour(c.rain_1h), 'mm')
+            : cVal('0', rainColour(0), 'mm')};
+  const visTxt = c.visibility_m==null ? '—'
+    : (c.visibility_m>=10000 ? cVal('10+', 'var(--ink)', 'km')
+       : cVal((c.visibility_m/1000).toFixed(1), 'var(--ink)', 'km'));
+  // Render sun times in the SEARCHED LOCATION's local time using OpenWeather's
+  // tz_offset (seconds from UTC), so UK weather always shows UK times regardless
+  // of the viewer's timezone. Compute UTC parts then apply the offset manually
+  // (getUTCHours avoids the browser's own zone leaking in).
+  const tzOff = (c.tz_offset!=null) ? c.tz_offset : 0;   // seconds
+  const sunT = u => { if(u==null) return '—';
+    const d=new Date((u + tzOff)*1000);
+    return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0'); };
+  // description colour: yellow if sunny/clear, cyan if any rain/snow/drizzle,
+  // white otherwise (cloud/mist/etc).
+  const descColour = () => {
+    const m=(c.cond_main||'').toLowerCase(), d=(c.cond_desc||'').toLowerCase();
+    if(/rain|snow|drizzle|sleet|thunder/.test(m+d)) return '#5bd6e0';
+    if(/clear|sun/.test(m+d)) return '#f5d24a';
+    return 'var(--ink)';
+  };
+  // pressure tendency: colour rising warm, falling cool, steady neutral
+  const pt = c.pressure_tendency;
+  const trendColour = t => {
+    if(!t) return 'var(--ink-faint)';
+    if(/Rising/.test(t.trend)) return 'hsl(140,65%,58%)';   // rising — green
+    if(/Falling/.test(t.trend)) return 'hsl(30,88%,60%)';   // falling — amber
+    return 'var(--ink-dim)';                                 // steady
+  };
+  const trendRow = !pt ? ''
+    : '<div class="wd-drow" style="padding-top:0"><span class="wd-dl"></span>'+
+      '<span class="wd-dv" style="font-weight:400;font-size:11px;color:'+trendColour(pt)+'">'+
+      pt.trend+(pt.span_h && pt.span_h<2.5 ? ' <span style="color:var(--ink-faint)">('+pt.span_h+'h)</span>' : '')+
+      '</span></div>';
+  const desc = c.cond_desc ? c.cond_desc.charAt(0).toUpperCase()+c.cond_desc.slice(1) : '—';
+  // Cloud + description come from Open-Meteo (OWM's cloud proved unreliable
+  // here); show the provenance discreetly so the source is always visible.
+  const cloudSrc = c.cloud_source || '';
+  const cloudSrcTag = cloudSrc
+    ? ' <span class="wd-du" style="font-size:9px;color:var(--ink-faint)" title="Cloud &amp; sky description source: '+cloudSrc.replace(/"/g,'&quot;')+'">'+
+      (/Open-Meteo/.test(cloudSrc) && !/unavailable/.test(cloudSrc) ? 'OM' : 'OWM')+'</span>'
+    : '';
+  const block4 =
+    '<div class="wd-data">'+
+      row(precip.label, precip.val)+
+      row('Visibility', visTxt)+
+      row('Cloud %'+cloudSrcTag, (c.clouds_pct==null?'—':cVal(Math.round(c.clouds_pct), 'var(--ink)', '%')))+
+      '<div class="wd-drow"><span class="wd-dl" style="white-space:nowrap;font-weight:600;color:'+descColour()+'">'+desc+'</span></div>'+
+      row('Sunrise', sunT(c.sunrise)+' <span class="wd-du">↑</span>')+
+      row('Sunset', sunT(c.sunset)+' <span class="wd-du">↓</span>')+
+      row('Pressure', c.pressure==null?'—':cVal(c.pressure, 'var(--ink)', 'mB'))+
+      trendRow+
+    '</div>';
+
+  // timezone label for the sun times — the SEARCHED LOCATION's UTC offset
+  // (e.g. "UTC+1"), derived from OpenWeather's tz_offset so it's correct for the
+  // location being viewed, not the machine. DST is baked into the offset OWM
+  // returns, so this switches automatically (e.g. UTC+1 in summer, UTC+0 winter).
+  const tzLabel = (() => {
+    if(c.tz_offset==null) return '';
+    const h = c.tz_offset/3600;
+    if(h===0) return 'UTC';
+    const sign = h>0 ? '+' : '−';
+    const ah = Math.abs(h);
+    const whole = Math.floor(ah);
+    const mins = Math.round((ah-whole)*60);
+    return 'UTC'+sign+whole+(mins?(':'+String(mins).padStart(2,'0')):'');
+  })();
+
+  // Stale marker: the server tags the wind reading stale when block 4 falls back
+  // to a cached OpenWeather reading (TTL expired, budget/key gap, or failed
+  // fetch). Surface it plainly so an old sky reading — e.g. "99% overcast" hours
+  // after it cleared — can't look like a live observation. Honesty over plausibility.
+  let staleBadge="";
+  if(w.stale){
+    let ageTxt="";
+    if(w.stale_age_s!=null){
+      const s=w.stale_age_s;
+      ageTxt = s<5400 ? Math.round(s/60)+"m old" : Math.round(s/3600)+"h old";
+    } else if(w.generated){
+      ageTxt = timeAgo(w.generated).replace(/<[^>]+>/g,"");
+    }
+    const why = w.stale_reason ? " ("+w.stale_reason+")" : "";
+    staleBadge = ' · <span class="stale" title="Showing the last cached reading'+why+
+      '; a fresh reading was not available this cycle. Cloud/description may not match the current sky.">⚠ cached'+
+      (ageTxt?" "+ageTxt:"")+'</span>';
+  }
+  return '<div class="ea-wind">'+
+    '<div class="ea-sec-title" style="margin-top:22px">Local wind &amp; weather'+
+      '<span class="note">'+(w.source||"OpenWeather")+
+        (tzLabel ? ' · times '+tzLabel : '')+staleBadge+'</span></div>'+
+    '<div class="ea-wind-dials">'+
+      '<div class="wd-cell">'+dirSvg+
+        '<div class="wd-read"><div class="wd-main">'+compass+'</div>'+
+        '<div class="wd-sub" style="color:var(--ink);font-size:12px">'+Math.round(dir)+'°</div>'+
+        (w.dir_range && w.dir_range.span_deg!=null
+          ? '<div class="wd-sub" style="color:var(--ink-faint);font-size:10px">3h range '+w.dir_range.span_deg+'°</div>'
+          : '')+
+        '</div></div>'+
+      '<div class="wd-cell">'+spdSvg+
+        '<div class="wd-read"><div class="wd-main">'+(spdMph!=null?Math.round(spdMph):'—')+' <span class="wd-u">mph</span></div>'+
+        '<div class="wd-sub">'+(spdMs!=null?spdMs.toFixed(1):'—')+' m/s</div>'+gustTxt+'</div></div>'+
+      block3+
+      block4+
+    '</div></div>';
+}
+
 function eaRenderRainMap(rainfall){
   const oLat=eaLoc.lat, oLon=eaLoc.lon;
   const toRad=d=>d*Math.PI/180;
@@ -4656,6 +5295,9 @@ function eaRender(){
     if(c2) html+='<div class="ea-fc sev2"><b>'+c2+'</b> flood warning'+(c2>1?'s':'')+'</div>';
     if(c3) html+='<div class="ea-fc sev3"><b>'+c3+'</b> flood alert'+(c3>1?'s':'')+'</div>';
   }
+  // rain alert chip sits to the RIGHT of the flood banner, in the same row
+  // (mirrors the main-page header chip; same rainSummary state drives both)
+  html+='<span class="ea-rainchip" id="eaRainChip">'+(rainSummary?rainChipHtml().replace(' data-act="ea"',''):'')+'</span>';
   html+='</div>';
 
   // ---- per-endpoint diagnostics banner ----
@@ -4750,21 +5392,27 @@ function eaRender(){
   html+='</div>';  // ea-left
 
   // right column: drill-down + rainfall
-  html+='<div class="ea-detail"><div id="eaDetail">'+
+  const swapBtnPinned=(eaData.rainfall && eaData.rainfall.length)
+    ? '<button class="ea-swapbtn pinned" data-act="swaplower" '+
+      'title="Swap the rainfall and local-weather panels">⇅ swap panels</button>'
+    : '';
+  html+='<div class="ea-detail">'+swapBtnPinned+
+    '<div id="eaDetail">'+
     '<div class="ea-detail-empty">Select a gauge to see its recent trace.</div></div>';
+  // --- build the rainfall grid block and the local-weather block separately so
+  // they can be shown in either order (plot panel above stays pinned) ---
+  let rainBlock='';
   if(eaData.rainfall && eaData.rainfall.length){
     const rained=eaData.rainfall.filter(r=>r.mm>0);
-    // period each reading covers, from the measure definition (e.g. 900s = 15 min)
     const ps=eaData.rainfall[0].period_s;
     const periodLbl = ps==900?"15-minute rainfall" : ps==3600?"Hourly rainfall"
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
-    // when this rainfall data was last pulled (server-side overview build time)
     let pulled='';
     if(eaData.generated){
       try{ pulled=' · pulled '+new Date(eaData.generated)
         .toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"})+' UT'; }catch(e){}
     }
-    html+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
+    rainBlock+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
       '<span class="note">'+eaData.rainfall.length+' gauges · '+
       (eaRainView==="map"?"roughly by direction":"nearest first")+
       (rained.length?'':' · all dry')+pulled+'</span>'+
@@ -4772,19 +5420,23 @@ function eaRender(){
         '<button class="rn-vt'+(eaRainView==="list"?" on":"")+'" data-rainview="list">list</button>'+
         '<button class="rn-vt'+(eaRainView==="map"?" on":"")+'" data-rainview="map">map</button>'+
       '</span></div>';
-    if(eaRainView==="map") html+=eaRenderRainMap(eaData.rainfall);
+    if(eaRainView==="map") rainBlock+=eaRenderRainMap(eaData.rainfall);
     else {
-      html+='<div class="ea-rain">';
-      eaData.rainfall.forEach(r=>{ html+=eaRainCard(r); });
-      html+='</div>';
+      rainBlock+='<div class="ea-rain">';
+      eaData.rainfall.forEach(r=>{ rainBlock+=eaRainCard(r); });
+      rainBlock+='</div>';
     }
   } else if((eaData.diag||{}).rainfall){
-    // rainfall gauges failed to load this cycle — say so rather than omitting
-    // the section entirely (which looks like "no rain gauges exist here").
-    html+='<div class="ea-sec-title" style="margin-top:22px">Rainfall'+
+    rainBlock+='<div class="ea-sec-title" style="margin-top:22px">Rainfall'+
       '<span class="note">gauges unavailable this cycle</span></div>'+
       '<div class="ea-softerr">Rainfall gauges did not return: '+
       String(eaData.diag.rainfall).replace(/</g,"&lt;")+' — retrying automatically.</div>';
+  }
+  const weatherBlock=eaRenderWindDials();
+  if(eaLowerOrder==="rain"){
+    html+=rainBlock+weatherBlock;
+  } else {
+    html+=weatherBlock+rainBlock;
   }
   html+='</div></div>';  // ea-detail, ea-layout
 
@@ -4813,6 +5465,12 @@ function eaRender(){
     eaRainView=v; try{ localStorage.setItem("eaRainView", v); }catch(e){}
     eaRender();
   });
+  // swap the rainfall grid <-> local weather panel order
+  b.querySelectorAll('[data-act="swaplower"]').forEach(btn=>btn.onclick=()=>{
+    eaLowerOrder = (eaLowerOrder==="weather") ? "rain" : "weather";
+    try{ localStorage.setItem("eaLowerOrder", eaLowerOrder); }catch(e){}
+    eaRender();
+  });
   // wire rainfall gauge clicks -> plot 15-min history in the detail area.
   // Cards live under .ea-rain (list) or .ea-rainmap (map) — match both.
   b.querySelectorAll(".ea-rain .rn, .ea-rainmap .rn").forEach(el=>el.onclick=()=>{
@@ -4824,6 +5482,21 @@ function eaRender(){
   });
   // if a station was selected, keep its detail loaded
   if(eaSelRef){ if(eaSelKind==="rain") eaLoadRain(eaSelRef, eaSelLoc||eaSelRef); else eaLoadStation(eaSelRef); }
+}
+
+// Clear the current gauge/rain selection and return the detail panel to its
+// "select a gauge" placeholder, de-highlighting any selected card.
+function eaClearSelection(){
+  eaSelRef=null; eaSelKind=null; eaSelLoc=null;
+  const host=$("#eaDetail");
+  if(host) host.innerHTML='<div class="ea-detail-empty">Select a gauge to see its recent trace.</div>';
+  const b=$("#eaBody");
+  if(b){ b.querySelectorAll(".ea-st.sel,.rn.sel").forEach(x=>x.classList.remove("sel")); }
+}
+
+function eaWireClearSel(){
+  const btn=document.querySelector('.ea-detail-card [data-act="clearsel"]');
+  if(btn) btn.onclick=eaClearSelection;
 }
 
 async function eaLoadStation(ref){
@@ -4838,11 +5511,14 @@ async function eaLoadStation(ref){
     const badge = band?'<span class="ea-badge '+band+'">'+band+'</span>':'';
     const typ = (s.typical_low!=null&&s.typical_high!=null)
       ? 'typical '+s.typical_low+'–'+s.typical_high+' m' : '';
-    host.innerHTML='<div class="ea-detail-card"><h3>'+(d.label||ref)+badge+'</h3>'+
+    host.innerHTML='<div class="ea-detail-card"><h3>'+
+      '<button class="ea-clearsel" data-act="clearsel" title="Clear selection">✕</button>'+
+      (d.label||ref)+badge+'</h3>'+
       '<div class="meta">'+[d.river,d.town].filter(Boolean).join(' · ')+
       (typ?' · '+typ:'')+'</div>'+
       '<canvas id="eaChart"></canvas></div>';
     eaDrawChart(d, s);
+    eaWireClearSel();
   }catch(e){ host.innerHTML='<div class="ea-detail-empty">'+e.message+'</div>'; }
 }
 
@@ -4932,10 +5608,13 @@ async function eaLoadRain(ref, loc){
     for(const k in d.series){ if(!series || d.series[k].length>series.length) series=d.series[k]; }
     if(!series || !series.length){ host.innerHTML='<div class="ea-detail-empty">No history.</div>'; return; }
     const total24=series.slice(-96).reduce((a,p)=>a+(p.v||0),0);  // 96×15min = 24h
-    host.innerHTML='<div class="ea-detail-card"><h3>'+loc+' <span class="ea-badge">rain</span></h3>'+
+    host.innerHTML='<div class="ea-detail-card"><h3>'+
+      '<button class="ea-clearsel" data-act="clearsel" title="Clear selection">✕</button>'+
+      loc+' <span class="ea-badge">rain</span></h3>'+
       '<div class="meta">15-min rainfall · last 24h total '+total24.toFixed(1)+' mm</div>'+
       '<canvas id="eaRainChart"></canvas></div>';
     eaDrawRain(series);
+    eaWireClearSel();
   }catch(e){ host.innerHTML='<div class="ea-detail-empty">'+e.message+'</div>'; }
 }
 
@@ -5323,6 +6002,47 @@ const Alarm = (function(){
   let rainWorstRank=-1;        // worst band rank currently announced
   let rainNextAnnounce=0;      // epoch ms of the next allowed repeat
   let rainRepeatStep=0;        // how many repeats at the current band (for log widen)
+  // popup state (now a header chip, not a fixed toast)
+  const RAIN_POPUP_TIMEOUT=15*60*1000;   // "Rain stopped" auto-clears after this
+  const RAIN_NOW_FRESH_MS=30*60*1000;    // "now" requires a reading this fresh
+  let rainPopupWasWet=false, rainPopupTimer=null, rainPopupDismissed=false, rainPopupSig="";
+  const _rpChipClass=r=>["rain-light","rain-mod","rain-heavy","rain-extreme"][r]||"rain-light";
+  const _rpBadge=r=>["light","moderate","heavy","extreme"][r]||"";
+  function _rainHeaderRefresh(){ try{ buildHeaderSummaries(); }catch(e){} }
+  function showRainPopup(state){
+    // signature so a genuinely new situation clears a prior manual dismiss
+    const sig = state.kind==="stopped" ? "stopped"
+      : state.band+"|"+(state.here?"now":("d"+Math.round(state.dist_km||-1)))+"|"+(state.sustained?"s":"");
+    if(sig!==rainPopupSig) rainPopupDismissed=false;
+    rainPopupSig=sig;
+    if(rainPopupDismissed){ return; }
+    clearTimeout(rainPopupTimer); rainPopupTimer=null;
+    if(state.kind==="stopped"){
+      rainSummary={cls:"rain-stopped", icon:"🌦", text:"Rain stopped", badge:"", flash:false};
+      _rainHeaderRefresh();
+      rainPopupTimer=setTimeout(()=>{ rainSummary=null; rainPopupSig=""; _rainHeaderRefresh(); }, RAIN_POPUP_TIMEOUT);
+      return;
+    }
+    const cap=state.band.charAt(0).toUpperCase()+state.band.slice(1);   // "Moderate rain"
+    const where = state.here ? " now"
+      : (state.dist_km!=null ? " within "+Math.round(state.dist_km)+" km" : " nearby");
+    rainSummary={
+      cls:_rpChipClass(state.rank),
+      icon: state.rank>=2 ? "⛈" : "🌧",
+      text: cap+where,
+      badge:_rpBadge(state.rank)+(state.sustained?" · sustained":""),
+      flash: state.rank>=2      // heavy / extremely heavy pulse
+    };
+    _rainHeaderRefresh();
+    // active rain doesn't time out (would hide ongoing rain); it clears when the
+    // engine reports dry -> "Rain stopped" -> its own 15-min timeout.
+  }
+  function hideRainPopup(clearSig){
+    rainSummary=null;
+    clearTimeout(rainPopupTimer); rainPopupTimer=null;
+    if(clearSig!==false) rainPopupSig="";
+    _rainHeaderRefresh();
+  }
   function _rainBaseInterval(distKm){
     if(distKm==null) return RAIN_BASE_FAR;
     if(distKm<5)  return RAIN_BASE_NEAR;
@@ -5419,6 +6139,31 @@ const Alarm = (function(){
     }
     // keep the latch itself in sync (fires once on the initial transition)
     set("rain","rain-situation", want, "warn", (wasLatched||forceAnnounce)?null:spoken);
+
+    // --- main-page popup (driven by this same engine, only while armed) ---
+    // Wording per spec: "<Band> now" when the nearest raining gauge is within
+    // 5 km AND its reading is fresh (<30 min); "<Band> within N km" otherwise;
+    // "Rain stopped" once the closest gauges go dry (shown for 15 min). Flashes
+    // border+badge for heavy and extremely heavy. Nearest drives the wording.
+    updateRainPopup(want, worst, worstRank, nearestAtWorst, sustained, wet, now);
+  }
+
+  function updateRainPopup(want, worst, worstRank, nearestAtWorst, sustained, wet, now){
+    if(want && worst){
+      const near = nearestAtWorst || wet[0];
+      const dist = near ? near.dist_km : null;
+      const dt = near && near.dt ? Date.parse(near.dt) : NaN;
+      const freshNow = !isNaN(dt) && (now-dt) <= RAIN_NOW_FRESH_MS;
+      const here = dist!=null && dist<5;
+      showRainPopup({kind:"rain", band:worst, rank:worstRank,
+                     here: here && freshNow, dist_km:dist, sustained});
+      rainPopupWasWet=true;
+    } else if(rainPopupWasWet){
+      // transition wet -> dry: show "Rain stopped" (auto-clears after timeout)
+      showRainPopup({kind:"stopped"});
+      rainPopupWasWet=false;
+    }
+    // if already dry and stopped shown, the timeout handles removal
   }
   function flashBtnSafe(){ try{ flashBtn(); }catch(e){} }
 
@@ -5431,6 +6176,7 @@ const Alarm = (function(){
     situations.river=null; situations.rain=null;
     rainOnCount=rainOffCount=0; rainLatched=false;
     rainWorstRank=-1; rainRepeatStep=0; rainNextAnnounce=0;
+    rainPopupWasWet=false; hideRainPopup();
     stopCritRepeat();
     if("speechSynthesis" in window) try{ speechSynthesis.cancel(); }catch(e){}
   }
@@ -5452,6 +6198,7 @@ const Alarm = (function(){
     armed=false;
     if(critTimer){ clearInterval(critTimer); critTimer=null; }
     if("speechSynthesis" in window) try{ speechSynthesis.cancel(); }catch(e){}
+    rainPopupWasWet=false; hideRainPopup();   // popup only shows while armed
     updateBtn();
     notifyWatchChange();
   }
@@ -5541,6 +6288,8 @@ eaWatchSync();
 })();
 tick();
 setInterval(tick, REFRESH);
+pollFrequencyFast();            // fast frequency fetch (merges new samples)
+setInterval(freqTick, 1000);   // single ticker: advances cursor + refreshes age every 1s
 addEventListener("resize",()=>{drawFreq();drawFreqAxis();
   if(freqDevHist.length){ const dev=freqDevHist[freqDevHist.length-1].dev;
     freqDevHist=freqDevHist.filter(s=>s.t>=Date.now()-FREQ_DEV_WINDOW);
