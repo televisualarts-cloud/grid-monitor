@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260823.8  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260824.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -72,7 +72,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260823.8"
+SERVER_BUILD = "260824.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -4036,14 +4036,30 @@ EA_PHASE_LEAD = 45             # aim to poll this many s AFTER expected publish
 
 
 def _ea_errstr(e):
-    """Compact, informative error string for an upstream failure. For an
-    HTTPError, include the status code and any body snippet fetch_json attached
-    (e.g. a CDN's 'Backend fetch failed' text), so out['error'] pinpoints the
-    cause rather than just naming the exception type."""
+    """Compact, human-readable error string for an upstream failure. For an
+    HTTPError, include the status code and any USEFUL body text fetch_json
+    attached. CDN/proxy error responses (Fastly/Varnish etc.) often carry a full
+    HTML error page as the body; we strip tags and boilerplate so the message
+    stays a plain textual reason instead of leaking markup onto the page. If no
+    meaningful text survives, fall back to the status reason alone."""
     if isinstance(e, urllib.error.HTTPError):
-        body = getattr(e, "grid_body", "") or ""
-        body = " ".join(body.split())[:160]
+        raw = getattr(e, "grid_body", "") or ""
         base = f"HTTP {e.code} {e.reason}"
+        # CDN/proxy error responses often carry a full HTML page. Prefer its
+        # <title> (or first <h1>) as a clean one-line reason; strip a leading
+        # "Error NNN" that just repeats the status. Only fall back to the raw
+        # stripped text for genuinely non-HTML bodies.
+        looks_html = "<" in raw and ">" in raw
+        body = ""
+        if looks_html:
+            m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.I | re.S) \
+                or re.search(r"<h1[^>]*>(.*?)</h1>", raw, re.I | re.S)
+            if m:
+                body = re.sub(r"<[^>]*>", " ", m.group(1))
+        else:
+            body = re.sub(r"<[^>]*>", " ", raw)
+        body = " ".join(body.split())
+        body = re.sub(r"^Error\s+\d{3}\s*", "", body).strip()[:120]
         return f"{base} — {body}" if body else base
     return f"{type(e).__name__}: {e}"
 
@@ -4661,6 +4677,9 @@ def _ea_collect_wind(out, lat, lon):
                 wind["dir_range"] = _dir_range(dirs)
         except Exception:
             wind["dir_history"] = None
+        # classify calm / variable / normal now dir_range (if any) is known
+        _span = (wind.get("dir_range") or {}).get("span_deg")
+        home["wind_state"] = _wind_state(w.get("speed"), w.get("deg"), _span)
         out["wind"] = wind
         _ea_wind_cache[wkey] = {"wind": wind, "ts": time.time()}
     except Exception as e:
@@ -4671,6 +4690,25 @@ def _ea_collect_wind(out, lat, lon):
         # (stale) copy so an old sky reading can't masquerade as live.
         if cached:
             out["wind"] = _stale_wind(cached, "last fetch failed")
+
+
+def _wind_state(speed_ms, deg, dir_span_deg):
+    """Classify the home wind so the dial can be honest when direction is
+    undefined rather than drawing a firm arrow.
+      calm     — speed below WMO calm threshold (0.5 m/s); direction meaningless.
+      variable — OWM omitted the bearing (deg is None) with a real speed, OR the
+                 logged 3h direction has swung widely (>=135 deg) at low speed
+                 (<3 m/s) — a genuinely shifting light wind, not a steady breeze.
+      normal   — a definite bearing to draw.
+    """
+    if speed_ms is not None and speed_ms < 0.5:
+        return "calm"
+    if speed_ms is not None and speed_ms > 0 and deg is None:
+        return "variable"
+    if (dir_span_deg is not None and dir_span_deg >= 135
+            and speed_ms is not None and speed_ms < 3):
+        return "variable"
+    return "normal"
 
 
 def get_ea_station(ref):

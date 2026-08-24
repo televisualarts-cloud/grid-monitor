@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260823.8  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260824.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -1245,7 +1245,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260823.8 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260824.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -4861,7 +4861,10 @@ function windCompassName(deg){ if(deg==null) return "—"; return WIND_COMPASS16
 // Sits below the rainfall grid, in the rainfall column.
 function eaRenderWindDials(){
   const w=eaData && eaData.wind;
-  if(!w || !w.home || w.home.dir_deg==null){
+  // A missing bearing alone is NOT a failure — calm/variable winds legitimately
+  // have no defined direction. Only bail to the softerr when there's no home
+  // reading at all (no speed either).
+  if(!w || !w.home || (w.home.dir_deg==null && w.home.speed_ms==null)){
     if(eaData && eaData.diag && eaData.diag.wind){
       return '<div class="ea-wind"><div class="ea-sec-title" style="margin-top:22px">Local wind'+
         '<span class="note">modelled · unavailable this cycle</span></div>'+
@@ -4873,7 +4876,13 @@ function eaRenderWindDials(){
   const h=w.home;
   const dir=h.dir_deg, spdMs=h.speed_ms, gustMs=h.gust_ms;
   const spdMph=msToMph(spdMs), gustMph=msToMph(gustMs);
-  const compass=windCompassName(dir);
+  // wind_state (from backend): "calm" | "variable" | "normal". When calm or
+  // variable the direction is undefined, so we replace the arrow and the
+  // textual cardinal with a cyan CALM/VAR label rather than drawing a firm N.
+  const wState=h.wind_state || (dir==null ? "variable" : "normal");
+  const dirDefined = (wState==="normal" && dir!=null);
+  const stateLabel = wState==="calm" ? "CALM" : (wState==="variable" ? "VAR" : null);
+  const compass = dirDefined ? windCompassName(dir) : stateLabel;
 
   // ---- direction compass (SVG) ----
   // Arrow points in the direction the wind is blowing TOWARDS is a common
@@ -4927,6 +4936,15 @@ function eaRenderWindDials(){
   // runs tip -> tail centre)
   const litPts=[tip,rb,tc,lb].map(p=>p.join(',')).join(' ');
   const shadowPts=[tip,rb,tc].map(p=>p.join(',')).join(' ');
+  // centre glyph: origami arrow when the bearing is defined, else a cyan
+  // CALM/VAR label sitting where the arrow would be.
+  const centreGlyph = dirDefined
+    ? '<polygon points="'+litPts+'" fill="#5bd6e0"/>'+       // lit facet (cyan)
+      '<polygon points="'+shadowPts+'" fill="#3a6ea5"/>'+    // shadow facet (indigo)
+      '<circle cx="52" cy="52" r="2.5" fill="var(--ink-dim)"/>'
+    : '<text x="52" y="52" text-anchor="middle" dominant-baseline="central" '+
+      'fill="#5bd6e0" font-size="20" font-weight="700" '+
+      'letter-spacing="1">'+stateLabel+'</text>';
   const dirSvg='<svg viewBox="-6 -6 116 116" class="wd-svg">'+
     '<circle cx="52" cy="52" r="42" fill="none" stroke="var(--line)" stroke-width="1"/>'+
     histTicks.join('')+
@@ -4935,9 +4953,7 @@ function eaRenderWindDials(){
     '<text x="52" y="92" text-anchor="middle" class="wd-card">S</text>'+
     '<text x="90" y="56" text-anchor="middle" class="wd-card">E</text>'+
     '<text x="14" y="56" text-anchor="middle" class="wd-card">W</text>'+
-    '<polygon points="'+litPts+'" fill="#5bd6e0"/>'+          // lit facet (cyan)
-    '<polygon points="'+shadowPts+'" fill="#3a6ea5"/>'+       // shadow facet (indigo)
-    '<circle cx="52" cy="52" r="2.5" fill="var(--ink-dim)"/>'+
+    centreGlyph+
     '</svg>';
 
   // ---- speed gauge (270° arc, SVG) ----
@@ -5190,8 +5206,11 @@ function eaRenderWindDials(){
         (tzLabel ? ' · times '+tzLabel : '')+staleBadge+'</span></div>'+
     '<div class="ea-wind-dials">'+
       '<div class="wd-cell">'+dirSvg+
-        '<div class="wd-read"><div class="wd-main">'+compass+'</div>'+
-        '<div class="wd-sub" style="color:var(--ink);font-size:12px">'+Math.round(dir)+'°</div>'+
+        '<div class="wd-read"><div class="wd-main"'+
+          (dirDefined?'':' style="color:#5bd6e0"')+'>'+compass+'</div>'+
+        (dirDefined
+          ? '<div class="wd-sub" style="color:var(--ink);font-size:12px">'+Math.round(dir)+'°</div>'
+          : '')+
         (w.dir_range && w.dir_range.span_deg!=null
           ? '<div class="wd-sub" style="color:var(--ink-faint);font-size:10px">3h range '+w.dir_range.span_deg+'°</div>'
           : '')+
@@ -5351,8 +5370,10 @@ function eaRender(){
     (((eaData.diag||{}).index_age_s!=null)?' · readings ~'+Math.round(eaData.diag.index_age_s/60)+' min old':'')+
     '</span></div>';
   if(eaData.error && !eaData.stations.length){
-    // hard failure — nothing came back at all
-    html+='<div class="octo-loading">'+eaData.error+'</div>';
+    // hard failure — nothing came back at all. Escape the upstream error: a CDN
+    // 503 body can be a full HTML page, and unescaped it would inject into the
+    // DOM (this is now also sanitised server-side, but escape as defence-in-depth).
+    html+='<div class="octo-loading">'+asEsc(eaData.error)+'</div>';
   } else if(!eaData.stations.length){
     const nonEng = eaLoc.country && eaLoc.country!=="England";
     html+='<div class="octo-loading">No river gauges found in range.'+
@@ -5362,7 +5383,7 @@ function eaRender(){
     // show it as a non-blocking notice rather than hiding the data we did get.
     if(eaData.error){
       html+='<div class="ea-softerr">Some data may be incomplete this cycle: '+
-        eaData.error+' — retrying automatically.</div>';
+        asEsc(eaData.error)+' — retrying automatically.</div>';
     }
     // group by river
     const byRiver={};
