@@ -13,6 +13,13 @@ exact tag.
 
 ---
 
+## 260824
+
+- Local wind: calm and variable states now shown honestly. Direction below 0.5 m/s reads "CALM"; a missing bearing (or a wide 3h direction swing at low speed) reads "VAR". The dial replaces its arrow with a cyan CALM/VAR label and drops the degree readout when direction is undefined. (server .1, dashboard .1)
+- Local wind: a missing bearing alone no longer triggers the "unavailable this cycle" notice — a calm wind with no direction is a valid reading, not a fetch failure. (dashboard .1)
+- EA errors: upstream CDN error pages (e.g. a 503 HTML body) are reduced to a plain textual reason instead of leaking raw markup into `eaData.error`. (server .1)
+- EA errors: river-panel error and soft-error notices now HTML-escaped before injection, so an upstream response body can't render into the DOM. (dashboard .1)
+
 ## 260823
 
 - Weather block 4: cloud cover and sky description now sourced from Open-Meteo (primary), with OpenWeather as fallback when Open-Meteo is unavailable. Wind, temperature and pressure remain OpenWeather. (server .7)
