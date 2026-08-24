@@ -8,7 +8,7 @@ plausibility**. Estimated, derived, stale, or basis-mismatched data must be
 labelled as such; a display that is individually accurate but invites a
 misleading reading is treated as a bug.
 
-Last reviewed: 260823.
+Last reviewed: 260824.
 
 ---
 
@@ -36,52 +36,6 @@ Candidate fixes:
   sites already drop out. (Preferred — most in keeping with the principle.)
 - Or append an elevation qualifier to the badge so "strong" cannot stand alone
   near dusk.
-
----
-
-### Gas balance trend: linepack can rise while supply−demand shows drawdown
-**Component:** Gas page — Balance Trend plot (`grid_server.py`, `get_gas`)
-**Status:** under investigation — diagnostic in place
-
-On the 48h balance trend, the linepack line (cyan) sometimes rises at the same
-instant the supply−demand line (amber) is negative. A viewer naturally reads
-amber as the derivative of cyan (negative balance ⇒ falling linepack), but the
-two series are not a matched derivative pair, so the relationship does not hold
-instant-by-instant.
-
-Two candidate mechanisms, not yet distinguished:
-1. **Intra-point timestamp skew.** Linepack is captured every ~2 min but
-   republished by National Gas every ~12 min, while supply/demand flows update on
-   their own cadence. A single logged point can pair a stale linepack with
-   fresher flows. The point is keyed on `linepack_at`, but the flow timestamps
-   were previously discarded, so skew was invisible.
-2. **Archive→live splice basis mismatch.** The plot fills earlier hours from the
-   Published Data API hourly-actual archive and uses the local live log for
-   current hours. The dedup is on an hour bucket, so at the boundary the settled
-   hourly-actual linepack meets the raw live spot linepack — two different
-   measurement bases — and the cyan line can step for reasons unrelated to the
-   concurrent flow balance.
-
-**Diagnostic:** a temporary append-only probe in `get_gas` writes one NDJSON row
-per poll to `gas_skew_diag.ndjson`, recording `linepack_at`, `supply_total_at`,
-`demand_total_at`, `published`, and their pairwise skews in seconds. Interpretation:
-- Non-zero `skew_supply_minus_linepack_s` / `skew_demand_minus_linepack_s` with
-  near-zero `skew_supply_minus_demand_s` ⇒ mechanism 1 (intra-point skew).
-- All skews near zero ⇒ mechanism 2 (splice basis mismatch); investigate the
-  hour-bucket dedup.
-
-Diagnostic is throwaway (no build tag bumped); remove the `DIAG (temporary)`
-block and the two `_at` capture lines once the mechanism is confirmed.
-
-Candidate fixes (pending diagnosis):
-- If skew: stamp each point's linepack and balance with their own source
-  timestamps and only plot balance where its timestamp is within tolerance of
-  the linepack timestamp.
-- If splice: mark or style the unsettled leading live segment distinctly so it is
-  not read as reconciled against the archive.
-
-The header signal itself ("Gas margin tight" / derived early-warning proxy)
-already hedges this correctly and is not affected; only the trend plot is.
 
 ---
 

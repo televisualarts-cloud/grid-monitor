@@ -83,7 +83,7 @@ Open with the **gas** button. It shows the current supply and demand across the 
 - A supply/demand **balance** percentage on the header badge and on the spine label.
 - A **48-hour linepack trend** chart (how much gas is "in the pipes").
 
-Because National Grid doesn't publish a historical total-supply series, the balance line is *derived* from the rate of change of linepack — this is stated on the page rather than hidden. There's no official published "tight" threshold, so any such note is explanatory only.
+The **balance** is the live supply−demand flow imbalance (total supply minus total demand, in mcm/d) taken directly from the National Gas feed — it is a flow measurement, not a derived rate of change of linepack. The linepack trend (a stock, in mcm) and the balance (a flow) are independent measurements and are not an integral/derivative pair, so short-term movements in one need not match the other. There's no official published "tight" threshold, so any such note is explanatory only.
 
 ---
 
