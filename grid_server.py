@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260824.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260825.4  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -63,6 +63,20 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# Rainfall-alert diagnostic probe (read-only; logs the phrase it WOULD speak).
+# Optional: if rain_probe.py isn't beside this file the server runs unchanged.
+try:
+    import rain_probe as _rain_probe
+    _RAIN_PROBE_STATE = _rain_probe.ProbeState()
+except Exception:            # never let a missing/broken probe stop the server
+    _rain_probe = None
+    _RAIN_PROBE_STATE = None
+
+try:
+    import owm_onecall as _owm_onecall
+except Exception:            # missing helper -> server just uses the free 2.5 call
+    _owm_onecall = None
+
 BMRS = "https://data.elexon.co.uk/bmrs/api/v1"
 CARBON = "https://api.carbonintensity.org.uk"
 UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
@@ -72,7 +86,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260824.1"
+SERVER_BUILD = "260825.4"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -1366,6 +1380,34 @@ def _openweather_one(lat, lon, api_key, timeout=12):
     return fetch_json(u, timeout=timeout)
 
 
+def _fetch_owm(lat, lon, key):
+    """Return (data, tier, minute). Tries One Call 4.0 first (if the key is
+    subscribed); on 401/403 or if the helper is absent, falls back to the free
+    2.5 Current Weather call so the base panel keeps working. The OC4 response is
+    adapted into the 2.5 body shape so the existing parse code runs unchanged.
+    `minute` is the OC4 one-minute nowcast series (or None on 2.5)."""
+    if _owm_onecall is not None:
+        oc = _owm_onecall.try_conditions(lat, lon, key, want_minute=True, timeout=12)
+        if oc.get("tier") == "OC4":
+            c = oc["cond"]
+            data = {
+                "wind": {"speed": c["wind_speed_ms"], "deg": c["wind_deg"],
+                         "gust": c["wind_gust_ms"]},
+                "main": {"temp": c["temp"], "feels_like": c["feels_like"],
+                         "temp_min": None, "temp_max": None,
+                         "pressure": c["pressure"], "humidity": c["humidity"]},
+                "clouds": {"all": c["clouds_pct"]},
+                "rain": ({"1h": c["rain_1h"]} if c["rain_1h"] is not None else {}),
+                "snow": ({"1h": c["snow_1h"]} if c["snow_1h"] is not None else {}),
+                "weather": [{"main": c["cond_main"], "description": c["cond_desc"]}],
+                "sys": {"sunrise": c["sunrise"], "sunset": c["sunset"]},
+                "visibility": c["visibility_m"],
+                "timezone": c["tz_offset"],
+            }
+            return data, "OC4", oc.get("minute")
+    return _openweather_one(lat, lon, key, timeout=12), "2.5", None
+
+
 # ---- OpenWeather daily call budget -----------------------------------------
 # Counts every OpenWeather HTTP call (success OR failure — a failed call still
 # consumes quota upstream) against a per-UTC-day ceiling. Persisted to disk so
@@ -1536,14 +1578,46 @@ def _rate_wind(hub_ms):
     return "poor", "storm — turbines cut out"
 
 
-def _rate_solar(clouds_pct, is_day):
-    """Solar resource from cloud cover and daylight. At night, output is zero
-    regardless of cloud — that's 'none', not 'poor', to avoid a misleading red
-    rating overnight when nothing is wrong."""
-    if not is_day:
+SOLAR_MIN_DEG = 5.0    # sun below this is too low for meaningful output
+SOLAR_LOW_DEG = 15.0   # below this, geometry caps output — clear sky is "fair" at best
+
+
+def _solar_elevation(lat, lon, dt_unix):
+    """Sun elevation (degrees above horizon) at a lat/lon and Unix-UTC time.
+    Standard declination + hour-angle approximation, accurate to a fraction of a
+    degree — ample for gating a resource verdict. Negative = below the horizon."""
+    if lat is None or lon is None or dt_unix is None:
+        return None
+    d = datetime.fromtimestamp(dt_unix, tz=timezone.utc)
+    n = d.timetuple().tm_yday
+    frac_hr = d.hour + d.minute / 60.0 + d.second / 3600.0
+    decl = -23.44 * math.cos(math.radians(360.0 / 365.0 * (n + 10)))
+    b = math.radians(360.0 / 365.0 * (n - 81))
+    eot = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)   # minutes
+    tst = frac_hr * 60.0 + eot + 4.0 * lon        # true solar time, minutes (lon E +)
+    ha = math.radians(tst / 4.0 - 180.0)          # hour angle, 0 at solar noon
+    la, de = math.radians(lat), math.radians(decl)
+    s_elev = math.sin(la) * math.sin(de) + math.cos(la) * math.cos(de) * math.cos(ha)
+    return math.degrees(math.asin(max(-1.0, min(1.0, s_elev))))
+
+
+def _rate_solar(clouds_pct, elev_deg):
+    """Solar resource from sun elevation AND cloud. Elevation gates the verdict so
+    a clear but low sun near dawn/dusk can't read "near full output" when geometry
+    limits it (output scales ~sin(elevation)). Night (elev <= 0) is "none", not a
+    misleading red "poor". Above SOLAR_LOW_DEG it is the usual cloud rating."""
+    if elev_deg is None:
+        return "unknown", "no sun-position data"
+    if elev_deg <= 0:
         return "none", "night — no solar output"
+    if elev_deg < SOLAR_MIN_DEG:
+        return "poor", f"low sun ({elev_deg:.0f}\u00b0) — minimal output"
     if clouds_pct is None:
         return "unknown", "no cloud data"
+    if elev_deg < SOLAR_LOW_DEG:            # geometry caps output near dawn/dusk
+        if clouds_pct <= 50:  return "fair", f"low sun ({elev_deg:.0f}\u00b0) — reduced output"
+        if clouds_pct <= 80:  return "poor", "low sun, cloudy — low output"
+        return "poor", "low sun, overcast — minimal output"
     if clouds_pct <= 20:  return "good", "clear — near full output"
     if clouds_pct <= 50:  return "fair", "partly cloudy — reduced"
     if clouds_pct <= 80:  return "poor", "cloudy — low output"
@@ -1574,13 +1648,8 @@ def _rate_site(site, obs):
     clouds = (obs.get("clouds") or {})
     main = (obs.get("main") or {})
     rain = (obs.get("rain") or {})
-    sysd = (obs.get("sys") or {})
     v10 = wind.get("speed")
     dt = obs.get("dt")
-    sunrise, sunset = sysd.get("sunrise"), sysd.get("sunset")
-    is_day = True
-    if dt is not None and sunrise is not None and sunset is not None:
-        is_day = sunrise <= dt <= sunset
 
     card = {"name": name, "type": typ, "lat": lat, "lon": lon}
     if typ == "wind":
@@ -1592,9 +1661,11 @@ def _rate_site(site, obs):
                      "estimated": True})   # hub speed is extrapolated
     elif typ == "solar":
         cl = clouds.get("all")
-        rating, head = _rate_solar(cl, is_day)
-        card.update({"rating": rating, "headline": head,
-                     "clouds_pct": cl, "is_day": is_day})
+        elev = _solar_elevation(lat, lon, dt)
+        rating, head = _rate_solar(cl, elev)
+        card.update({"rating": rating, "headline": head, "clouds_pct": cl,
+                     "sun_elev_deg": round(elev, 1) if elev is not None else None,
+                     "is_day": (elev is not None and elev > 0)})
     else:  # hydro
         r1 = rain.get("1h")
         hum = main.get("humidity")
@@ -3810,9 +3881,11 @@ EA_FLOODS_TTL = 300
 _ea_wind_cache = {}       # keyed by (round(lat,2), round(lon,2)) -> {"wind":..., "ts":...}
 EA_WIND_TTL = 900         # 15 min (4 fetches/hour)
 # Wind uses OpenWeather (single-point current weather) on its OWN daily budget,
-# separate from the Resource Conditions budget. 1 call per refresh × 4/hour ×
-# 24h = 96/day, under this 100 ceiling.
-WIND_DAILY_MAX = 100
+# separate from the Resource Conditions budget. With One Call 4.0 a refresh makes
+# 2 calls (current + one-minute nowcast): 2 × 4/hour × 24h = 192/day. The ceiling
+# is 300 — a ~100/day base plus the ~200/day OC4 headroom — well under the 900/day
+# OpenWeather plan cap. The free 2.5 fallback uses 1 call per refresh.
+WIND_DAILY_MAX = 300
 WIND_BUDGET_FILE = Path(__file__).with_name("wind_budget.json")
 _wind_budget = {"date": None, "count": 0}
 
@@ -4291,6 +4364,34 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
         if parts:
             out["error"] = "; ".join(parts)
 
+    # -- Rainfall-alert diagnostic probe (read-only) --------------------------
+    # Runs only on a FULL overview (rain_only requests carry no weather block).
+    # Reads what we already fetched (no extra OWM call) and logs the phrase the
+    # alert WOULD speak; emits marked, modelled offshore virtual gauges into
+    # out['rainfall_model']. Never raises past its own body; never plays a tone.
+    if _rain_probe is not None and not rain_only and out.get("wind"):
+        try:
+            _w = out["wind"]; _cond = _w.get("conditions") or {}
+            _hm = _w.get("home") or {}; _spd = _hm.get("speed_ms")
+            _res = _rain_probe.run_probe(
+                _RAIN_PROBE_STATE, home=(lat, lon),
+                rain_mm_h=_cond.get("rain_1h") or 0.0,
+                pressure_hpa=_cond.get("pressure"),
+                visibility_m=_cond.get("visibility_m"),
+                wind_from=_hm.get("dir_deg"),
+                wind_kmh=(_spd * 3.6) if _spd is not None else None,
+                gauges=out.get("rainfall") or [],
+                flood_active=False,          # floods come from a separate endpoint
+                feed_stale=bool(_w.get("stale")),
+                forward_precip=out.get("_owm_minute"))
+            out["rainfall_model"] = _res.get("virtual_gauges") or []
+            out["diag"]["rain_probe"] = _res.get("log")
+            out["rain_probe"] = {"would_speak": _res.get("would_speak"),
+                                 "signals": _res.get("signals")}
+            dbg("rain-probe:", _res.get("log"))
+        except Exception as _pe:
+            out["diag"]["rain_probe"] = "probe error: " + _ea_errstr(_pe)
+
     if rain_only:
         _ea_rain_cache[key] = {"data": out, "ts": time.time()}
     else:
@@ -4592,8 +4693,9 @@ def _ea_collect_wind(out, lat, lon):
             out["wind"] = _stale_wind(cached, "daily fetch budget reached")
         return
     try:
-        data = _openweather_one(lat, lon, key, timeout=12)
-        _wind_budget_spend(1)
+        data, _owm_tier, _owm_minute = _fetch_owm(lat, lon, key)
+        _wind_budget_spend(2 if (_owm_tier == "OC4" and _owm_minute is not None) else 1)
+        out["_owm_minute"] = _owm_minute
         w = (data or {}).get("wind") or {}
         home = {
             "speed_ms": w.get("speed"),
@@ -4664,7 +4766,8 @@ def _ea_collect_wind(out, lat, lon):
             "ring": [],                    # no ring: OpenWeather can't batch points
             "ring_km": None,
             "modelled": False,             # this is a station-model current obs
-            "source": "OpenWeather",
+            "source": "OpenWeather " + ("One Call 4.0" if _owm_tier == "OC4" else "Current Weather 2.5"),
+            "api": _owm_tier,
             "generated": datetime.now(timezone.utc).isoformat(),
             "conditions": cond,
         }

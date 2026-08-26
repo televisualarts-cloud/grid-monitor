@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260824.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260825.11  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -976,7 +976,8 @@
   .ea-swapbtn:hover{color:var(--ink);border-color:var(--accent)}
   .ea-swapbtn.pinned{position:absolute;top:10px;right:10px;z-index:2}
   .ea-rainmap .rmnote{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:2px 0 8px}
-  .rmgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+  .ea-rainmap{overflow-x:auto}
+  .rmgrid{display:grid;grid-template-columns:repeat(5,minmax(118px,1fr));gap:7px}
   .rmcell{min-width:0;display:flex}
   .rmcell .rn{flex:1 1 auto}
   .rmcell.rm-empty{visibility:hidden}
@@ -1005,6 +1006,13 @@
   .rn.rn-heavy b{color:#f5934a}
   .rn.rn-violent{border-color:rgba(255,92,108,.6);background:rgba(255,92,108,.14)}
   .rn.rn-violent b{color:var(--crit)}
+  /* modelled offshore virtual gauge: dashed + muted + MODEL chip. A model
+     point, not a sensor — never carries a physical band colour with authority. */
+  .rn.rn-model{border-style:dashed;border-color:rgba(150,163,186,.55);background:rgba(150,163,186,.06)}
+  .rn-hdr{display:flex;align-items:center;gap:5px;min-width:0}
+  .rn-hdr .rn-nm{flex:1 1 auto}
+  .rn-chip{font-family:var(--mono);font-size:8.5px;letter-spacing:.07em;color:var(--ink-faint);
+    border:1px solid rgba(150,163,186,.55);border-radius:4px;padding:0 3px;flex:0 0 auto;white-space:nowrap}
 
 
   .cg-tip{position:fixed;z-index:250;pointer-events:none;opacity:0;transition:opacity .1s;
@@ -1245,7 +1253,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260824.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260825.11 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1255,10 +1263,14 @@
 <div class="modal-back" id="keyModal">
   <div class="modal">
     <h3>OpenWeather API key</h3>
-    <p class="modal-p">Resource conditions are sourced from OpenWeather's
-      <b>Current Weather Data</b> API. Paste your API key below. It's stored by
-      the local server (in <code>openweather_key.json</code>) and used only to
-      fetch weather — it is never shown in the page again.</p>
+    <p class="modal-p">OpenWeather powers the local weather panel and the
+      rainfall nowcast. An <b>optional One Call 4.0</b> subscription unlocks the
+      offshore rain watch and the minute-ahead nowcast; without it the free
+      <b>Current Weather Data (2.5)</b> tier is used automatically. Paste your API
+      key below — it's stored by the local server (in
+      <code>openweather_key.json</code>) and used only to fetch weather, never
+      shown in the page again. Calls are throttled to <b>300 per day</b> to stay
+      within your OpenWeather budget.</p>
     <input type="password" id="keyInput" class="modal-in" autocomplete="off"
       placeholder="e.g. 3f8a9c…" spellcheck="false">
     <div class="modal-msg" id="keyMsg"></div>
@@ -4690,6 +4702,7 @@ function eaSeedFromCache(){
   eaData=ov;
   if(Alarm.riverWatchWanted() && ov.stations) Alarm.evaluateRivers(ov.stations);
   if(Alarm.rainWatchWanted() && ov.rainfall)  Alarm.evaluateRainfall(ov.rainfall);
+  if(Alarm.nowcastWatchWanted() && ov.rain_probe) Alarm.evaluateNowcast(ov.rain_probe);
   return true;
 }
 
@@ -4703,11 +4716,13 @@ async function eaWatchTick(){
   const now=Date.now();
   const wantRiver=Alarm.riverWatchWanted();
   const wantRain=Alarm.rainWatchWanted();
-  const doFull = wantRiver && (now-riverWatchLast >= RIVERWATCH_MS || !(eaData&&eaData.stations));
+  const wantNowcast=Alarm.nowcastWatchWanted();
+  const doFull = (wantRiver||wantNowcast) && (now-riverWatchLast >= RIVERWATCH_MS || !(eaData&&eaData.stations));
   // If the panel just fetched fresh full data, reuse it rather than refetching.
   if(Date.now()-eaLastFetchTs < RAINWATCH_FRESH_MS){
     if(eaData && eaData.stations && wantRiver) Alarm.evaluateRivers(eaData.stations);
     if(eaData && eaData.rainfall && wantRain)  Alarm.evaluateRainfall(eaData.rainfall);
+    if(eaData && eaData.rain_probe && wantNowcast) Alarm.evaluateNowcast(eaData.rain_probe);
     if(!doFull) return;   // nothing more to do unless a full pull is now due
   }
   if(!doFull && !wantRain) return;              // nothing to pull this tick
@@ -4727,6 +4742,7 @@ async function eaWatchTick(){
       eaSaveOverview(ov);                        // persist metadata for next load
       if(ov && ov.stations && wantRiver) Alarm.evaluateRivers(ov.stations);
       if(ov && ov.rainfall && wantRain)  Alarm.evaluateRainfall(ov.rainfall);
+      if(ov && ov.rain_probe && wantNowcast) Alarm.evaluateNowcast(ov.rain_probe);
     } else {
       if(ov && ov.rainfall && wantRain) Alarm.evaluateRainfall(ov.rainfall);
       if(!eaData) eaData={rainfall:ov.rainfall, dist:ov.dist, attribution:ov.attribution};
@@ -4833,7 +4849,21 @@ let eaLowerOrder = (function(){ try{ return localStorage.getItem("eaLowerOrder")
 
 // Build one rainfall card's HTML (shared by list and map views). `near` adds a
 // subtle highlight for gauges essentially at "here" (<5 km).
+function eaRainCardModel(r){
+  // azimuth-first so the bearing is never lost to truncation on a narrow card;
+  // the MODEL chip already conveys 'modelled', so the value line stays compact.
+  const loc = (r.bearing!=null ? Math.round(r.bearing)+'\u00b0 sea' : (r.name||'sea'));
+  const dist = (r.dist_km!=null ? '~'+r.dist_km+' km' : '');
+  const rate = (r.mm!=null ? r.mm.toFixed(1) : '\u2014');
+  const hdr = '<div class="rn-hdr"><span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+
+              '">'+loc+'</span><span class="rn-chip">MODEL</span></div>';
+  const cls = 'rn-model '+eaRainBand(r.mm||0);
+  return '<div class="rn '+cls+'" data-rainmodel="1">'+hdr+
+    '<span class="rn-val"><span class="rn-mm"><b>'+rate+'</b> mm</span>'+
+    (dist?'<span class="rn-d"> \u00b7 '+dist+'</span>':'')+'</span></div>';
+}
 function eaRainCard(r, near){
+  if(r.modelled) return eaRainCardModel(r);
   const loc = r.place || r.grid || r.ref || "";
   let dist='';
   if(r.dist_exact && r.dist_km!=null) dist=r.dist_km.toFixed(1)+' km';
@@ -5240,7 +5270,9 @@ function eaRenderRainMap(rainfall){
   }).sort((a,b)=>a.d-b.d);   // nearest first so they claim inner cells first
 
   // column by east/west lean; a small dead-zone keeps near-due-N/S in centre
-  const colOf=g=> g.ew> 0.35 ? 2 : g.ew< -0.35 ? 0 : 1;
+  // 5 columns for finer east/west bins so a same-distance arc fans out instead of
+  //   stacking.  0=W  1=WSW/SSW  2=centre(due N/S)  3=SSE/ESE  4=E.  Centre index = 2.
+  const colOf=g=> g.ew<-0.6?0 : g.ew<-0.2?1 : g.ew<=0.2?2 : g.ew<=0.6?3 : 4;
 
   // Build a sparse grid: map of "row,col"->card. Row 0 is the centre; north is
   // negative rows (up), south positive (down). We grow rows as needed.
@@ -5252,43 +5284,64 @@ function eaRenderRainMap(rainfall){
     // desired row: north/south lean scaled by distance rank; due-E/W (ns~0)
     // start at centre and get bumped outward on collision.
     let row=Math.round(-g.ns*Math.min(4, 1+g.d/8));   // more distant -> further out
-    if(row===0 && col===1) row = g.ns>=0? -1 : 1;     // keep centre col clear-ish for "here"
-    // spill search: try the target, then step outward (same col), then adjacent
-    // columns, expanding until a free cell is found.
-    const dir = row<=0? -1 : 1;   // grow in the card's vertical direction
-    for(let radius=0; radius<40; radius++){
-      const candidates=[];
-      // same column, stepping outward in its N/S direction first
-      candidates.push([row+dir*radius, col]);
-      if(radius>0) candidates.push([row-dir*radius, col]);      // then the other way
-      // fuzzy edge: adjacent columns at the same rows
-      [col-1,col+1].forEach(c=>{ if(c>=0&&c<=2){ candidates.push([row+dir*radius,c]); if(radius>0) candidates.push([row-dir*radius,c]); } });
-      for(const [rr,cc] of candidates){
-        if(cc<0||cc>2) continue;
+    if(row===0 && col===2) row = g.ns>=0? -1 : 1;     // keep centre col clear-ish for "here"
+    // Spill search: from the target cell, step outward ONLY in the gauge's true
+    // N/S direction — never back across the centre line into the opposite
+    // hemisphere. Crossing centre would render e.g. a northern gauge to the
+    // south, misstating its direction (the bug this guards against). Growth
+    // direction is taken from the sign of ns (the real lean), not the rounded
+    // row, so a due-E/W gauge that rounds to row 0 still can't flip hemisphere.
+    // Same column first, then the two adjacent columns at the same row.
+    const dir = g.ns>0 ? -1 : g.ns<0 ? 1 : (row<=0? -1 : 1);  // -1 grows up(N), +1 down(S)
+    // Preserve DIRECTION on a collision: stay in the gauge’s true column and step
+    // outward in the distance direction; only spill to an adjacent column if the
+    // column is full for the whole search (rare). A collision then nudges a gauge’s
+    // apparent DISTANCE, never shoves it sideways out of its real bearing.
+    for(let radius=0; radius<80; radius++){
+      const rr=row+dir*radius;                 // outward in the N/S (distance) direction
+      if(!occupied(rr,col)){ placed.set(key(rr,col), g); return; }
+    }
+    for(let radius=0; radius<80; radius++){     // column saturated: nearest free neighbour
+      const rr=row+dir*radius;
+      for(const cc of [col-1,col+1,col-2,col+2]){
+        if(cc<0||cc>4) continue;
         if(!occupied(rr,cc)){ placed.set(key(rr,cc), g); return; }
       }
     }
   }
-  // Nearest gauge takes the centre first so "here" is anchored at a real gauge;
-  // the rest fill around it by direction.
-  if(gs.length){ placed.set(key(0,1), gs[0]); gs.slice(1).forEach(place); }
-
-  // Which gauges get the dotted "near here" outline: the nearest, plus any
-  // others within 5 km (so a tight cluster around you all read as "here").
-  const nearSet=new Set();
+  // Nearest PHYSICAL gauge anchors the centre "here" cell; modelled offshore
+  // points are placed by direction but never anchor home or take the outline.
+  const physGs=gs.filter(g=>!(g.r&&g.r.modelled));
   if(gs.length){
-    nearSet.add(gs[0]);
-    gs.forEach(g=>{ if(g.d!=null && g.d<5) nearSet.add(g); });
+    const centre = physGs.length? physGs[0] : gs[0];
+    placed.set(key(0,2), centre);
+    gs.filter(g=>g!==centre).forEach(place);
   }
 
-  // bounds
-  let minR=0,maxR=0;
-  placed.forEach((_,k)=>{ const rr=+k.split(",")[0]; if(rr<minR)minR=rr; if(rr>maxR)maxR=rr; });
+  // Dotted "near here" outline: nearest physical gauge plus any physical within
+  // 5 km. Modelled points are excluded (they're never 'here').
+  const nearSet=new Set();
+  if(physGs.length){
+    nearSet.add(physGs[0]);
+    physGs.forEach(g=>{ if(g.d!=null && g.d<5) nearSet.add(g); });
+  }
 
-  // render rows top(min)->bottom(max)
-  let out='<div class="ea-rainmap"><div class="rmnote">Rough layout — direction &amp; relative distance from here, not to scale · dotted = nearest</div><div class="rmgrid">';
+  // bounds + which rows/columns are actually used, so the grid packs out every
+  // fully-empty stripe (rows AND columns) while preserving W->E / N->S order. Only
+  // holes that sit inside an otherwise-used row and column remain (unavoidable
+  // without distorting a gauge’s real bearing or distance).
+  let minR=0,maxR=0; const usedCol=new Set();
+  placed.forEach((_,k)=>{ const pr=k.split(",").map(Number);
+    if(pr[0]<minR)minR=pr[0]; if(pr[0]>maxR)maxR=pr[0]; usedCol.add(pr[1]); });
+  const cols=[...usedCol].sort((a,b)=>a-b);        // active columns, west -> east
+
+  let out='<div class="ea-rainmap"><div class="rmnote">Rough layout — direction &amp; relative distance from here, not to scale · dotted = nearest · dashed = modelled, offshore</div>'
+        + '<div class="rmgrid" style="grid-template-columns:repeat('+cols.length+',minmax(118px,1fr))">';
   for(let rr=minR; rr<=maxR; rr++){
-    for(let cc=0; cc<=2; cc++){
+    let rowHas=false;
+    for(const cc of cols){ if(placed.has(key(rr,cc))){ rowHas=true; break; } }
+    if(!rowHas) continue;                            // drop empty rows -> compact vertically
+    for(const cc of cols){
       const cell=placed.get(key(rr,cc));
       if(!cell){ out+='<div class="rmcell rm-empty"></div>'; continue; }
       out+='<div class="rmcell">'+eaRainCard(cell.r, nearSet.has(cell))+'</div>';
@@ -5364,12 +5417,17 @@ function eaRender(){
   }
 
   // ---- two-column: stations (left) + drill-down (right) ----
-  html+='<div class="ea-layout"><div class="ea-left">';
+  // A total river-stations failure leaves the left column empty, so the 0.82fr
+  // grid would strand the error notice left-of-centre. Collapse to a single
+  // full-width column in that case so the notice centres on the page (and the
+  // surviving rainfall block below simply runs full width).
+  const eaHardErr = eaData.error && !eaData.stations.length;
+  html+='<div class="ea-layout"'+(eaHardErr?' style="grid-template-columns:1fr"':'')+'><div class="ea-left">';
   html+='<div class="ea-sec-title">River levels near you '+
     '<span class="note">'+ (eaData.stations.length) +' gauges within '+eaData.dist+' km · coloured vs each gauge\u2019s own typical range'+
     (((eaData.diag||{}).index_age_s!=null)?' · readings ~'+Math.round(eaData.diag.index_age_s/60)+' min old':'')+
     '</span></div>';
-  if(eaData.error && !eaData.stations.length){
+  if(eaHardErr){
     // hard failure — nothing came back at all. Escape the upstream error: a CDN
     // 503 body can be a full HTML page, and unescaped it would inject into the
     // DOM (this is now also sanitised server-side, but escape as defence-in-depth).
@@ -5425,6 +5483,8 @@ function eaRender(){
   let rainBlock='';
   if(eaData.rainfall && eaData.rainfall.length){
     const rained=eaData.rainfall.filter(r=>r.mm>0);
+    const eaRainModel=(eaData.rainfall_model||[]);
+    const eaRainShown=eaData.rainfall.concat(eaRainModel);
     const ps=eaData.rainfall[0].period_s;
     const periodLbl = ps==900?"15-minute rainfall" : ps==3600?"Hourly rainfall"
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
@@ -5434,17 +5494,17 @@ function eaRender(){
         .toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"})+' UT'; }catch(e){}
     }
     rainBlock+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
-      '<span class="note">'+eaData.rainfall.length+' gauges · '+
+      '<span class="note">'+eaData.rainfall.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':'')+' · '+
       (eaRainView==="map"?"roughly by direction":"nearest first")+
       (rained.length?'':' · all dry')+pulled+'</span>'+
       '<span class="rn-viewtoggle">'+
         '<button class="rn-vt'+(eaRainView==="list"?" on":"")+'" data-rainview="list">list</button>'+
         '<button class="rn-vt'+(eaRainView==="map"?" on":"")+'" data-rainview="map">map</button>'+
       '</span></div>';
-    if(eaRainView==="map") rainBlock+=eaRenderRainMap(eaData.rainfall);
+    if(eaRainView==="map") rainBlock+=eaRenderRainMap(eaRainShown);
     else {
       rainBlock+='<div class="ea-rain">';
-      eaData.rainfall.forEach(r=>{ rainBlock+=eaRainCard(r); });
+      eaRainShown.forEach(r=>{ rainBlock+=eaRainCard(r); });
       rainBlock+='</div>';
     }
   } else if((eaData.diag||{}).rainfall){
@@ -5782,6 +5842,8 @@ const Alarm = (function(){
             desc:"Informational: nearby EA gauges reporting rain (light to extremely heavy). Extra hysteresis for stop/start rain."},
     gas:   {name:"Gas margin (derived)", tier:"notice", on:false,
             desc:"Soft blip only, no speech — this is a derived early-warning signal."},
+    nowcast:{name:"Weather nowcast (One Call 4.0)", tier:"warn", on:false,
+            desc:"Speaks the local rainfall nowcast — onset, intensity, approach and clearing — from the One Call 4.0 minute forecast, your gauges and pressure. Needs the EA panel data and an OC4 key."},
   };
 
   // ---- persistence of category choices (not the arm state) ----
@@ -5820,6 +5882,8 @@ const Alarm = (function(){
   }
   function say(text){
     if(!text || !("speechSynthesis" in window)) return;
+    // spoken only: say "now cast" so the engine doesn't read it as "no-cast".
+    text=String(text).replace(/nowcast/gi, "now cast");
     try{
       const u=new SpeechSynthesisUtterance(text);
       u.rate=1.0; u.pitch=1.0; u.volume=1.0;
@@ -5885,6 +5949,30 @@ const Alarm = (function(){
       if(tier==="crit"){ critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
     }
   }
+
+  // ---- weather nowcast (spoken; from the server-side rain probe) ----
+  // The server already throttles to transitions; the client voices each new
+  // would-speak phrase once, adopts the current state silently on the first
+  // pass after arming/enabling, and re-fires a phrase only if it clears and
+  // returns. Unlike other notices, the nowcast SPEAKS every tier (it is a
+  // spoken feature), so it bypasses the notice=tone-only rule in fire().
+  let nowcastSaid=new Set(), nowcastPrimed=false;
+  function primeNowcast(){ nowcastPrimed=false; }
+  function evaluateNowcast(rp){
+    if(!armed || !(CATS.nowcast && CATS.nowcast.on)) return;
+    const ws=(rp && rp.would_speak) || [];
+    const cur=new Set(ws.map(w=>(w.key||"")+"|"+(w.phrase||"")));
+    if(!nowcastPrimed){ nowcastSaid=cur; nowcastPrimed=true; return; }
+    ws.forEach(w=>{
+      const sig=(w.key||"")+"|"+(w.phrase||"");
+      if(nowcastSaid.has(sig)) return;
+      tone(w.tier||"notice");
+      if(w.phrase) say(w.phrase);
+      flashBtn();
+    });
+    nowcastSaid=cur;
+  }
+  function nowcastWatchWanted(){ return armed && !!(CATS.nowcast && CATS.nowcast.on); }
 
   // ---- evaluation from the main grid snapshot ----
   function evaluate(d){
@@ -6210,6 +6298,7 @@ const Alarm = (function(){
   // ---- arm / disarm ----
   function arm(){
     armed=true; ensureCtx();
+    primeNowcast();
     // a tiny confirmation blip so the user knows sound is live
     tone("notice");
     updateBtn();
@@ -6238,7 +6327,7 @@ const Alarm = (function(){
   // closed, not just rain.
   function riverWatchWanted(){ return armed && !!(CATS.river && CATS.river.on); }
   // Either kind of EA watch wanted — the background poller runs if so.
-  function eaWatchWanted(){ return rainWatchWanted() || riverWatchWanted(); }
+  function eaWatchWanted(){ return rainWatchWanted() || riverWatchWanted() || nowcastWatchWanted(); }
   function toggleArm(){ armed?disarm():arm(); }
   function updateBtn(){
     const b=$("#alarmBtn"); if(b){ b.textContent=armed?"🔊 alarms":"🔇 alarms";
@@ -6265,10 +6354,11 @@ const Alarm = (function(){
       const [testBtn, tog]=[row.querySelector(".ac-test"), row.querySelector(".ac-toggle")];
       testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
         if(cat==="rain") say("Rain warning: Moderate rain detected within 5 kilometres. Test.");
+        else if(cat==="nowcast") say("Weather nowcast: Rain is approaching from the south west and may arrive in twenty to thirty minutes. Test.");
         else if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
       tog.onclick=()=>{ c.on=!c.on; tog.classList.toggle("on",c.on); persist();
-        // clearing a disabled category's latches happens on next evaluate()
-        notifyWatchChange();   // rain toggle may start/stop the background watch
+        if(cat==="nowcast" && c.on) primeNowcast();   // adopt current state silently
+        notifyWatchChange();   // rain/nowcast toggle may start/stop the background watch
       };
       host.appendChild(row);
     });
@@ -6286,8 +6376,8 @@ const Alarm = (function(){
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateGas, clearEA,
-           rainWatchWanted, riverWatchWanted, eaWatchWanted, onWatchChange,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateGas, clearEA,
+           rainWatchWanted, riverWatchWanted, nowcastWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();
 
