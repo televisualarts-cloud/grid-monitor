@@ -13,6 +13,10 @@ exact tag.
 
 ---
 
+## 260826
+
+- Rainfall nowcast: spoken alerts made edge-triggered — a message speaks only when its condition first appears or its wording changes, so a persistent state is announced once rather than repeating on a timer. The all-clear ("conditions have settled") is now a one-shot on the rain→calm transition and never fires on a calm-from-start day. (`rain_probe.py`)
+
 ## 260825
 
 - Weather nowcast can now speak. A new "Weather nowcast (One Call 4.0)" alarm category voices the rain-alert phrases (onset, intensity, approach, clearing) through the existing audible/spoken alarm engine — off by default, speaks only while sound is armed, and adopts the current state silently when first enabled. Enabling it triggers the background full-EA pull so it works with the panel closed. (dashboard .10)
