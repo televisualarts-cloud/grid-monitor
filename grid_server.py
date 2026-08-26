@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260825.4  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260826.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -86,7 +86,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260825.4"
+SERVER_BUILD = "260826.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -3880,12 +3880,13 @@ EA_FLOODS_TTL = 300
 # update rate (never miss a refresh) but ~6x fewer calls than before.
 _ea_wind_cache = {}       # keyed by (round(lat,2), round(lon,2)) -> {"wind":..., "ts":...}
 EA_WIND_TTL = 900         # 15 min (4 fetches/hour)
-# Wind uses OpenWeather (single-point current weather) on its OWN daily budget,
-# separate from the Resource Conditions budget. With One Call 4.0 a refresh makes
-# 2 calls (current + one-minute nowcast): 2 × 4/hour × 24h = 192/day. The ceiling
-# is 300 — a ~100/day base plus the ~200/day OC4 headroom — well under the 900/day
-# OpenWeather plan cap. The free 2.5 fallback uses 1 call per refresh.
-WIND_DAILY_MAX = 300
+# Wind uses OpenWeather on its OWN daily budget, separate from Resource Conditions.
+# Per refresh: the home reading (OC4 current + one-minute nowcast = 2 calls, cached
+# 15 min) PLUS the offshore rainfall-nowcast sentinels, which on OC4 are sampled
+# from OpenWeather at ONE call per sea point (radar-fed). The ceiling is 600 to
+# cover both; the offshore sampler is budget-guarded and falls back to the free
+# Open-Meteo model when the day's budget is spent — still under the 900/day cap.
+WIND_DAILY_MAX = 600
 WIND_BUDGET_FILE = Path(__file__).with_name("wind_budget.json")
 _wind_budget = {"date": None, "count": 0}
 
@@ -4373,6 +4374,20 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
         try:
             _w = out["wind"]; _cond = _w.get("conditions") or {}
             _hm = _w.get("home") or {}; _spd = _hm.get("speed_ms")
+            # Offshore virtual-gauge sampler. When OC4 is live, sample each sea
+            # point from OpenWeather (radar/satellite-fed) instead of the modelled
+            # Open-Meteo fallback -- ONE OWM call per point, so budget-guarded: if
+            # the day's wind budget can't cover the batch, fall back to Open-Meteo.
+            _okey = _load_weather_key()
+            def _arc_sample(pts):
+                if not pts:
+                    return []
+                if (_owm_onecall is not None and _w.get("api") == "OC4" and _okey
+                        and _wind_budget_remaining() >= len(pts)):
+                    rates = _owm_onecall.fetch_sea_precip(pts, _okey)
+                    _wind_budget_spend(len(pts))
+                    return rates
+                return _rain_probe.fetch_om_precip(pts)   # free Open-Meteo fallback
             _res = _rain_probe.run_probe(
                 _RAIN_PROBE_STATE, home=(lat, lon),
                 rain_mm_h=_cond.get("rain_1h") or 0.0,
@@ -4383,7 +4398,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
                 gauges=out.get("rainfall") or [],
                 flood_active=False,          # floods come from a separate endpoint
                 feed_stale=bool(_w.get("stale")),
-                forward_precip=out.get("_owm_minute"))
+                forward_precip=out.get("_owm_minute"),
+                sample_fn=_arc_sample)
             out["rainfall_model"] = _res.get("virtual_gauges") or []
             out["diag"]["rain_probe"] = _res.get("log")
             out["rain_probe"] = {"would_speak": _res.get("would_speak"),

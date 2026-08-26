@@ -76,6 +76,24 @@ def fetch_minute(lat, lon, api_key, timeout=12, fetch=_default_fetch):
     return out
 
 
+def fetch_sea_precip(points, api_key, units="metric", timeout=8, fetch=_default_fetch):
+    """Current precipitation rate (mm/h) at each point from OWM One Call 4.0
+    'current' (radar/satellite-fed — the quality source). ONE call per point —
+    OWM is not batched — so callers must keep the point count small and budget it.
+    Returns rates aligned to `points`; None where a point's fetch failed.
+
+    Each point is a dict with 'lat' and 'lon' (as the movable-arc emits)."""
+    out = []
+    for p in points:
+        try:
+            c = fetch_current(p["lat"], p["lon"], api_key, units=units,
+                              timeout=timeout, fetch=fetch)
+            out.append(c.get("rain_1h"))     # mm/h; None when the point is dry
+        except Exception:
+            out.append(None)
+    return out
+
+
 def try_conditions(lat, lon, api_key, want_minute=True, timeout=12, fetch=_default_fetch):
     """Convenience for the auto-detect caller. Returns a dict:
        {'tier': 'OC4', 'cond': {...}, 'minute': [...] , 'error': None}
