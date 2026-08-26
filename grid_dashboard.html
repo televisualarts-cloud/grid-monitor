@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260826.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260826.2  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -879,6 +879,10 @@
   .ea-fc.sev3{border-color:rgba(245,185,66,.5);background:rgba(245,185,66,.10);color:var(--warn)}
   .ea-fc.none{color:var(--ok);border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.08)}
   .ea-flood-list{margin:0 auto 22px;display:flex;flex-direction:column;gap:7px}
+  .ea-flood-more{text-align:center;margin:-14px auto 20px}
+  .ea-flood-toggle{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
+    background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:4px 12px;cursor:pointer}
+  .ea-flood-toggle:hover{color:var(--ink);border-color:var(--accent)}
   .ea-flood-item{font-family:var(--mono);font-size:11.5px;border-radius:8px;
     background:var(--panel2);border:1px solid var(--line);border-left-width:3px}
   .ea-flood-item.sev1{border-left-color:var(--crit)}
@@ -1263,7 +1267,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260826.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260826.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -4599,7 +4603,7 @@ function gasRender(g){
 })();
 
 /* ---------- Environment Agency pop-out ---------- */
-let eaOpen=false, eaDist=40, eaData=null, eaFloods=null, eaSelRef=null, eaPoll=null, eaFloodOpen=0, eaSelKind=null, eaSelLoc=null;
+let eaOpen=false, eaDist=40, eaData=null, eaFloods=null, eaSelRef=null, eaPoll=null, eaFloodOpen=0, eaFloodCollapsed=true, eaSelKind=null, eaSelLoc=null;
 // Saved location {lat,lon,label,country}. Defaults to London until the user
 // sets one. Persisted in localStorage where available; a sandbox that blocks
 // storage just falls back to in-memory for the session.
@@ -5421,8 +5425,11 @@ function eaRender(){
   // title line with a chevron. Expanding one collapses the others.
   const warns=((eaFloods&&eaFloods.warnings)||[]).filter(w=>w.severity_level&&w.severity_level<=3);
   if(warns.length){
+    const capped = warns.slice(0,12);
+    const collapsed = eaFloodCollapsed && capped.length>1;   // show the first only
+    const shown = collapsed ? capped.slice(0,1) : capped;
     html+='<div class="ea-flood-list" id="eaFloodList">';
-    warns.slice(0,12).forEach((w,i)=>{
+    shown.forEach((w,i)=>{
       const open = (i===eaFloodOpen);
       // The message field carries the cause + timing + affected area (e.g.
       // "High tides this evening may lead to flooding..."). Tidy whitespace.
@@ -5441,6 +5448,10 @@ function eaRender(){
       '</div>';
     });
     html+='</div>';
+    if(capped.length>1){
+      html+='<div class="ea-flood-more"><button class="ea-flood-toggle" id="eaFloodToggle">'+
+        (collapsed ? ('show '+(capped.length-1)+' more \u25be') : 'show fewer \u25b4')+'</button></div>';
+    }
   }
 
   html+=oc4NudgeHtml();
@@ -5569,6 +5580,10 @@ function eaRender(){
       it.classList.toggle("open", +it.dataset.fi===eaFloodOpen);
     });
   });
+
+  // flood list collapse: show the first warning only <-> show all
+  { const ft=$("#eaFloodToggle"); if(ft) ft.onclick=()=>{ eaFloodCollapsed=!eaFloodCollapsed; if(eaFloodCollapsed) eaFloodOpen=0; eaRender(); }; }
+
   // view toggle (list / map)
   b.querySelectorAll(".rn-vt").forEach(btn=>btn.onclick=()=>{
     const v=btn.dataset.rainview; if(!v||v===eaRainView) return;
