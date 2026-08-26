@@ -12,9 +12,16 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
 
 ### What you need
 - A machine running Python 3 (the server uses only Python's built-in libraries — nothing to `pip install`).
-- Two files placed together in one folder:
+- Four files placed together in one folder:
   - `grid_dashboard.html`
   - `grid_server.py`
+  - `rain_probe.py`
+  - `owm_onecall.py`
+
+  `rain_probe.py` and `owm_onecall.py` are companion modules that enable the
+  rainfall-alert diagnostics and the OpenWeather One Call 4.0 nowcast. The server
+  still runs without them — it just drops those features and uses the free weather
+  tier — but the standard install is all four together, in the same folder.
 
 ### Running it
 1. Run `grid_server.py`.
@@ -29,7 +36,14 @@ Once running, the server writes these into the same folder as needed:
 - `alert_history.json` — a log of alerts, kept for up to 30 days.
 
 After you enter an OpenWeather API key:
-- `openweather_key.json`, `openweather_budget.json`, `weather_last_good.json`.
+- `openweather_key.json`, `openweather_budget.json`, `wind_budget.json`, `weather_last_good.json`.
+
+The weather panel works on OpenWeather's free tier. An **optional One Call 4.0**
+subscription additionally unlocks the rainfall nowcast — the offshore rain watch
+and the minute-ahead forecast. The server detects the tier automatically and
+falls back to the free Current Weather Data API if the key isn't subscribed to
+One Call 4.0. OpenWeather calls are capped per UTC day (300/day for the
+local-weather + nowcast path) to stay within your plan.
 
 After you enter Octopus Energy credentials:
 - `octopus_config.json`, plus an `/octopus_history` folder holding up to two years of your half-hourly usage.
@@ -96,6 +110,34 @@ Open with the **ea** button.
 - Gauges are ordered nearest-first, grouped into distance bands.
 - **Click a river-level or rainfall gauge** to plot its history. Rainfall is colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy) based on 15-minute accumulation.
 - **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
+
+### Rainfall nowcast (optional — One Call 4.0)
+
+With an OpenWeather One Call 4.0 subscription the rainfall watch gains a
+short-range nowcast that fills the biggest gap in gauge coverage: the sea. Real
+Environment Agency gauges only exist on land, so for a coastal location the
+direction weather usually arrives from can be a blind spot. The nowcast adds a
+ring of **modelled** sea points off your coast (from OpenWeather and the keyless
+Open-Meteo model) that appear on the rainfall map as dashed *MODEL* cards at
+their true bearing and distance; when rain is detected offshore they draw
+progressively inward to track it as it moves toward you, and the tracker
+estimates its speed and arrival window from how fast it crosses successive
+ranges.
+
+Alongside this the server runs a background rain-alert assessment that combines
+your real gauges, OpenWeather's minute-by-minute precipitation forecast for the
+next hour, and local pressure and visibility trends — building a picture of what
+is happening at your location, what is approaching and from which direction, and
+whether it is intensifying or easing. To hear these as spoken alerts, enable
+**Weather nowcast** in the alarms panel and arm sound; until it is switched on the
+assessment simply logs what an alert would say (a diagnostic). Like the other
+alarm categories it is off by default and speaks only while sound is armed.
+
+Throughout, modelled data is always labelled modelled and is never counted as a
+confirmed gauge reading (honesty over plausibility). The whole feature is
+throttled to your daily OpenWeather call budget, and if the key isn't subscribed
+to One Call 4.0 it simply doesn't appear — the standard rainfall panel keeps
+working on the free tier.
 
 ---
 

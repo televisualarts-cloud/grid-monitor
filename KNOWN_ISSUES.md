@@ -8,34 +8,17 @@ plausibility**. Estimated, derived, stale, or basis-mismatched data must be
 labelled as such; a display that is individually accurate but invites a
 misleading reading is treated as a bug.
 
-Last reviewed: 260824.
+Last reviewed: 260825.
 
 ---
 
 ## Open
 
-### Solar resource verdict ignores solar elevation
-**Component:** EA page — Resource Conditions rollup (`grid_server.py`)
-**Status:** confirmed, fix not yet implemented
+_None currently open._
 
-The "solar strong N/N good" rollup badge is computed from cloud/output
-conditions at the probed solar sites and does not account for solar elevation.
-Near sunset a site can read "clear — near full output" on cloud terms while the
-sun is too low to produce meaningful irradiance, so the badge can show "strong"
-while actual national solar output is ~1% of supply.
-
-Both figures are individually honest (the badge is a sky-condition verdict; the
-output figure is measured, tagged EST/PVLive), but "strong" next to near-zero
-output reads as a claim about output that it is not. Individual site cards
-already handle this — night sites show "night — no solar output" and drop from
-the good count; the gap is only in the aggregate rollup.
-
-Candidate fixes:
-- Gate the solar rollup by a solar-elevation floor: below a threshold (e.g. sun
-  < 5–10°), downgrade or suppress the "strong/good" wording, mirroring how night
-  sites already drop out. (Preferred — most in keeping with the principle.)
-- Or append an elevation qualifier to the badge so "strong" cannot stand alone
-  near dusk.
+The solar-resource-verdict elevation issue (the "solar strong" badge reading
+strong near dawn/dusk while actual output was ~1%) was resolved in 260825 by
+gating `_rate_solar` on computed sun elevation — see `CHANGELOG.md`.
 
 ---
 

@@ -13,6 +13,19 @@ exact tag.
 
 ---
 
+## 260825
+
+- Weather nowcast can now speak. A new "Weather nowcast (One Call 4.0)" alarm category voices the rain-alert phrases (onset, intensity, approach, clearing) through the existing audible/spoken alarm engine — off by default, speaks only while sound is armed, and adopts the current state silently when first enabled. Enabling it triggers the background full-EA pull so it works with the panel closed. (dashboard .10)
+- OpenWeather budget: the local-weather + nowcast daily call ceiling raised from 100 to 300 (a ~100 base plus the ~200 One Call 4.0 headroom), still well under the 900/day plan cap. The first-run key modal now explains the optional One Call 4.0 subscription, the automatic free-tier fallback, and the per-day throttle. (server .4, dashboard .9)
+- Rainfall-alert diagnostic probe added (`rain_probe.py`, new; wired read-only into the EA overview). Each cycle it logs the phrase the alert would speak, from: at-home model signals (intensity band, rate trend, 3-hour pressure tendency, visibility); a physical gauge-sector approach with a measured-wind ETA; a sea-masked movable offshore Open-Meteo arc (scan→track, inward-edge advection speed, marked virtual gauges); and the OWM one-minute forward nowcast (onset / intensification). No tone is played — diagnostic only. (server .1)
+- Probe tracker guards: trend, pressure and visibility signals require a minimum span of history before they classify, and a series whose newest sample is stale is treated as unknown; the pressure rate is capped at a physical limit — removes a spurious "pressure rising" alert on server restart. The offshore arc holds state through a data dropout instead of falsely retracting. (`rain_probe.py`)
+- One Call API 4.0 support with auto-detect (`owm_onecall.py`, new). The EA weather panel uses OC4 when the key is subscribed — current conditions plus the one-minute precipitation nowcast — and falls back to the free 2.5 Current Weather call on 401/403, so the panel works without a subscription. Active tier is labelled on `wind.source` / `wind.api`. (server .2)
+- EA rainfall map: modelled offshore points from the probe's arc are shown as dashed MODEL cards, counted separately, and excluded from the physical gauge count/cap, the "nearest" outline, and alert confirmation. (dashboard .3)
+- EA rainfall map: directional grid widened to 5 columns so a same-distance offshore arc fans out by bearing instead of stacking. Collision spill keeps a gauge in its true direction (nudging apparent distance, not bearing); fully-empty rows and columns are packed out; cards keep a minimum width with horizontal scroll; virtual cards lead with their azimuth. (dashboard .5–.8)
+- EA rainfall map: gauges no longer placed in the wrong hemisphere — the collision-spill steps outward only in a gauge's true N/S direction. (dashboard .1)
+- EA river panel: on a total river-stations failure the section collapses to a single full-width column, so the error notice centres on the page instead of sitting in the empty left column. (dashboard .2)
+- Solar resource verdict now gated by sun elevation. `_rate_solar` uses computed solar elevation instead of a binary day/night flag: night (≤0°) reads "none", below 5° "minimal output", below 15° capped at "reduced" — so the Resource Conditions rollup can no longer read "solar strong" near dawn/dusk when a clear but low sun yields ~1% output. Each solar card exposes `sun_elev_deg`. Resolves the open Known Issue. (server .3)
+
 ## 260824
 
 - Local wind: calm and variable states now shown honestly. Direction below 0.5 m/s reads "CALM"; a missing bearing (or a wide 3h direction swing at low speed) reads "VAR". The dial replaces its arrow with a cyan CALM/VAR label and drops the degree readout when direction is undefined. (server .1, dashboard .1)
