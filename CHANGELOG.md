@@ -16,6 +16,7 @@ exact tag.
 
 ## 2026-08-26
 
+- EA page: the flood warning/alert list collapses to the first (highest-severity) item by default, with a "show N more" / "show fewer" button to expand to the full list (up to 12) or re-collapse. A single warning shows no button. (dashboard 260826.2)
 - Rainfall nowcast: the offshore virtual gauges are now sampled from OpenWeather (radar/satellite-fed `rain.1h`) when a One Call 4.0 key is active, instead of the modelled Open-Meteo — one OWM call per sea point, budget-guarded with an automatic Open-Meteo fallback when the daily budget is spent. The wind daily-call ceiling was raised 300→600 to cover it. (server 260826.1, `owm_onecall.py`)
 - EA page: a dismissible One Call 4.0 upgrade notice now shows only when a key is present but the weather fell back to the free 2.5 tier — it describes what the paid nowcast adds (minute-ahead precipitation, the offshore rain-approach tracker, spoken alerts) and links to the One Call 4.0 page. Hidden for OC4 users and when no key is set; remembered once dismissed. (dashboard 260826.1)
 - Rainfall nowcast: spoken alerts made edge-triggered — a message speaks only when its condition first appears or its wording changes, so a persistent state is announced once rather than repeating on a timer. The all-clear ("conditions have settled") is now a one-shot on the rain→calm transition and never fires on a calm-from-start day. (`rain_probe.py`)
