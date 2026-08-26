@@ -129,8 +129,8 @@ class ProbeState:
     sea_pts: list = field(default_factory=list)         # [[az,range],...] that are sea
     sea_home: list | None = None
     sea_ts: float = 0.0
-    last_situation: str | None = None                  # for transition-only announcing
-    last_announce_ts: dict = field(default_factory=dict)   # situation_key -> ts (cooldown)
+    announced: dict = field(default_factory=dict)      # key -> last-announced phrase (edge-triggered)
+    was_active: bool = False                            # was the situation non-calm last cycle?
 
     def to_json(self): return json.dumps(asdict(self))
     @classmethod
@@ -536,8 +536,9 @@ def select(situation):
     elif fwd and raining and fwd.get("intensify"):
         cands.append(("forward", *TEMPLATES["nowcast_heavier"]))
 
-    if not cands and not raining and pcls in ("steady", "rising"):
-        cands.append(("settled", *TEMPLATES["settled"]))
+    # "settled" (all-clear) is NOT emitted here — it is a one-shot handled in
+    # run_probe on the active->calm transition, so it never repeats or fires out
+    # of a clear sky.
     return cands
 
 
@@ -585,22 +586,28 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
 
     cands = select(situation)
 
-    # transition-only announcing: speak a candidate only when its (key,phrase)
-    # differs from what we last announced for that key, with a per-key cooldown.
+    # Edge-triggered announcing: one message per key (highest priority first),
+    # spoken only when that key first appears or its phrase changes. A key absent
+    # this cycle is dropped, so the same condition can speak again if it recurs.
+    # A persistent state is therefore announced ONCE, never on a repeating timer.
     would = []
-    seen_keys = set()
+    now_keys = {}
     for key, tier, phrase in cands:
-        if key in seen_keys:      # one message per key per cycle
-            continue
-        seen_keys.add(key)
-        sig = f"{key}:{phrase}"
-        last = state.last_situation
-        # simple state signature is the top candidate; cooldown per key at 10 min
-        cd = state.last_announce_ts.get(sig, 0)
-        if now - cd >= 600:
+        if key not in now_keys:
+            now_keys[key] = (tier, phrase)
+    for key, (tier, phrase) in now_keys.items():
+        if state.announced.get(key) != phrase:
             would.append({"tier": tier, "key": key, "phrase": phrase})
-            state.last_announce_ts[sig] = now
-    state.last_situation = cands[0][0] + ":" + cands[0][2] if cands else None
+    state.announced = {k: v[1] for k, v in now_keys.items()}
+
+    # All-clear: a ONE-SHOT, spoken only on the transition from an active
+    # situation to calm — never on a calm-from-start day, never repeated.
+    if now_keys:
+        state.was_active = True
+    elif state.was_active:
+        would.append({"tier": "notice", "key": "settled",
+                      "phrase": TEMPLATES["settled"][1]})
+        state.was_active = False
 
     log = (f"band={band} trend={trend}({trend_d:+.1f}) "
            f"press={prate:+.2f}hPa/h[{pcls}{'/warmup' if warm else ''}] vis={'low' if vis['low'] else 'ok'}"
