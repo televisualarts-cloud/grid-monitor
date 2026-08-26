@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260825.11  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260826.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -814,6 +814,16 @@
   .gas-b2 .val{flex:0 0 60px;text-align:right;font-family:var(--mono);font-size:11.5px;color:var(--ink)}
   .ea-overlay{position:fixed;inset:0;background:var(--bg);z-index:200;display:none;flex-direction:column}
   .ea-rainchip{display:inline-flex;align-items:center}
+  .oc4-nudge{display:flex;align-items:flex-start;gap:12px;margin:0 0 16px;padding:10px 14px;
+    border:1px solid rgba(91,141,239,.4);border-radius:9px;background:rgba(91,141,239,.07);
+    font-family:var(--mono);font-size:11.5px;color:var(--ink-dim);line-height:1.55}
+  .oc4-nudge-txt{flex:1 1 auto;min-width:0}
+  .oc4-nudge a{color:var(--accent2);text-decoration:none}
+  .oc4-nudge a:hover{text-decoration:underline}
+  .oc4-nudge .oc4-up{font-weight:600;white-space:nowrap}
+  .oc4-nudge .oc4-x{flex:0 0 auto;background:none;border:0;color:var(--ink-faint);
+    font-size:16px;line-height:1;cursor:pointer;padding:0 2px}
+  .oc4-nudge .oc4-x:hover{color:var(--ink)}
   .ea-rainchip:empty{display:none}
   .ea-rainchip .hdr-sum{cursor:default}
   .ea-overlay.open{display:flex}
@@ -1253,7 +1263,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260825.11 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260826.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -5351,6 +5361,23 @@ function eaRenderRainMap(rainfall){
   return out;
 }
 
+// One Call 4.0 upgrade nudge: shown only when a key is present but the weather
+// fell back to the free 2.5 tier (wind.api === "2.5"). Dismissible, remembered.
+function oc4NudgeDismissed(){ try{ return localStorage.getItem("oc4NudgeDismissed")==="1"; }catch(e){ return false; } }
+function dismissOc4Nudge(el){ try{ localStorage.setItem("oc4NudgeDismissed","1"); }catch(e){} const n=el.closest(".oc4-nudge"); if(n) n.remove(); }
+function oc4NudgeHtml(){
+  if(oc4NudgeDismissed()) return "";
+  const w = eaData && eaData.wind;
+  if(!w || w.api !== "2.5") return "";        // hide when no key, or already on OC4
+  const L="https://openweathermap.org/api/one-call-4";
+  return '<div class="oc4-nudge"><div class="oc4-nudge-txt">'+
+    '<b>You\u2019re on the free weather tier.</b> A '+
+    '<a href="'+L+'" target="_blank" rel="noopener">One Call 4.0</a> subscription unlocks the '+
+    'live rainfall nowcast \u2014 minute-ahead precipitation at your location, the offshore '+
+    'rain-approach tracker, and spoken alerts as rain builds, approaches and clears. '+
+    '<a class="oc4-up" href="'+L+'" target="_blank" rel="noopener">Upgrade \u2192</a></div>'+
+    '<button class="oc4-x" title="Dismiss" onclick="dismissOc4Nudge(this)">\u00d7</button></div>';
+}
 function eaRender(){
   if(!eaData){ return; }
   const b=$("#eaBody");
@@ -5415,6 +5442,8 @@ function eaRender(){
     });
     html+='</div>';
   }
+
+  html+=oc4NudgeHtml();
 
   // ---- two-column: stations (left) + drill-down (right) ----
   // A total river-stations failure leaves the left column empty, so the 0.82fr
