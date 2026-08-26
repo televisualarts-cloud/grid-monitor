@@ -69,6 +69,19 @@ ETA_MAX_MIN      = 90
 GAUGE_CONFIRM_KM = 8.0         # a physical gauge this close counts as "at your location"
 UPWIND_HALF_ANGLE = 60        # a gauge within +/- this of wind-from is "upwind"
 
+# Land-front tracking: give the PHYSICAL upwind gauges the same treatment as the
+# sea arc — bin the leading wet edge into range rings, measure its inward speed
+# ring-to-ring across cycles, and watch whether the front is strengthening or
+# weakening as it closes in (so a fizzling shower is called out, not just an ETA).
+LAND_RINGS        = [30, 20, 10]      # km boundaries mirroring the sea arc's inner rings
+LAND_TRACK_MAX_KM = 35                # a wet upwind gauge beyond this is too far to track yet
+LAND_TRACK_WINDOW_S = 45 * 60         # history window for edge speed + intensity slope
+LAND_MIN_SPAN_S   = 8 * 60            # need this much history before calling a trend/speed
+FRONT_STRENGTHEN  = 1.0               # mm/h rise of the leading edge over the window = building
+FRONT_WEAKEN      = -1.0              # mm/h fall over the window = easing
+FRONT_FIZZLE_MMH  = 1.0               # weakening AND peak below this = likely to fizzle out
+ARC_WEAKEN_MMH    = 0.5               # sea edge intensity drop that counts as "weakening"
+
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
 
@@ -124,11 +137,15 @@ class ProbeState:
     arc_hits: int = 0                                   # consecutive offshore detections
     arc_edge_km: float | None = None                   # nearest wet range while tracking
     arc_edge_ts: float | None = None
+    arc_edge_mm: float | None = None                   # leading-edge intensity last cycle (fizzle watch)
     arc_lock_ts: float | None = None
     arc_track_az: list = field(default_factory=list)   # azimuths currently tracked
     sea_pts: list = field(default_factory=list)         # [[az,range],...] that are sea
     sea_home: list | None = None
     sea_ts: float = 0.0
+    land_hist: list = field(default_factory=list)      # [(ts, edge_km, peak_mm, dir)] — approaching land front
+    land_active: bool = False                          # was a land front approaching last cycle?
+    land_last_dir: str | None = None                   # spoken direction of the tracked land front
     announced: dict = field(default_factory=dict)      # key -> last-announced phrase (edge-triggered)
     was_active: bool = False                            # was the situation non-calm last cycle?
 
@@ -228,19 +245,31 @@ def compute_forward(minute, now, current_band):
     return out
 
 
-def eta_window(dist_km, wind_kmh):
-    """Arrival window from distance and advection speed. Returns
-    (text, lo_min, hi_min) or (None, None, None) if it should be dropped."""
-    if not dist_km or not wind_kmh or wind_kmh <= 0.5:
+def eta_from_speed(dist_km, speed_kmh, measured=False):
+    """Arrival window from distance and a closing speed. Returns
+    (text, lo_min, hi_min) or (None, None, None) if it should be dropped.
+    measured=False treats speed as a surface-wind proxy (the system runs faster,
+    so the fast edge applies ADVECT_FAST_FACTOR); measured=True treats it as an
+    already-observed front speed and brackets it symmetrically (+/-20%)."""
+    if not dist_km or not speed_kmh or speed_kmh <= 0.5:
         return None, None, None
-    slow = dist_km / wind_kmh * 60.0                    # surface wind = slow edge
-    fast = dist_km / (wind_kmh * ADVECT_FAST_FACTOR) * 60.0
-    lo, hi = _round5(fast), _round5(slow)
+    if measured:
+        mid = dist_km / speed_kmh * 60.0
+        lo, hi = _round5(mid * 0.8), _round5(mid * 1.2)
+    else:
+        slow = dist_km / speed_kmh * 60.0               # surface wind = slow edge
+        fast = dist_km / (speed_kmh * ADVECT_FAST_FACTOR) * 60.0
+        lo, hi = _round5(fast), _round5(slow)
     if hi > ETA_MAX_MIN:                                # too far out for a claim
         return None, None, None
     if lo < ETA_MIN_MIN:
         return "within the next fifteen minutes", lo, hi
     return f"in {lo} to {hi} minutes", lo, hi
+
+
+def eta_window(dist_km, wind_kmh):
+    """Back-compat wrapper: arrival window from a surface-wind proxy speed."""
+    return eta_from_speed(dist_km, wind_kmh, measured=False)
 
 
 def gauge_approach(gauges, home, wind_from, wind_kmh):
@@ -272,6 +301,113 @@ def gauge_approach(gauges, home, wind_from, wind_kmh):
         out["approach"] = {"dir": compass(wind_from, spoken=True),
                            "eta_text": txt, "eta_lo": lo, "eta_hi": hi,
                            "n_up": len(upwind), "edge_km": round(near_up["_d"], 1)}
+    return out
+
+
+# ───────────────────────── land-front range-ring tracker ────────────────────
+def _upwind_wet(gauges, home, wind_from):
+    """Wet, non-modelled physical gauges lying upwind of home (within
+    UPWIND_HALF_ANGLE of the wind-from bearing). Each is tagged with _brg/_d."""
+    wet = [g for g in gauges if (g.get("mm") or 0) > 0
+           and g.get("lat") is not None and g.get("lon") is not None
+           and not g.get("modelled")]
+    for g in wet:
+        g["_brg"] = bearing_deg(home[0], home[1], g["lat"], g["lon"])
+        g["_d"] = g.get("dist_km") or haversine_km(home[0], home[1], g["lat"], g["lon"])
+    if wind_from is None:
+        return []
+    return [g for g in wet
+            if abs((g["_brg"] - wind_from + 180) % 360 - 180) <= UPWIND_HALF_ANGLE
+            and g["_d"] is not None]
+
+
+def _ring_of(edge_km):
+    """Coarsest range ring the leading wet edge has crossed (30/20/10 km); None
+    if still beyond the outer ring. Used to key ring-crossing announcements."""
+    if edge_km is None:
+        return None
+    band = None
+    for r in sorted(LAND_RINGS, reverse=True):          # 30, 20, 10
+        if edge_km <= r:
+            band = r
+    return band
+
+
+def _front_trend(hist, now):
+    """Intensity slope of the approaching front over the tracking window, from
+    the leading-edge peak mm/h. Returns (label, delta_mm) where label is
+    strengthening / weakening / steady."""
+    h = [(t, mm) for (t, e, mm, d) in hist
+         if now - t <= LAND_TRACK_WINDOW_S and mm is not None]
+    if len(h) < 2 or (h[-1][0] - h[0][0]) < LAND_MIN_SPAN_S:
+        return "steady", 0.0
+    early = sum(v for _, v in h[:2]) / len(h[:2])
+    late = sum(v for _, v in h[-2:]) / len(h[-2:])
+    d = late - early
+    if d >= FRONT_STRENGTHEN: return "strengthening", d
+    if d <= FRONT_WEAKEN:     return "weakening", d
+    return "steady", d
+
+
+def _front_speed(hist, now):
+    """Measured inward closing speed (km/h) of the leading edge over the window,
+    or None if there isn't yet inbound motion to measure."""
+    h = [(t, e) for (t, e, mm, d) in hist
+         if now - t <= LAND_TRACK_WINDOW_S and e is not None]
+    if len(h) < 2:
+        return None
+    dt_hr = (h[-1][0] - h[0][0]) / 3600.0
+    moved = h[0][1] - h[-1][1]                           # positive = closing in
+    if dt_hr <= 0 or moved <= 0:
+        return None
+    return moved / dt_hr
+
+
+def land_front(state, gauges, home, wind_from, wind_kmh, now):
+    """Track the approaching PHYSICAL-gauge front the way the sea arc tracks the
+    offshore edge: nearest upwind wet gauge = leading edge, binned into range
+    rings; measured inward speed (falling back to wind when motion isn't yet
+    measurable); and an intensity trend so a fizzling shower is called out.
+    Read-only apart from appending to state.land_hist. Returns a dict."""
+    dir_spoken = compass(wind_from, spoken=True) if wind_from is not None else None
+    out = {"active": False, "dir": dir_spoken, "edge_km": None, "ring": None,
+           "speed_kmh": None, "measured": False, "eta_text": None,
+           "eta_lo": None, "eta_hi": None, "intensity_trend": "steady",
+           "fizzling": False, "peak_mm": None}
+    uw = _upwind_wet(gauges, home, wind_from)
+    if not uw:
+        return out
+
+    edge = min(g["_d"] for g in uw)
+    peak = max((g.get("mm") or 0) for g in uw)
+    out["edge_km"], out["peak_mm"] = round(edge, 1), round(peak, 2)
+
+    state.land_hist.append((now, edge, peak, dir_spoken))
+    state.land_hist = [(t, e, m, dd) for (t, e, m, dd) in state.land_hist
+                       if now - t <= LAND_TRACK_WINDOW_S]
+
+    trend, dmm = _front_trend(state.land_hist, now)
+    spd = _front_speed(state.land_hist, now)
+    measured = spd is not None
+    if not measured:
+        spd = wind_kmh
+    txt, lo, hi = eta_from_speed(edge, spd, measured=measured)
+
+    out["intensity_trend"] = trend
+    out["speed_kmh"] = round(spd, 1) if spd else None
+    out["measured"] = measured
+    out["eta_text"], out["eta_lo"], out["eta_hi"] = txt, lo, hi
+    out["ring"] = _ring_of(edge)
+    out["fizzling"] = (trend == "weakening" and peak < FRONT_FIZZLE_MMH)
+    # "active" = a front genuinely approaching: beyond the confirm radius (else
+    # it's arriving and the band/confirm messages take over), within track range,
+    # and corroborated — either two-plus upwind wet gauges, or a single one that
+    # has since shown measured inbound motion (temporal confirmation). This keeps
+    # one stray wet gauge from raising an approach on its first appearance.
+    n_up = len(uw)
+    out["n_up"] = n_up
+    out["active"] = ((GAUGE_CONFIRM_KM < edge <= LAND_TRACK_MAX_KM)
+                     and (n_up >= 2 or measured))
     return out
 
 
@@ -374,7 +510,8 @@ def arc_update(state, home, now, sample_fn=fetch_om_precip, landsea_fn=fetch_lan
 
     wet = [p for p in pts if (p.get("mm") or 0) >= ARC_DETECT_MMH]
     edge = min((p["range_km"] for p in wet), default=None)
-    info["edge_km"], info["detected"] = edge, bool(wet)
+    peak_mm = max((p.get("mm") or 0) for p in wet) if wet else None
+    info["edge_km"], info["detected"], info["weakening"] = edge, bool(wet), False
     if wet:
         nearest = min(wet, key=lambda p: p["range_km"])
         info["dir_spoken"] = compass(nearest["bearing"], spoken=True)
@@ -387,6 +524,7 @@ def arc_update(state, home, now, sample_fn=fetch_om_precip, landsea_fn=fetch_lan
             state.arc_mode = "track"
             state.arc_lock_ts = now
             state.arc_edge_km, state.arc_edge_ts = edge, now
+            state.arc_edge_mm = peak_mm
             state.arc_track_az = sorted({p["bearing"] for p in wet}) or sentinel_az
             info["mode"] = "track"
     else:  # track: measure inward motion of the leading edge across ranges
@@ -397,12 +535,18 @@ def arc_update(state, home, now, sample_fn=fetch_om_precip, landsea_fn=fetch_lan
                 info["speed_kmh"] = round(moved / dt_hr, 1)
                 txt, _, _ = eta_window(edge, info["speed_kmh"])
                 info["eta_text"] = txt
+        # fizzle watch: leading-edge intensity fading as the cell moves in
+        if (peak_mm is not None and state.arc_edge_mm is not None
+                and peak_mm <= state.arc_edge_mm - ARC_WEAKEN_MMH and peak_mm < 2.0):
+            info["weakening"] = True
         if edge is not None:
             state.arc_edge_km, state.arc_edge_ts = edge, now
+            state.arc_edge_mm = peak_mm
             state.arc_track_az = sorted({p["bearing"] for p in wet}) or state.arc_track_az
         if (not wet) or (state.arc_lock_ts and now - state.arc_lock_ts > ARC_TIMEOUT_S):
             state.arc_mode, state.arc_hits = "scan", 0
             state.arc_edge_km = state.arc_edge_ts = state.arc_lock_ts = None
+            state.arc_edge_mm = None
             state.arc_track_az = []
             info["mode"] = "scan"
 
@@ -440,7 +584,13 @@ TEMPLATES = {
     "approach_imm":  ("notice",  "Rain is approaching from the {dir} and may arrive within the next fifteen minutes."),
     "approach_soft": ("notice",  "Rain is present to the {dir} and could move your way."),
     "approach_miss": ("notice",  "Rain is passing to the {dir} and is unlikely to reach you."),
+    "approach_strengthen":     ("notice", "Rain is approaching from the {dir} and getting stronger. It may arrive {eta}."),
+    "approach_strengthen_soft": ("notice", "Rain is building to the {dir} and moving your way."),
+    "approach_weaken":         ("notice", "Rain approaching from the {dir} is easing as it nears. It may arrive {eta}, but lighter than before."),
+    "approach_fizzle":         ("notice", "Rain approaching from the {dir} is fading and may fizzle out before it reaches you."),
+    "approach_gone":           ("notice", "The rain that was approaching from the {dir} has faded and is no longer likely to reach you."),
     "sea_approach":  ("notice",  "Rain may be moving in from the sea to the {dir}. There are no gauges out there to confirm it."),
+    "sea_weaken":    ("notice",  "Rain out to the {dir} over the sea is weakening and may not reach the coast."),
     "model_unconf":  ("notice",  "The model suggests rain at your location. This is not yet confirmed by rain gauges in the area."),
     "gauge_confirm": ("notice",  "Rain at your location is now confirmed by nearby gauges."),
     "compound_wet":  ("warning", "Pressure is falling quickly and the wind is increasing. Heavy rain has started and is likely to persist."),
@@ -505,24 +655,45 @@ def select(situation):
         else:
             cands.append(("vis", *TEMPLATES["vis_fog"]))
 
-    # directional approach (physical land gauges)
-    if appr and appr.get("approach"):
-        a = appr["approach"]
-        if a["eta_text"] and a["eta_lo"] is not None and a["eta_lo"] < ETA_MIN_MIN:
-            cands.append(("approach", TEMPLATES["approach_imm"][0],
-                          TEMPLATES["approach_imm"][1].format(dir=a["dir"])))
-        elif a["eta_text"]:
-            cands.append(("approach", TEMPLATES["approach_win"][0],
-                          TEMPLATES["approach_win"][1].format(dir=a["dir"], eta=a["eta_text"])))
-        else:
-            cands.append(("approach", TEMPLATES["approach_soft"][0],
-                          TEMPLATES["approach_soft"][1].format(dir=a["dir"])))
+    # directional approach (physical land gauges) — ring-tracked, with a strength
+    # trend so a building front, an easing one, and a fizzling shower differ.
+    land = situation.get("land")
+    if land and land.get("active"):
+        d = land.get("dir") or "nearby"
+        if land.get("fizzling"):
+            cands.append(("approach", TEMPLATES["approach_fizzle"][0],
+                          TEMPLATES["approach_fizzle"][1].format(dir=d)))
+        elif land.get("intensity_trend") == "weakening":
+            eta = land.get("eta_text") or "soon"
+            cands.append(("approach", TEMPLATES["approach_weaken"][0],
+                          TEMPLATES["approach_weaken"][1].format(dir=d, eta=eta)))
+        elif land.get("intensity_trend") == "strengthening":
+            if land.get("eta_text"):
+                cands.append(("approach", TEMPLATES["approach_strengthen"][0],
+                              TEMPLATES["approach_strengthen"][1].format(dir=d, eta=land["eta_text"])))
+            else:
+                cands.append(("approach", TEMPLATES["approach_strengthen_soft"][0],
+                              TEMPLATES["approach_strengthen_soft"][1].format(dir=d)))
+        else:  # steady
+            if land.get("eta_text") and land.get("eta_lo") is not None and land["eta_lo"] < ETA_MIN_MIN:
+                cands.append(("approach", TEMPLATES["approach_imm"][0],
+                              TEMPLATES["approach_imm"][1].format(dir=d)))
+            elif land.get("eta_text"):
+                cands.append(("approach", TEMPLATES["approach_win"][0],
+                              TEMPLATES["approach_win"][1].format(dir=d, eta=land["eta_text"])))
+            else:
+                cands.append(("approach", TEMPLATES["approach_soft"][0],
+                              TEMPLATES["approach_soft"][1].format(dir=d)))
 
-    # offshore modelled approach
+    # offshore modelled approach — with the same fizzle awareness
     if sea and sea.get("detected"):
         d = sea.get("dir_spoken") or "the sea"
-        cands.append(("sea", TEMPLATES["sea_approach"][0],
-                      TEMPLATES["sea_approach"][1].format(dir=d)))
+        if sea.get("weakening"):
+            cands.append(("sea", TEMPLATES["sea_weaken"][0],
+                          TEMPLATES["sea_weaken"][1].format(dir=d)))
+        else:
+            cands.append(("sea", TEMPLATES["sea_approach"][0],
+                          TEMPLATES["sea_approach"][1].format(dir=d)))
 
     # forward nowcast (OWM one-minute timeline)
     fwd = situation.get("forward")
@@ -572,6 +743,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     warm = _span(state.press_hist) < MIN_PRESS_SPAN_S
     vis = visibility_state(state.vis_hist, now, visibility_m)
     appr = gauge_approach(gauges, home, wind_from, wind_kmh)
+    land = land_front(state, gauges, home, wind_from, wind_kmh, now)
     sea, vgauges = arc_update(state, home, now, sample_fn=sample_fn, landsea_fn=landsea_fn)
     forward = compute_forward(forward_precip, now, band)
 
@@ -580,7 +752,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     model_only = raining and not confirmed and not (appr and appr.get("n_wet"))
 
     situation = {"band": band, "trend": trend, "press_cls": pcls, "vis": vis,
-                 "approach": appr, "sea": sea, "confirmed": confirmed,
+                 "approach": appr, "land": land, "sea": sea, "confirmed": confirmed,
                  "model_only": model_only, "flood_active": flood_active,
                  "wind_from": wind_from, "forward": forward}
 
@@ -600,13 +772,28 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
             would.append({"tier": tier, "key": key, "phrase": phrase})
     state.announced = {k: v[1] for k, v in now_keys.items()}
 
+    # Land-front fade: a ONE-SHOT when a front that was approaching weakens or
+    # veers away before arriving (and hasn't simply arrived — the band/confirm
+    # messages cover a real arrival). Announced with its last tracked direction.
+    land_active_now = bool(land and land.get("active"))
+    if state.land_active and not land_active_now and not raining and not confirmed:
+        would.append({"tier": "notice", "key": "land_fade",
+                      "phrase": TEMPLATES["approach_gone"][1].format(
+                          dir=(state.land_last_dir or "that direction"))})
+    state.land_active = land_active_now
+    if land_active_now and land.get("dir"):
+        state.land_last_dir = land["dir"]
+
     # All-clear: a ONE-SHOT, spoken only on the transition from an active
-    # situation to calm — never on a calm-from-start day, never repeated.
+    # situation to calm — never on a calm-from-start day, never repeated. A
+    # land-fade this cycle already IS the all-clear for that front, so settled
+    # only speaks when nothing else did.
     if now_keys:
         state.was_active = True
     elif state.was_active:
-        would.append({"tier": "notice", "key": "settled",
-                      "phrase": TEMPLATES["settled"][1]})
+        if not would:
+            would.append({"tier": "notice", "key": "settled",
+                          "phrase": TEMPLATES["settled"][1]})
         state.was_active = False
 
     log = (f"band={band} trend={trend}({trend_d:+.1f}) "
@@ -615,8 +802,12 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
            f"arc={sea['mode']}"
            + (f" edge={sea['edge_km']}km" if sea.get("edge_km") else "")
            + (f" spd={sea['speed_kmh']}km/h" if sea.get("speed_kmh") else "")
-           + (f" | approach {appr['approach']['dir']} {appr['approach']['eta_text']}"
-              if appr and appr.get("approach") else "")
+           + (" arc_weak" if sea.get("weakening") else "")
+           + (f" | land {land['dir']} edge={land['edge_km']}km ring={land['ring']}"
+              f" {land['intensity_trend']}{'/fizzle' if land.get('fizzling') else ''}"
+              f"{'(measured)' if land.get('measured') else '(wind)'}"
+              f" eta={land['eta_text']}"
+              if land and land.get("active") else "")
            + (f" fwd_onset={forward['onset_eta_min']}min" if forward and forward.get("onset_eta_min") is not None else "")
            + (" fwd_heavier" if forward and forward.get("intensify") else "")
            + (" | WOULD SPEAK: " + " || ".join(w["phrase"] for w in would) if would else ""))
