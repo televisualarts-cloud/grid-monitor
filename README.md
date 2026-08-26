@@ -29,6 +29,13 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
 
 The page refreshes itself roughly every 60 seconds, so you can leave it open.
 
+### Updating an existing install
+When you replace any of the files with a newer version — `grid_server.py`,
+`rain_probe.py`, `owm_onecall.py`, or `grid_dashboard.html` — **stop and restart
+`grid_server.py`** afterwards. The server loads the Python modules once at startup,
+so changes to any of them (including the companion modules) only take effect on a
+restart; a browser refresh alone is not enough. After restarting, reload the page.
+
 ### Files created automatically
 Once running, the server writes these into the same folder as needed:
 - `bmu_locations.json`, `bmu_registry.json` — power station / unit reference data.
@@ -218,4 +225,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 260823.8*
+*README build 260826.1*
