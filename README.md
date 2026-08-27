@@ -113,30 +113,43 @@ The **balance** is the live supply−demand flow imbalance (total supply minus t
 Open with the **ea** button.
 - Enter an England postcode **or place name** (e.g. `SW1A 1AA` or `Sheffield`) to monitor river levels, rainfall and flood status nearby.
 - Choose a radius: **20, 40 or 80 km**.
-- **Flood alerts** appear in an accordion list (one open at a time; the first is expanded by default) and are also flagged at the very top of the main page.
+- **Flood alerts** appear in an accordion list (one open at a time; the first is expanded by default) and are also flagged at the very top of the main page. Any warning or alert whose flood area falls within your chosen radius is highlighted as "near you" and floated to the top of the list; the spoken flood alarm also names the nearest local one and its distance.
 - Gauges are ordered nearest-first, grouped into distance bands.
-- **Click a river-level or rainfall gauge** to plot its history. Rainfall is colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy) based on 15-minute accumulation.
+- **River level as % of its range.** Each station shows its level as a percentage of its own EA typical range — 0% at the typical low, 100% at the typical high — next to the name in the list (blue below range, green to 80%, amber to 100%, red above) and on its plot, where the range max (100%) and min (0%) are marked as labelled lines.
+- **Click a river-level or rainfall gauge** to plot its history. Rainfall is shown as a **mm/h rate** — the raw 15-minute bucket total is converted and kept in the card's hover tooltip — and colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy). **Snow** is drawn in bright pink rather than on the rain scale. If a gauge stops reporting, its card **times out to 0 mm/h** and greys rather than presenting an old value as current, and its history plot runs through to the current time (a gap shows as empty) instead of freezing on the last reading. A gauge card's **border** additionally holds the highest intensity of the last two hours, so recent rain stays visible after it stops, while the number and fill reflect the current reading.
+- **Reading age.** River-level readings carry a coloured "…ago" — green up to an hour, amber to four hours, red beyond — so a stale gauge is obvious at a glance.
 - **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
 
 ### Rainfall nowcast (optional — One Call 4.0)
 
-With an OpenWeather One Call 4.0 subscription the rainfall watch gains a
-short-range nowcast that fills the biggest gap in gauge coverage: the sea. Real
-Environment Agency gauges only exist on land, so for a coastal location the
-direction weather usually arrives from can be a blind spot. The nowcast adds a
-ring of **modelled** sea points off your coast (from OpenWeather and the keyless
-Open-Meteo model) that appear on the rainfall map as dashed *MODEL* cards at
-their true bearing and distance; when rain is detected offshore they draw
-progressively inward to track it as it moves toward you, and the tracker
-estimates its speed and arrival window from how fast it crosses successive
-ranges.
+The offshore rainfall watch fills the biggest gap in gauge coverage: the sea.
+Real Environment Agency gauges only exist on land, so for a coastal location the
+direction weather usually arrives from can be a blind spot. A permanent **net**
+of *modelled* sea points watches that arc — sentinels roughly 40 km out plus
+inner pickets around 20 km — sampled from the free, keyless Open-Meteo model, so
+the wide watch costs nothing against your OpenWeather budget. They appear on the
+rainfall map as dashed *MODEL* cards at their true bearing and distance.
+
+When rain is detected offshore, **mobile tracker cards** (marked *TRACK*) spawn
+and follow the cell inward through the 5–35 km band, jumping back now and then to
+sense whether heavier, lighter, or no rain is following, and estimating the
+front's speed and arrival window from how fast it crosses successive ranges. With
+an OpenWeather **One Call 4.0** subscription these trackers take radar-fed quality
+reads (marked *RADAR* when confirmed), so paid calls are spent only on real
+detections; without it they fall back to the free model. When the rain clears the
+trackers retreat back offshore and fade, leaving the sentinels watching. Snow is
+shown in bright pink throughout, never on the rain scale.
 
 Alongside this the server runs a background rain-alert assessment that combines
 your real gauges, OpenWeather's minute-by-minute precipitation forecast for the
 next hour, and local pressure and visibility trends — building a picture of what
 is happening at your location, what is approaching and from which direction, and
-whether it is intensifying or easing. To hear these as spoken alerts, enable
-**Weather nowcast** in the alarms panel and arm sound; until it is switched on the
+whether it is intensifying or easing. When the measured approach speed looks
+reliable the spoken alert can include it ("moving in from the south at around
+thirty miles per hour, reaching the coast in thirty to forty-five minutes"); when
+it looks wrong — for instance two showers mistaken for one giving an absurd speed
+— the figure is withheld rather than risk a misleading number. To hear these as
+spoken alerts, enable **Weather nowcast** in the alarms panel and arm sound; until it is switched on the
 assessment simply logs what an alert would say (a diagnostic). Like the other
 alarm categories it is off by default and speaks only while sound is armed.
 
@@ -225,4 +238,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 260826.1*
+*README build 260827.2*
