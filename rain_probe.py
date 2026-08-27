@@ -13,7 +13,7 @@
 # the EA collect path and hand it data already fetched (see INTEGRATION notes).
 
 from __future__ import annotations
-import json, math, time, urllib.request, urllib.parse
+import json, math, time, random, urllib.request, urllib.parse
 from dataclasses import dataclass, field, asdict
 
 # ───────────────────────── tunables (all in one place) ──────────────────────
@@ -52,14 +52,45 @@ FORWARD_ONSET_MMH   = 0.5      # forecast rate that counts as onset (light rain)
 # ONLY where they are genuinely over sea; land points are suppressed (real gauges
 # already cover the land, and skipping them saves the precip sample). Azimuths are
 # free — sentinels sit at whatever bearings are open water, not fixed cardinals.
-ARC_SENTINEL_KM  = 40                 # resting scan ring
-ARC_INNER_KM     = [30, 20, 10]       # drawn inward while tracking
-ARC_SCAN_STEP    = 20                 # degrees between candidate azimuths (finer = freer)
+SENTINEL_KM      = 40                 # permanent OUTER sentinel ring
+ARC_SENTINEL_KM  = SENTINEL_KM        # (compat alias, still used by the sea mask)
+PICKET_KM        = 20                 # permanent INNER picket ring — bridges the 40->home gap
+NET_STEP_DEG     = 20                 # azimuth spacing of the sentinel ring (~14 km apart at 40 km)
+PICKET_STEP_DEG  = 40                 # inner pickets sparser, sitting between sentinel spokes
+NET_RANGES       = [40, 30, 20, 10, 5]  # ranges the sea-mask tests (net rings + mobile-band sea test)
+NET_DITHER_DEG   = 10                 # under-hood azimuth jitter for the detection-only fill points
+NET_FILL_RANGES  = [30, 10]           # mid ranges the dithered fill sweeps for coverage between rings
 ARC_DETECT_MMH   = 0.3                # model rate that counts as "rain on this point"
-ARC_LOCK_SAMPLES = 2                  # consecutive detections before scan->track
-ARC_TIMEOUT_S    = 90 * 60            # give up a track that never arrives / progresses
 SEA_MASK_TTL     = 24 * 3600          # land/sea geography is static; refresh ~daily
 GEOCODE_BASE     = "https://api.postcodes.io"
+
+# Mobile tracker cards: spawned on a NET detection, they live in the 5-35 km band
+# (40 km stays the sentinels'), chase the cell inward (~1.6x wind), jump back now
+# and then to sense what follows, then loiter -> retreat to 35 km -> vanish. Their
+# QUALITY reads come from OC4 (track_sample_fn), so OpenWeather budget is spent
+# only on real detections; the wide net rides the free batched Open-Meteo.
+MOBILE_BAND_MIN  = 5
+MOBILE_BAND_MAX  = 35
+MOBILE_MAX       = 4                  # budget cap on concurrent trackers
+MOBILE_SEP_DEG   = 25                 # don't spawn a new mobile this close to an existing one
+MOBILE_STEP_MIN_KM = 3.0              # minimum inward probe step per cycle
+MOBILE_STEP_MAX_KM = 8.0              # cap on a single cycle's step
+MOBILE_JUMPBACK_EVERY = 3             # every Nth wet cycle, jump back instead of chasing in
+MOBILE_LOITER_CYCLES = 2              # dry cycles held before retreat begins
+MOBILE_RETREAT_KM = 8.0               # outward step per cycle while retreating (-> 35 -> vanish)
+MOBILE_EDGE_WINDOW_S = 45 * 60        # history window for the measured front speed
+
+# "Smells wrong" speed-trust gate (shared by the sea arc and the land front). A
+# measured front speed is SPOKEN only if it is physically sane, roughly consistent
+# with the wind that drives it, and stable across cycles; otherwise the figure is
+# withheld and the alert falls back to a qualitative approach. Honesty over a
+# plausible-but-wrong number (e.g. two fronts read as one giving 300 mph).
+KMH_PER_MPH   = 1.609344
+SPEED_MIN_MPH = 5                     # below this: quasi-stationary, no ETA number
+SPEED_MAX_MPH = 75                    # above this: almost no UK rain band -> distrust
+SPEED_WIND_LO = 0.4                   # trust only if measured >= this * (1.6 x wind) prior
+SPEED_WIND_HI = 3.0                   # ...and <= this * prior
+SPEED_STABLE_TOL = 0.35               # successive measures must agree within +/-35%
 
 # Approach ETA: system motion tends to run faster than the 10 m wind.
 ADVECT_FAST_FACTOR = 1.6
@@ -125,6 +156,17 @@ def compass(bearing, spoken=False):
 def _round5(x): return int(round(x / 5.0) * 5)
 
 
+def _gmm(g):
+    """Unified precip RATE (mm/h) for a physical gauge. EA gauges arrive with a
+    15-minute bucket total in 'mm' and the same value already converted to a rate
+    in 'mm_h'; prefer the rate so gauge, sentinel and model points are all compared
+    on one scale (mm/h). Falls back to raw 'mm' for any caller predating the
+    conversion. Everything here (INTENSITY, ARC_DETECT_MMH, FRONT_*) is mm/h, so
+    this is the single read for gauge intensity."""
+    v = g.get("mm_h")
+    return v if v is not None else g.get("mm")
+
+
 # ───────────────────────── persistent state ─────────────────────────────────
 @dataclass
 class ProbeState:
@@ -139,7 +181,11 @@ class ProbeState:
     arc_edge_ts: float | None = None
     arc_edge_mm: float | None = None                   # leading-edge intensity last cycle (fizzle watch)
     arc_lock_ts: float | None = None
-    arc_track_az: list = field(default_factory=list)   # azimuths currently tracked
+    arc_track_az: list = field(default_factory=list)   # (legacy, unused by the two-layer net)
+    mobiles: list = field(default_factory=list)        # active mobile tracker agents (dicts)
+    mobile_seq: int = 0                                # id counter for spawned mobiles
+    net_edge_hist: list = field(default_factory=list)  # [[ts, nearest_wet_net_km, peak_mm]] — front-speed source
+    net_speed_kmh: float | None = None                 # last measured net-edge closing speed
     sea_pts: list = field(default_factory=list)         # [[az,range],...] that are sea
     sea_home: list | None = None
     sea_ts: float = 0.0
@@ -276,7 +322,7 @@ def gauge_approach(gauges, home, wind_from, wind_kmh):
     """Physical-gauge (measured) approach signal. gauges: list of dicts with
     lat/lon/mm/dist_km. Returns dict or None. Also reports nearest wet gauge and
     whether any wet gauge is within confirmation range (measured 'at home')."""
-    wet = [g for g in gauges if (g.get("mm") or 0) > 0
+    wet = [g for g in gauges if (_gmm(g) or 0) > 0
            and g.get("lat") is not None and g.get("lon") is not None
            and not g.get("modelled")]
     if not wet:
@@ -308,7 +354,7 @@ def gauge_approach(gauges, home, wind_from, wind_kmh):
 def _upwind_wet(gauges, home, wind_from):
     """Wet, non-modelled physical gauges lying upwind of home (within
     UPWIND_HALF_ANGLE of the wind-from bearing). Each is tagged with _brg/_d."""
-    wet = [g for g in gauges if (g.get("mm") or 0) > 0
+    wet = [g for g in gauges if (_gmm(g) or 0) > 0
            and g.get("lat") is not None and g.get("lon") is not None
            and not g.get("modelled")]
     for g in wet:
@@ -379,7 +425,7 @@ def land_front(state, gauges, home, wind_from, wind_kmh, now):
         return out
 
     edge = min(g["_d"] for g in uw)
-    peak = max((g.get("mm") or 0) for g in uw)
+    peak = max((_gmm(g) or 0) for g in uw)
     out["edge_km"], out["peak_mm"] = round(edge, 1), round(peak, 2)
 
     state.land_hist.append((now, edge, peak, dir_spoken))
@@ -440,9 +486,9 @@ def ensure_sea_mask(state, home, now, landsea_fn):
     hk = [round(home[0], 2), round(home[1], 2)]
     if state.sea_home == hk and (now - state.sea_ts) < SEA_MASK_TTL and state.sea_pts:
         return
-    ranges = [ARC_SENTINEL_KM] + ARC_INNER_KM
+    ranges = NET_RANGES
     cand = []
-    for a in range(0, 360, ARC_SCAN_STEP):
+    for a in range(0, 360, NET_STEP_DEG):
         for r in ranges:
             la, lo = offset_latlon(home[0], home[1], a, r)
             cand.append({"az": a, "range_km": r, "lat": la, "lon": lo})
@@ -464,101 +510,283 @@ def fetch_om_precip(points, timeout=8):
     try:
         q = {"latitude": ",".join(f"{p['lat']:.4f}" for p in points),
              "longitude": ",".join(f"{p['lon']:.4f}" for p in points),
-             "current": "precipitation"}
+             "current": "precipitation,rain,showers"}
         url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
         req = urllib.request.Request(url, headers={"User-Agent": "uk-grid-monitor/1.0"})
         d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
         blocks = d if isinstance(d, list) else [d]
-        return [(b.get("current") or {}).get("precipitation") for b in blocks]
+        out = []
+        for b in blocks:
+            cur = b.get("current") or {}
+            tot = cur.get("precipitation")           # total water-equiv, incl. snow
+            if tot is None:
+                out.append({"mm": None, "snow": False, "src": "OM"}); continue
+            rain = (cur.get("rain") or 0.0) + (cur.get("showers") or 0.0)
+            snow_we = tot - rain                     # snow water-equivalent
+            out.append({"mm": tot, "snow": bool(snow_we > 0.05 and snow_we >= rain), "src": "OM"})
+        return out
     except Exception:
-        return [None] * len(points)
+        return [{"mm": None, "snow": False, "src": "OM"}] * len(points)
 
 
-def arc_update(state, home, now, sample_fn=fetch_om_precip, landsea_fn=fetch_landsea):
-    """Scan/track state machine over the SEA-ONLY movable arc. Land points are never
-    sampled (saves the call) nor shown. Sentinels sit at whatever azimuths are open
-    water; on a hit the track follows those bearings and draws inward. Returns
-    (info, virtual_gauges)."""
+def _apply_sample(pt, rt):
+    """Normalise a sampler result onto a point: {mm, snow, src}. Tolerates a bare
+    float for back-compat."""
+    if isinstance(rt, dict):
+        pt["mm"] = rt.get("mm"); pt["snow"] = bool(rt.get("snow")); pt["src"] = rt.get("src")
+    else:
+        pt["mm"] = rt; pt["snow"] = False; pt["src"] = None
+
+
+def _is_sea(seaset, az, range_km):
+    """Sea test for an arbitrary (azimuth, range): snap to the nearest mask cell."""
+    a = int(round((az % 360) / NET_STEP_DEG) * NET_STEP_DEG) % 360
+    r = min(NET_RANGES, key=lambda rr: abs(rr - range_km))
+    return (a, r) in seaset
+
+
+def _range_speed(hist, now, window=MOBILE_EDGE_WINDOW_S):
+    """Inward closing speed (km/h) of a wet EDGE from a [[ts, range_km, mm], ...]
+    history: positive = closing on home. None if not yet measurable."""
+    h = [e for e in hist if now - e[0] <= window]
+    if len(h) < 2:
+        return None
+    dt_hr = (h[-1][0] - h[0][0]) / 3600.0
+    moved = h[0][1] - h[-1][1]
+    if dt_hr <= 0 or moved <= 0:
+        return None
+    return moved / dt_hr
+
+
+def speed_trust(measured_kmh, wind_kmh, prev_kmh=None):
+    """The shared "smells wrong" gate. Returns (mph_or_None, trusted_bool). A speed
+    is trusted only if it is in a physical band, roughly consistent with 1.6x the
+    driving wind, and stable versus the previous measure. Used by BOTH the sea arc
+    and the land front so there is one definition of a believable front speed."""
+    if not measured_kmh or measured_kmh <= 0:
+        return None, False
+    mph = measured_kmh / KMH_PER_MPH
+    if mph < SPEED_MIN_MPH or mph > SPEED_MAX_MPH:      # physical band
+        return round(mph), False
+    if wind_kmh:                                        # consistency with the driving wind
+        prior = ADVECT_FAST_FACTOR * wind_kmh
+        if prior > 0 and not (SPEED_WIND_LO * prior <= measured_kmh <= SPEED_WIND_HI * prior):
+            return round(mph), False
+    if prev_kmh:                                        # 2-cycle stability
+        rel = abs(measured_kmh - prev_kmh) / max(prev_kmh, 1e-6)
+        if rel > SPEED_STABLE_TOL:
+            return round(mph), False
+    return round(mph), True
+
+
+def _net_points(state, home, seaset, sentinel_az):
+    """Build the NET sample set: stable DISPLAYED sentinels (40 km) + inner pickets
+    (20 km), plus hidden DITHER fill points (jittered azimuth, mid ranges) that give
+    detection coverage in the gaps without adding a visible, jittering card. All ride
+    the one free Open-Meteo batch. Returns (displayed, fills)."""
+    disp = []
+    for a in sentinel_az:
+        la, lo = offset_latlon(home[0], home[1], a, SENTINEL_KM)
+        disp.append({"lat": la, "lon": lo, "range_km": SENTINEL_KM, "bearing": a, "kind": "sentinel"})
+    for a in sentinel_az:
+        if a % PICKET_STEP_DEG == 0 and _is_sea(seaset, a, PICKET_KM):
+            la, lo = offset_latlon(home[0], home[1], a, PICKET_KM)
+            disp.append({"lat": la, "lon": lo, "range_km": PICKET_KM, "bearing": a, "kind": "picket"})
+    fills = []
+    for a in sentinel_az:
+        ja = (a + random.uniform(-NET_DITHER_DEG, NET_DITHER_DEG)) % 360
+        for r in NET_FILL_RANGES:
+            if _is_sea(seaset, ja, r):
+                la, lo = offset_latlon(home[0], home[1], ja, r)
+                fills.append({"lat": la, "lon": lo, "range_km": r, "bearing": ja, "kind": "fill"})
+    return disp, fills
+
+
+def _mobile_move(m, now, wind_kmh, net_speed_kmh, trusted):
+    """Move a WET mobile: mostly chase inward one probe step (~1.6x wind, or the
+    measured front speed when trusted), and every Nth wet cycle jump BACK to sense
+    whether heavier/lighter/no rain is following. Clamped to the 5-35 km band."""
+    dt_hr = None
+    if m.get("last_move_ts"):
+        dt_hr = (now - m["last_move_ts"]) / 3600.0
+    spd = net_speed_kmh if (trusted and net_speed_kmh) else (ADVECT_FAST_FACTOR * (wind_kmh or 0))
+    base = (spd * dt_hr) if (spd and dt_hr) else MOBILE_STEP_MIN_KM
+    step = max(MOBILE_STEP_MIN_KM, min(MOBILE_STEP_MAX_KM, base or MOBILE_STEP_MIN_KM))
+    m["probe_ct"] = m.get("probe_ct", 0) + 1
+    if m["probe_ct"] % MOBILE_JUMPBACK_EVERY == 0:
+        m["range_km"] = min(MOBILE_BAND_MAX, m["range_km"] + step * 2.0)   # jump back to sense what follows
+        m["probe_phase"] = "back"
+    else:
+        m["range_km"] = max(MOBILE_BAND_MIN, m["range_km"] - step)         # chase inward
+        m["probe_phase"] = "in"
+    m["last_move_ts"] = now
+
+
+def _update_mobiles(state, home, now, track_sample_fn, wind_kmh, net_speed_kmh, trusted):
+    """Advance every existing mobile one cycle: take a quality (OC4) read at its
+    position; if wet, chase/jump-back and keep it alive; if dry, loiter briefly then
+    retreat outward to 35 km and vanish. A dry mobile that goes wet again re-locks."""
+    if not state.mobiles:
+        return
+    pts = []
+    for m in state.mobiles:
+        la, lo = offset_latlon(home[0], home[1], m["bearing"], m["range_km"])
+        pts.append({"lat": la, "lon": lo})
+    rates = track_sample_fn(pts) if pts else []
+    survivors = []
+    for m, rt in zip(state.mobiles, rates):
+        _apply_sample(m, rt)
+        m["confirmed"] = (m.get("src") == "OC4") and (m.get("mm") is not None)
+        wet = (m.get("mm") or 0) >= ARC_DETECT_MMH
+        if wet:
+            m["last_wet_ts"] = now
+            m["dry_cycles"] = 0
+            _mobile_move(m, now, wind_kmh, net_speed_kmh, trusted)
+            m["state"] = "hunt"
+        else:
+            m["dry_cycles"] = m.get("dry_cycles", 0) + 1
+            if m["dry_cycles"] <= MOBILE_LOITER_CYCLES:
+                m["state"] = "loiter"                      # hold position a little
+            else:
+                m["state"] = "retreat"
+                m["range_km"] = min(MOBILE_BAND_MAX, m["range_km"] + MOBILE_RETREAT_KM)
+                if m["range_km"] >= MOBILE_BAND_MAX - 0.01:
+                    continue                               # reached 35 km -> vanish
+        survivors.append(m)
+    state.mobiles = survivors
+
+
+def _spawn_mobiles(state, now, detections):
+    """Seed a mobile on any net detection not already covered by an existing mobile
+    (within MOBILE_SEP_DEG of azimuth), up to MOBILE_MAX. Strongest detection first."""
+    for p in sorted(detections, key=lambda d: -(d.get("mm") or 0)):
+        if len(state.mobiles) >= MOBILE_MAX:
+            break
+        az = p["bearing"]
+        covered = any(abs((m["bearing"] - az + 180) % 360 - 180) <= MOBILE_SEP_DEG
+                      for m in state.mobiles)
+        if covered:
+            continue
+        state.mobile_seq += 1
+        state.mobiles.append({
+            "id": state.mobile_seq, "bearing": az,
+            "range_km": max(MOBILE_BAND_MIN, min(MOBILE_BAND_MAX, p["range_km"])),
+            "state": "hunt", "born_ts": now, "last_wet_ts": now, "dry_cycles": 0,
+            "mm": p.get("mm"), "snow": bool(p.get("snow")), "confirmed": False,
+            "probe_ct": 0, "last_move_ts": now,
+        })
+
+
+def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=None,
+               landsea_fn=fetch_landsea, wind_kmh=None, sample_fn=None):
+    """Two-layer offshore rain detector.
+
+      * NET (free) — permanent sentinels at 40 km + inner pickets at 20 km +
+        under-hood dithered fill points, ALL sampled through the batched keyless
+        Open-Meteo (net_sample_fn): one call per cycle regardless of point count.
+        The displayed sentinel/picket cards are stable; the dither is detection-only
+        and fills the gaps a shower could otherwise slip through.
+      * MOBILES (budgeted) — on a net detection, up to MOBILE_MAX tracker cards
+        spawn in the 5-35 km band, chase the cell inward, jump back to sense what
+        follows, then loiter -> retreat to 35 km -> vanish. Their quality reads come
+        from track_sample_fn (OC4), so OpenWeather budget is spent only on real
+        detections.
+
+    Front speed is measured from the STATIONARY net's nearest-wet range over time and
+    passed through the shared speed_trust() gate, so a believable figure feeds the ETA
+    and a jumpy one is withheld. Returns (info, vgauges). Back-compat: pass sample_fn
+    to use one sampler for both layers."""
+    if sample_fn is not None:
+        if net_sample_fn is fetch_om_precip:
+            net_sample_fn = sample_fn
+        if track_sample_fn is None:
+            track_sample_fn = sample_fn
+    if track_sample_fn is None:
+        track_sample_fn = net_sample_fn
+
     ensure_sea_mask(state, home, now, landsea_fn)
     seaset = _sea_set(state)
-    sentinel_az = sorted({a for (a, r) in seaset if r == ARC_SENTINEL_KM})
-    info = {"mode": state.arc_mode, "edge_km": None, "speed_kmh": None,
-            "eta_text": None, "detected": False, "dir_spoken": None}
-    if not sentinel_az:                      # no sea around here (or mask unknown)
-        state.arc_mode, state.arc_hits = "scan", 0
+    sentinel_az = sorted({a for (a, r) in seaset if r == SENTINEL_KM})
+    info = {"detected": False, "dir_spoken": None, "snow": False, "weakening": False,
+            "edge_km": None, "speed_kmh": None, "speed_mph": None, "speed_trusted": False,
+            "eta_text": None, "n_mobile": 0, "dropout": False}
+    if not sentinel_az:                          # no open water around here
+        state.mobiles = []
         return info, []
 
-    if state.arc_mode == "track" and state.arc_track_az:
-        azs = [a for a in state.arc_track_az if a in sentinel_az] or sentinel_az
-        ranges = [ARC_SENTINEL_KM] + ARC_INNER_KM
-    else:
-        azs, ranges = sentinel_az, [ARC_SENTINEL_KM]
+    # ---- NET: sample sentinels + pickets (shown) and dither fills (hidden) -----
+    disp, fills = _net_points(state, home, seaset, sentinel_az)
+    net_pts = disp + fills
+    for pt, rt in zip(net_pts, net_sample_fn(net_pts) if net_pts else []):
+        _apply_sample(pt, rt)
+    net_valid = [p for p in net_pts if p.get("mm") is not None]
+    info["dropout"] = bool(net_pts) and not net_valid
+    detections = [p for p in net_pts if (p.get("mm") or 0) >= ARC_DETECT_MMH]
 
-    pts = []
-    for a in azs:
-        for r in ranges:
-            if (a, r) not in seaset:         # skip a land pocket along this azimuth
-                continue
-            la, lo = offset_latlon(home[0], home[1], a, r)
-            pts.append({"lat": la, "lon": lo, "range_km": r, "bearing": a})
-    rates = sample_fn(pts) if pts else []
-    for p, rt in zip(pts, rates):
-        p["mm"] = rt
-    valid = [p for p in pts if p.get("mm") is not None]
-    dropout = bool(pts) and not valid          # feed returned no usable readings
-    info["dropout"] = dropout
+    # ---- front speed from the stationary net's leading wet range over time ------
+    net_edge = min((p["range_km"] for p in detections), default=None)
+    net_peak = max((p.get("mm") or 0) for p in detections) if detections else None
+    if net_edge is not None:
+        state.net_edge_hist.append([now, net_edge, net_peak])
+    state.net_edge_hist = [e for e in state.net_edge_hist if now - e[0] <= MOBILE_EDGE_WINDOW_S]
+    meas = _range_speed(state.net_edge_hist, now)
+    mph, trusted = speed_trust(meas, wind_kmh, state.net_speed_kmh) if meas else (None, False)
+    if meas:
+        state.net_speed_kmh = meas
+    # weakening: leading-edge peak fading over the window
+    weakening = False
+    hp = [e[2] for e in state.net_edge_hist if e[2] is not None]
+    if len(hp) >= 2 and hp[-1] is not None and hp[-1] <= hp[0] - ARC_WEAKEN_MMH and hp[-1] < 2.0:
+        weakening = True
 
-    wet = [p for p in pts if (p.get("mm") or 0) >= ARC_DETECT_MMH]
-    edge = min((p["range_km"] for p in wet), default=None)
-    peak_mm = max((p.get("mm") or 0) for p in wet) if wet else None
-    info["edge_km"], info["detected"], info["weakening"] = edge, bool(wet), False
-    if wet:
-        nearest = min(wet, key=lambda p: p["range_km"])
-        info["dir_spoken"] = compass(nearest["bearing"], spoken=True)
+    # ---- MOBILES: advance existing, then spawn from uncovered detections --------
+    _update_mobiles(state, home, now, track_sample_fn, wind_kmh, meas, trusted)
+    _spawn_mobiles(state, now, detections)
 
-    if dropout:
-        pass                                   # offshore dropout: hold state, no transition
-    elif state.arc_mode == "scan":
-        state.arc_hits = state.arc_hits + 1 if wet else 0
-        if state.arc_hits >= ARC_LOCK_SAMPLES:
-            state.arc_mode = "track"
-            state.arc_lock_ts = now
-            state.arc_edge_km, state.arc_edge_ts = edge, now
-            state.arc_edge_mm = peak_mm
-            state.arc_track_az = sorted({p["bearing"] for p in wet}) or sentinel_az
-            info["mode"] = "track"
-    else:  # track: measure inward motion of the leading edge across ranges
-        if edge is not None and state.arc_edge_km is not None and state.arc_edge_ts:
-            moved = state.arc_edge_km - edge
-            dt_hr = (now - state.arc_edge_ts) / 3600.0
-            if moved > 0 and dt_hr > 0:
-                info["speed_kmh"] = round(moved / dt_hr, 1)
-                txt, _, _ = eta_window(edge, info["speed_kmh"])
+    # ---- summarise for the alert layer (leading wet mobile, else nearest net) ---
+    wet_mob = [m for m in state.mobiles if (m.get("mm") or 0) >= ARC_DETECT_MMH]
+    lead = min(wet_mob, key=lambda m: m["range_km"], default=None)
+    lead_bearing = lead_range = lead_snow = None
+    if lead is not None:
+        lead_bearing, lead_range, lead_snow = lead["bearing"], lead["range_km"], lead.get("snow")
+    elif detections:
+        nd = min(detections, key=lambda p: p["range_km"])
+        lead_bearing, lead_range, lead_snow = nd["bearing"], nd["range_km"], nd.get("snow")
+    if lead_bearing is not None:
+        info["detected"] = True
+        info["dir_spoken"] = compass(lead_bearing, spoken=True)
+        info["snow"] = bool(lead_snow)
+        info["edge_km"] = round(lead_range, 1)
+        info["weakening"] = weakening
+        if meas:
+            info["speed_kmh"], info["speed_mph"], info["speed_trusted"] = round(meas, 1), mph, trusted
+            if trusted:
+                txt, _, _ = eta_from_speed(lead_range, meas, measured=True)
                 info["eta_text"] = txt
-        # fizzle watch: leading-edge intensity fading as the cell moves in
-        if (peak_mm is not None and state.arc_edge_mm is not None
-                and peak_mm <= state.arc_edge_mm - ARC_WEAKEN_MMH and peak_mm < 2.0):
-            info["weakening"] = True
-        if edge is not None:
-            state.arc_edge_km, state.arc_edge_ts = edge, now
-            state.arc_edge_mm = peak_mm
-            state.arc_track_az = sorted({p["bearing"] for p in wet}) or state.arc_track_az
-        if (not wet) or (state.arc_lock_ts and now - state.arc_lock_ts > ARC_TIMEOUT_S):
-            state.arc_mode, state.arc_hits = "scan", 0
-            state.arc_edge_km = state.arc_edge_ts = state.arc_lock_ts = None
-            state.arc_edge_mm = None
-            state.arc_track_az = []
-            info["mode"] = "scan"
+    info["n_mobile"] = len(state.mobiles)
 
-    # marked virtual-gauge records: bearing in the name, distance on the card line
+    # ---- vgauges: stable sentinels/pickets + live mobiles ----------------------
+    def _spd(m):
+        return (info["speed_mph"] if (m is lead and info["speed_trusted"]) else None)
     vgauges = []
-    for p in pts:
+    for p in disp:
         vgauges.append({
-            "modelled": True, "source": "OM",
-            "name": f"{compass(p['bearing'])} sea \u00b7 {p['bearing']:.0f}\u00b0",
-            "lat": p["lat"], "lon": p["lon"],
-            "bearing": p["bearing"], "dist_km": p["range_km"],
-            "mm": p.get("mm"), "model_ts": now,
+            "modelled": True, "source": "OM", "kind": p["kind"],
+            "name": f"{compass(p['bearing'])} sea · {p['bearing']:.0f}°",
+            "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
+            "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),
+            "confirmed": False, "model_ts": now,
+        })
+    for m in state.mobiles:
+        la, lo = offset_latlon(home[0], home[1], m["bearing"], m["range_km"])
+        vgauges.append({
+            "modelled": True, "source": ("OC4" if m.get("confirmed") else "OM"),
+            "kind": "mobile", "state": m.get("state"),
+            "name": f"{compass(m['bearing'])} sea · {m['bearing']:.0f}°",
+            "lat": la, "lon": lo, "bearing": m["bearing"], "dist_km": round(m["range_km"], 1),
+            "mm": m.get("mm"), "snow": bool(m.get("snow")), "confirmed": bool(m.get("confirmed")),
+            "speed_mph": _spd(m), "speed_trusted": bool(m is lead and info["speed_trusted"]),
+            "model_ts": now,
         })
     return info, vgauges
 
@@ -591,6 +819,9 @@ TEMPLATES = {
     "approach_gone":           ("notice", "The rain that was approaching from the {dir} has faded and is no longer likely to reach you."),
     "sea_approach":  ("notice",  "Rain may be moving in from the sea to the {dir}. There are no gauges out there to confirm it."),
     "sea_weaken":    ("notice",  "Rain out to the {dir} over the sea is weakening and may not reach the coast."),
+    "sea_snow_approach": ("notice", "Wintry showers may be moving in from the sea to the {dir}. There are no gauges out there to confirm it."),
+    "sea_speed":     ("notice",  "Rain is moving in from the sea to the {dir} at around {mph} miles per hour. It may reach the coast {eta}."),
+    "sea_snow_weaken":   ("notice", "Snow out to the {dir} over the sea is weakening and may not reach the coast."),
     "model_unconf":  ("notice",  "The model suggests rain at your location. This is not yet confirmed by rain gauges in the area."),
     "gauge_confirm": ("notice",  "Rain at your location is now confirmed by nearby gauges."),
     "compound_wet":  ("warning", "Pressure is falling quickly and the wind is increasing. Heavy rain has started and is likely to persist."),
@@ -688,9 +919,18 @@ def select(situation):
     # offshore modelled approach — with the same fizzle awareness
     if sea and sea.get("detected"):
         d = sea.get("dir_spoken") or "the sea"
+        snowing = sea.get("snow")
+        spd = sea.get("speed_mph") if sea.get("speed_trusted") else None
+        eta = sea.get("eta_text")
         if sea.get("weakening"):
-            cands.append(("sea", TEMPLATES["sea_weaken"][0],
-                          TEMPLATES["sea_weaken"][1].format(dir=d)))
+            tkey = "sea_snow_weaken" if snowing else "sea_weaken"
+            cands.append(("sea", TEMPLATES[tkey][0], TEMPLATES[tkey][1].format(dir=d)))
+        elif snowing:
+            cands.append(("sea", TEMPLATES["sea_snow_approach"][0],
+                          TEMPLATES["sea_snow_approach"][1].format(dir=d)))
+        elif spd and eta:
+            cands.append(("sea", TEMPLATES["sea_speed"][0],
+                          TEMPLATES["sea_speed"][1].format(dir=d, mph=spd, eta=eta)))
         else:
             cands.append(("sea", TEMPLATES["sea_approach"][0],
                           TEMPLATES["sea_approach"][1].format(dir=d)))
@@ -716,8 +956,8 @@ def select(situation):
 # ───────────────────────── main entry ───────────────────────────────────────
 def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
               wind_from, wind_kmh, gauges, flood_active=False, feed_stale=False,
-              now=None, sample_fn=fetch_om_precip, landsea_fn=fetch_landsea,
-              forward_precip=None):
+              now=None, sample_fn=None, net_sample_fn=fetch_om_precip,
+              track_sample_fn=None, landsea_fn=fetch_landsea, forward_precip=None):
     """Evaluate everything for one cycle. Read-only: mutates only `state`.
     Returns a diagnostic dict incl. `would_speak` (transitions this cycle) and
     `virtual_gauges` (marked, modelled). Nothing here plays a tone."""
@@ -744,7 +984,9 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     vis = visibility_state(state.vis_hist, now, visibility_m)
     appr = gauge_approach(gauges, home, wind_from, wind_kmh)
     land = land_front(state, gauges, home, wind_from, wind_kmh, now)
-    sea, vgauges = arc_update(state, home, now, sample_fn=sample_fn, landsea_fn=landsea_fn)
+    sea, vgauges = arc_update(state, home, now, net_sample_fn=net_sample_fn,
+                              track_sample_fn=track_sample_fn, landsea_fn=landsea_fn,
+                              wind_kmh=wind_kmh, sample_fn=sample_fn)
     forward = compute_forward(forward_precip, now, band)
 
     confirmed = bool(appr and appr.get("confirmed_at_home"))
@@ -799,9 +1041,11 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     log = (f"band={band} trend={trend}({trend_d:+.1f}) "
            f"press={prate:+.2f}hPa/h[{pcls}{'/warmup' if warm else ''}] vis={'low' if vis['low'] else 'ok'}"
            f"{'/drop' if vis['dropping'] else ''} "
-           f"arc={sea['mode']}"
+           f"arc={'det' if sea.get('detected') else 'clear'}"
            + (f" edge={sea['edge_km']}km" if sea.get("edge_km") else "")
-           + (f" spd={sea['speed_kmh']}km/h" if sea.get("speed_kmh") else "")
+           + (f" mob={sea['n_mobile']}" if sea.get("n_mobile") else "")
+           + (f" spd={sea['speed_mph']}mph{'*' if sea.get('speed_trusted') else '?'}" if sea.get("speed_mph") else "")
+           + (" dropout" if sea.get("dropout") else "")
            + (" arc_weak" if sea.get("weakening") else "")
            + (f" | land {land['dir']} edge={land['edge_km']}km ring={land['ring']}"
               f" {land['intensity_trend']}{'/fizzle' if land.get('fizzling') else ''}"

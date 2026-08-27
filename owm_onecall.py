@@ -80,17 +80,23 @@ def fetch_sea_precip(points, api_key, units="metric", timeout=8, fetch=_default_
     """Current precipitation rate (mm/h) at each point from OWM One Call 4.0
     'current' (radar/satellite-fed — the quality source). ONE call per point —
     OWM is not batched — so callers must keep the point count small and budget it.
-    Returns rates aligned to `points`; None where a point's fetch failed.
-
-    Each point is a dict with 'lat' and 'lon' (as the movable-arc emits)."""
+    Returns one dict per point, aligned to `points`:
+        {"mm": <total precip rate mm/h or None>, "snow": <bool: snow-dominant>}
+    'mm' is rain+snow (both OWM 1h fields are mm/h liquid-equivalent) so a wintry
+    point is still DETECTED; 'snow' flags it so the card can be recoloured rather
+    than mislabelled as rain. None mm where the point is dry or the fetch failed."""
     out = []
     for p in points:
         try:
             c = fetch_current(p["lat"], p["lon"], api_key, units=units,
                               timeout=timeout, fetch=fetch)
-            out.append(c.get("rain_1h"))     # mm/h; None when the point is dry
+            rain = c.get("rain_1h") or 0.0
+            snow = c.get("snow_1h") or 0.0
+            tot = rain + snow
+            out.append({"mm": (tot if tot > 0 else None),
+                        "snow": bool(snow > 0 and snow >= rain), "src": "OC4"})
         except Exception:
-            out.append(None)
+            out.append({"mm": None, "snow": False, "src": "OC4"})
     return out
 
 

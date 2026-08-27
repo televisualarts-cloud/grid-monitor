@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260826.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260827.4  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -86,7 +86,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260826.1"
+SERVER_BUILD = "260827.4"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -3870,6 +3870,8 @@ EA_DEFAULT_LAT, EA_DEFAULT_LON, EA_DEFAULT_DIST = 51.51, -0.13, 40
 
 _ea_cache = {}            # keyed by (lat,lon,dist) -> {"data":..., "ts":...}
 EA_TTL = 300              # 5 min; readings change at most every 15 min
+_ea_rain_peak = {}        # measure @id -> [[reading_ts, mm_h], ...]: 2h peak-hold for the card border
+EA_PEAK_WINDOW_S = 2 * 3600
 _ea_rain_cache = {}       # rain-only overviews (background watcher) — same key
 _ea_floods_cache = {"data": None, "ts": 0}
 EA_FLOODS_TTL = 300
@@ -4287,6 +4289,51 @@ def get_ea_floods():
     return out
 
 
+def _ea_local_floods(lat, lon, dist):
+    """Flood warnings/alerts in force WITHIN the user's chosen radius, enriched
+    with a name and a distance so the dashboard can both highlight them and name
+    the nearest local one in the spoken alert ("...including one locally at
+    <place>, N km from you"). Two cached calls: the floods spatial query for what
+    is in force locally, and the floodAreas spatial query for each area's centroid
+    and tidy label. Returns a list of dicts sorted nearest-first; never raises."""
+    try:
+        furl = f"{EA_BASE}/id/floods?lat={lat}&long={lon}&dist={dist}"
+        floods = fetch_json(furl, timeout=20).get("items") or []
+    except Exception:
+        return []
+    inforce = {}
+    for it in floods:
+        fid = it.get("floodAreaID") or (it.get("floodArea") or {}).get("notation")
+        lvl = it.get("severityLevel")
+        if fid and lvl in (1, 2, 3):            # 4 = warning no longer in force
+            inforce[fid] = {"area_id": fid, "severity_level": lvl,
+                            "name": it.get("description"),
+                            "river_or_sea": (it.get("floodArea") or {}).get("riverOrSea"),
+                            "dist_km": None}
+    if not inforce:
+        return []
+    # centroids + short labels for those areas (single spatial call)
+    try:
+        aurl = f"{EA_BASE}/id/floodAreas?lat={lat}&long={lon}&dist={dist}&_limit=500"
+        areas = fetch_json(aurl, timeout=20).get("items") or []
+    except Exception:
+        areas = []
+    coords = {}
+    for a in areas:
+        aid = a.get("notation") or a.get("fwdCode")
+        if aid:
+            coords[aid] = (a.get("label"), _ea_num(a.get("lat")), _ea_num(a.get("long")))
+    for fid, rec in inforce.items():
+        lbl, flat, flon = coords.get(fid, (None, None, None))
+        rec["name"] = lbl or rec.get("name") or rec.get("river_or_sea")
+        if flat is not None and flon is not None:
+            d = _haversine_km(lat, lon, flat, flon)
+            rec["dist_km"] = round(d, 1) if d is not None else None
+    out = list(inforce.values())
+    out.sort(key=lambda r: (r["dist_km"] is None, r["dist_km"] or 0))
+    return out
+
+
 def _ea_band_position(value, scale):
     """Return where `value` sits relative to a station's own typical range:
     'low' (below typicalRangeLow), 'normal', 'high' (above typicalRangeHigh),
@@ -4332,7 +4379,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
 
     out = {"lat": lat, "lon": lon, "dist": dist, "stations": [],
            "rainfall": [], "wind": None, "attribution": EA_ATTRIB, "error": None,
-           "rain_only": rain_only,
+           "rain_only": rain_only, "local_flood_area_ids": [], "local_floods": [],
            # Per-endpoint diagnostics: which of the underlying EA calls failed
            # and why. The dashboard can show this so a partial failure (floods
            # OK, stations/rainfall 503) is visible rather than a blank panel.
@@ -4349,6 +4396,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
         _ea_collect_rainfall(out, lat, lon, dist, latest)
         if not rain_only:
             _ea_collect_wind(out, lat, lon)
+            out["local_floods"] = _ea_local_floods(lat, lon, dist)
+            out["local_flood_area_ids"] = [f["area_id"] for f in out["local_floods"]]
     except Exception as e:
         out["error"] = _ea_errstr(e)
     # Roll a concise top-level error from whichever sub-call failed, so existing
@@ -4379,7 +4428,13 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
             # Open-Meteo fallback -- ONE OWM call per point, so budget-guarded: if
             # the day's wind budget can't cover the batch, fall back to Open-Meteo.
             _okey = _load_weather_key()
-            def _arc_sample(pts):
+            # NET (sentinels + inner pickets + dither fills): always the free,
+            # batched, keyless Open-Meteo -- one call regardless of point count.
+            _net_sample = _rain_probe.fetch_om_precip
+            # TRACK (mobile cards): OC4 radar-fed quality read, one OWM call per
+            # tracked point, budget-guarded; falls back to Open-Meteo when the day's
+            # budget can't cover the batch. Only ever called for active detections.
+            def _track_sample(pts):
                 if not pts:
                     return []
                 if (_owm_onecall is not None and _w.get("api") == "OC4" and _okey
@@ -4399,7 +4454,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
                 flood_active=False,          # floods come from a separate endpoint
                 feed_stale=bool(_w.get("stale")),
                 forward_precip=out.get("_owm_minute"),
-                sample_fn=_arc_sample)
+                net_sample_fn=_net_sample, track_sample_fn=_track_sample)
             out["rainfall_model"] = _res.get("virtual_gauges") or []
             out["diag"]["rain_probe"] = _res.get("log")
             out["rain_probe"] = {"would_speak": _res.get("would_speak"),
@@ -4527,6 +4582,31 @@ def _ea_collect_rainfall(out, lat, lon, dist, latest):
                 val, dt = latest.get(mid, (None, None))
                 if val is None:
                     continue
+                # EA rainfall is a bucket TOTAL over the measure's period (15-min
+                # tips = 900 s). Everything modelled (OWM/Open-Meteo, sentinels,
+                # the intensity bands) is a mm/h RATE, so convert here to a unified
+                # rate and carry BOTH: mm_h drives all comparison/colour/alerts,
+                # the raw bucket 'mm' stays for honest display.
+                _per = m.get("period") or 900
+                try:
+                    _mmh = round(float(val) * 3600.0 / float(_per), 2) if _per else None
+                except (TypeError, ValueError):
+                    _mmh = None
+                # 2h peak-hold for the card border: the highest rate this gauge
+                # has reported in the last two hours, so the border reflects recent
+                # activity even after the rain stops. Keyed by reading time (ages out
+                # on its own timestamp) and deduped so a reading isn't re-counted
+                # across polls.
+                _now = time.time()
+                _rt = _ea_parse_dt(dt) or _now
+                buf = [e for e in _ea_rain_peak.get(mid, []) if _now - e[0] <= EA_PEAK_WINDOW_S]
+                if _mmh is not None and (not buf or buf[-1][0] != _rt):
+                    buf.append([_rt, _mmh])
+                if buf:
+                    _ea_rain_peak[mid] = buf
+                else:
+                    _ea_rain_peak.pop(mid, None)
+                _peak = max((e[1] for e in buf), default=_mmh)
                 out["rainfall"].append({
                     "ref": it.get("stationReference") or it.get("notation"),
                     "label": _ea_first(it.get("label")),
@@ -4534,7 +4614,7 @@ def _ea_collect_rainfall(out, lat, lon, dist, latest):
                     "period_s": m.get("period"),
                     "lat": _ea_num(it.get("lat")),
                     "lon": _ea_num(it.get("long")),
-                    "mm": val, "dt": dt,
+                    "mm": val, "mm_h": _mmh, "mm_h_max2h": _peak, "dt": dt,
                 })
         # distance from the user's location (local calc, no API), rounded
         # to a ~5-km bucket for a rough "how far" sense.

@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260826.2  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260827.19  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -879,6 +879,7 @@
   .ea-fc.sev3{border-color:rgba(245,185,66,.5);background:rgba(245,185,66,.10);color:var(--warn)}
   .ea-fc.none{color:var(--ok);border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.08)}
   .ea-flood-list{margin:0 auto 22px;display:flex;flex-direction:column;gap:7px}
+  .ea-flood-list.scroll{max-height:min(600px,70vh);overflow-y:auto;padding-right:4px}
   .ea-flood-more{text-align:center;margin:-14px auto 20px}
   .ea-flood-toggle{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
     background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:4px 12px;cursor:pointer}
@@ -900,6 +901,9 @@
   .ea-flood-item.open .fi-body{display:block}
   .ea-flood-item .fi-msg{color:var(--ink-dim);margin-top:3px;line-height:1.5;
     font-family:var(--sans,inherit);font-size:11.5px}
+  /* local floods (within the EA-page radius): accent edge + tint, floated to top */
+  .ea-flood-item.loc{box-shadow:inset 3px 0 0 var(--accent2);background:rgba(90,200,220,.07)}
+  .ea-flood-item .fi-local{background:var(--accent2);color:#04222b;border-color:transparent;font-weight:600}
   .ea-flood-item .fi-tag{display:inline-block;margin-left:7px;font-size:9px;
     letter-spacing:.06em;text-transform:uppercase;color:var(--accent2);
     background:rgba(91,141,239,.14);border-radius:4px;padding:1px 6px;vertical-align:middle}
@@ -920,7 +924,7 @@
   .ea-sec-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
   .ea-sec-title .note{text-transform:none;letter-spacing:0;font-size:10.5px}
-  .ea-layout{display:grid;grid-template-columns:0.82fr 1.18fr;gap:22px}
+  .ea-layout{display:grid;grid-template-columns:0.72fr 1.28fr;gap:22px}
   @media(max-width:900px){.ea-layout{grid-template-columns:1fr}}
   .ea-riverblock{margin-bottom:16px}
   .ea-riverblock h3{font-family:var(--disp);font-size:13px;margin:0 0 7px;color:var(--ink-dim);font-weight:600}
@@ -936,6 +940,11 @@
   .ea-st .dot.unknown{background:var(--ink-faint)}
   .ea-st .nm{flex:1 1 auto;font-size:12.5px;color:var(--ink);white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
+  .ea-st .st-pct{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);flex:none}
+  .ea-st .st-pct.lo{color:var(--accent2)}   /* below range */
+  .ea-st .st-pct.ok{color:var(--ok)}        /* 0-80% */
+  .ea-st .st-pct.warn{color:var(--warn)}    /* 80-100% */
+  .ea-st .st-pct.hi{color:var(--crit)}      /* above range */
   .ea-st .rd{font-family:var(--mono);font-size:12px;color:var(--ink-dim);text-align:right;
     font-variant-numeric:tabular-nums}
   .ea-st .rd .u{color:var(--ink-faint);font-size:10px}
@@ -957,7 +966,7 @@
   .ea-badge.high{color:var(--crit);background:rgba(255,92,108,.14)}
   .ea-badge.normal{color:var(--ok);background:rgba(57,217,138,.12)}
   .ea-badge.low{color:var(--accent2);background:rgba(91,141,239,.14)}
-  .ea-rain{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:7px}
+  .ea-rain{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:7px}
   /* local wind dials */
   .ea-wind-dials{display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;margin-top:4px}
   @media (max-width:760px){ .ea-wind-dials{grid-template-columns:1fr 1fr} }
@@ -991,7 +1000,7 @@
   .ea-swapbtn.pinned{position:absolute;top:10px;right:10px;z-index:2}
   .ea-rainmap .rmnote{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:2px 0 8px}
   .ea-rainmap{overflow-x:auto}
-  .rmgrid{display:grid;grid-template-columns:repeat(5,minmax(118px,1fr));gap:7px}
+  .rmgrid{display:grid;grid-template-columns:repeat(5,minmax(132px,1fr));gap:7px}
   .rmcell{min-width:0;display:flex}
   .rmcell .rn{flex:1 1 auto}
   .rmcell.rm-empty{visibility:hidden}
@@ -1009,7 +1018,8 @@
   .rn-nm{color:var(--ink);font-size:11.5px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis;display:block}
   .rn-d{color:var(--ink-faint);flex:0 0 auto;white-space:nowrap}
-  .rn-mm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .rn-mm{white-space:nowrap;flex:0 0 auto}   /* rate+unit: never truncated */
+  .rn-meta{color:var(--ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:0 1 auto}  /* time: absorbs the squeeze */
   .rn-val{color:var(--ink-faint);display:flex;align-items:baseline;white-space:nowrap;overflow:hidden}
   /* intensity bands (15-min accumulation) */
   .rn.rn-light{border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.07)}
@@ -1020,13 +1030,33 @@
   .rn.rn-heavy b{color:#f5934a}
   .rn.rn-violent{border-color:rgba(255,92,108,.6);background:rgba(255,92,108,.14)}
   .rn.rn-violent b{color:var(--crit)}
+  /* border-only override: the BORDER holds the 2h peak band while the fill
+     (background) reflects the current reading. */
+  .rn.rnb-light{border-color:rgba(91,141,239,.45)}
+  .rn.rnb-mod{border-color:rgba(63,182,201,.5)}
+  .rn.rnb-heavy{border-color:rgba(245,140,66,.55)}
+  .rn.rnb-violent{border-color:rgba(255,92,108,.6)}
   /* modelled offshore virtual gauge: dashed + muted + MODEL chip. A model
      point, not a sensor — never carries a physical band colour with authority. */
   .rn.rn-model{border-style:dashed;border-color:rgba(150,163,186,.55);background:rgba(150,163,186,.06)}
+  /* snow: bright pink (weather-radar convention), overriding any rain band so a
+     wintry point is never mistaken for rain. Applies to gauge or model cards. */
+  .rn.rn-snow{border-color:#ff5ec8;background:rgba(255,94,200,.10)}
+  .rn.rn-snow .rn-mm b{color:#ff7ed6}
+  .rn.rn-snow.rn-model{border-style:dashed}
+  /* mobile tracker: solid (it is actively following a cell), accent when the read
+     is OC4 radar-confirmed rather than the modelled net. */
+  .rn.rn-mobile{border-style:solid;border-color:rgba(90,200,220,.55);background:rgba(90,200,220,.06)}
+  .rn.rn-mobile.rn-radar{border-color:var(--accent2)}
+  .rn-chip.track{color:var(--accent2);border-color:rgba(90,200,220,.55)}
+  .rn-chip.radar{color:#04222b;background:var(--accent2);border-color:transparent}
   .rn-hdr{display:flex;align-items:center;gap:5px;min-width:0}
   .rn-hdr .rn-nm{flex:1 1 auto}
   .rn-chip{font-family:var(--mono);font-size:8.5px;letter-spacing:.07em;color:var(--ink-faint);
     border:1px solid rgba(150,163,186,.55);border-radius:4px;padding:0 3px;flex:0 0 auto;white-space:nowrap}
+  /* stale reading (>4h): grey the text only — never recolour the border, which
+     carries the rainfall intensity band. */
+  .rn.rn-stale, .rn.rn-stale b{color:var(--ink-faint)}
 
 
   .cg-tip{position:fixed;z-index:250;pointer-events:none;opacity:0;transition:opacity .1s;
@@ -1050,6 +1080,9 @@
   .srcstatus .s.bad{color:var(--crit)}
   .srcstatus .s .why{color:var(--ink-faint)}
   .stale{color:var(--warn)}
+  .fresh{color:var(--ok)}
+  .age-amber{color:var(--warn)}
+  .age-red{color:var(--crit)}
   .skeleton{color:var(--ink-faint)}
 
   @media(max-width:980px){
@@ -1267,7 +1300,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260826.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260827.19 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1767,11 +1800,17 @@ async function refreshUtilData(){
     const c=f.counts||{}; const c1=+(c["1"]||0),c2=+(c["2"]||0),c3=+(c["3"]||0);
     floodSummary=null;
     if(c1||c2||c3){
-      const sev=c1?1:c2?2:3, n=c1+c2+c3;
-      const word=c1?"severe":c2?"warning":"alert";
-      floodSummary={sev, text:n+" flood "+word+(n>1?"s":"")};
+      // Severity 1-2 are "warnings", 3 is an "alert". Use the EA umbrella term
+      // "flood warnings & alerts" when the set is mixed; the specific noun when
+      // it's all one kind — so 41 alerts + 1 warning is no longer "42 warnings".
+      const sev=c1?1:c2?2:3, W=c1+c2, A=c3, n=W+A;
+      let text;
+      if(W && A) text=n+" flood warnings & alerts";
+      else if(W) text=W+" "+(c2?"":"severe ")+"flood warning"+(W>1?"s":"");
+      else text=A+" flood alert"+(A>1?"s":"");
+      floodSummary={sev, text};
     }
-    Alarm.evaluateFloods(c);
+    Alarm.evaluateFloods(c, (eaData&&eaData.local_floods)||[]);
   }catch(e){ /* leave floodSummary as-is */ }
   buildHeaderSummaries();
 }
@@ -2687,6 +2726,36 @@ function timeAgo(iso){
   else if(s<5400) out=Math.round(s/60)+"m ago";
   else out=Math.round(s/3600)+"h ago";
   return (s>1800?'<span class="stale">':'<span>')+out+"</span>";
+}
+// River-level reading age: greener cadence than the other feeds — green up to
+// 60 min, amber 60 min-4 h, red beyond 4 h.
+function riverPct(s){
+  // Level as a percentage of the station's own typical range: 0% at the typical
+  // low, 100% at the typical HIGH (the max of the range). Above 100% = above the
+  // normal high (into the "high" band); can go negative below the low.
+  if(!s) return null;
+  const lo=s.typical_low, hi=s.typical_high, v=s.level_m;
+  if(lo==null||hi==null||v==null||hi<=lo) return null;
+  return (v-lo)/(hi-lo)*100;
+}
+function riverAge(iso){
+  if(!iso) return "—";
+  const t=new Date(iso), s=(Date.now()-t)/1000;
+  let out;
+  if(s<90) out=Math.round(s)+"s ago";
+  else if(s<5400) out=Math.round(s/60)+"m ago";
+  else out=Math.round(s/3600)+"h ago";
+  const cls = s>4*3600 ? 'age-red' : (s>3600 ? 'age-amber' : 'fresh');
+  return '<span class="'+cls+'">'+out+"</span>";
+}
+function agePlain(ts){                       // ts: ISO string or epoch SECONDS
+  if(ts==null||ts==='') return '';
+  const ms = (typeof ts==='number') ? ts*1000 : Date.parse(ts);
+  if(isNaN(ms)) return '';
+  const s=(Date.now()-ms)/1000;
+  if(s<90) return Math.round(s)+'s ago';
+  if(s<5400) return Math.round(s/60)+'m ago';
+  return Math.round(s/3600)+'h ago';
 }
 function hhmm(iso){try{return new Date(iso).toLocaleString("en-GB",
   {hour:"2-digit",minute:"2-digit",day:"2-digit",month:"short"});}catch(e){return iso}}
@@ -4698,6 +4767,8 @@ const RAINWATCH_FRESH_MS=240000;// treat a fetch newer than 4 min as still fresh
 // missed publications pass without going stale, but keeps us from firing on the
 // old readings carried in a persisted station-list seed.
 const EA_READING_FRESH_MS=2*3600*1000;
+const RAIN_STALE_MS=4*3600*1000;   // a reading older than 4h is greyed as stale
+const MODEL_STALE_S=4*3600;         // an offshore point unrefreshed >4h is greyed
 // River levels change slowly, so the background FULL pull (stations + levels,
 // which drives the river alarm) runs on a slower cadence than the rain poll.
 const RIVERWATCH_MS=1800000;    // 30 min
@@ -4844,14 +4915,22 @@ async function eaFetch(){
   }
 }
 
-// Rainfall intensity band from a 15-minute accumulation (mm). Thresholds map
-// to the usual light/moderate/heavy/violent rates scaled to a 15-min window
-// (e.g. >2.5mm/15min ≈ >10mm/h = heavy).
+function rnbBand(mm){    // border-only class for the 2h peak-hold (dry -> none)
+  if(mm==null || mm<=0) return "";
+  if(mm<2)  return "rnb-light";
+  if(mm<5)  return "rnb-mod";
+  if(mm<10) return "rnb-heavy";
+  return "rnb-violent";
+}
+// Rainfall intensity band from a mm/h RATE. Gauges arrive as 15-min bucket
+// totals but are converted to mm_h server-side, so gauge, sentinel and model
+// cards are all banded on ONE scale here: light <2, moderate <5, heavy <10,
+// violent >=10 mm/h (the old 0.5/1.25/2.5 mm-per-15-min cuts, x4).
 function eaRainBand(mm){
   if(mm==null || mm<=0) return "rn-dry";
-  if(mm<0.5) return "rn-light";
-  if(mm<1.25) return "rn-mod";
-  if(mm<2.5) return "rn-heavy";
+  if(mm<2)  return "rn-light";
+  if(mm<5)  return "rn-mod";
+  if(mm<10) return "rn-heavy";
   return "rn-violent";
 }
 
@@ -4864,16 +4943,30 @@ let eaLowerOrder = (function(){ try{ return localStorage.getItem("eaLowerOrder")
 // Build one rainfall card's HTML (shared by list and map views). `near` adds a
 // subtle highlight for gauges essentially at "here" (<5 km).
 function eaRainCardModel(r){
-  // azimuth-first so the bearing is never lost to truncation on a narrow card;
-  // the MODEL chip already conveys 'modelled', so the value line stays compact.
+  // Two kinds of offshore card share this renderer: the STABLE sentinel/picket net
+  // points (chip MODEL, dashed muted) and the MOBILE trackers chasing a cell (chip
+  // TRACK, or RADAR when the read is OC4-confirmed; solid/accent). Snow overrides
+  // the colour to pink either way.
   const loc = (r.bearing!=null ? Math.round(r.bearing)+'\u00b0 sea' : (r.name||'sea'));
   const dist = (r.dist_km!=null ? '~'+r.dist_km+' km' : '');
   const rate = (r.mm!=null ? r.mm.toFixed(1) : '\u2014');
+  const snow = !!r.snow;
+  const mobile = (r.kind==='mobile');
+  const chip = mobile ? (r.confirmed?'RADAR':'TRACK') : 'MODEL';
+  const chipCls = mobile ? (r.confirmed?'rn-chip radar':'rn-chip track') : 'rn-chip';
+  const kindLbl = mobile ? ('tracker'+(r.state?' ('+r.state+')':'')) : (r.kind==='picket'?'inner picket':'sentinel');
+  const ageT = agePlain(r.model_ts);
+  const cardTitle = (kindLbl+(ageT?' · sampled '+ageT:'')).replace(/"/g,'&quot;');
   const hdr = '<div class="rn-hdr"><span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+
-              '">'+loc+'</span><span class="rn-chip">MODEL</span></div>';
-  const cls = 'rn-model '+eaRainBand(r.mm||0);
-  return '<div class="rn '+cls+'" data-rainmodel="1">'+hdr+
-    '<span class="rn-val"><span class="rn-mm"><b>'+rate+'</b> mm</span>'+
+              '">'+loc+'</span><span class="'+chipCls+'">'+chip+'</span></div>';
+  const mstale = (r.model_ts!=null && (Date.now()/1000 - r.model_ts) > MODEL_STALE_S);
+  const base = mobile ? ('rn-mobile'+(r.confirmed?' rn-radar':'')) : 'rn-model';
+  const cls = base+' '+(snow ? 'rn-snow' : eaRainBand(r.mm||0))+(mstale?' rn-stale':'');
+  // spoken-speed tag on a trusted mobile (shrinks before the distance)
+  const spd = (mobile && r.speed_trusted && r.speed_mph!=null)
+              ? '<span class="rn-meta"> \u00b7 ~'+r.speed_mph+' mph</span>' : '';
+  return '<div class="rn '+cls+'" data-rainmodel="1" title="'+cardTitle+'">'+hdr+
+    '<span class="rn-val"><span class="rn-mm"><b>'+rate+'</b> mm/h'+(snow?' \u2744':'')+'</span>'+spd+
     (dist?'<span class="rn-d"> \u00b7 '+dist+'</span>':'')+'</span></div>';
 }
 function eaRainCard(r, near){
@@ -4882,10 +4975,26 @@ function eaRainCard(r, near){
   let dist='';
   if(r.dist_exact && r.dist_km!=null) dist=r.dist_km.toFixed(1)+' km';
   else if(r.dist_bucket!=null) dist=(r.dist_bucket===0?'~here':'~'+r.dist_bucket+' km');
+  const perMin=(r.period_s?Math.round(r.period_s/60):15);
+  const rawTip=(r.mm!=null?r.mm.toFixed(1)+' mm in '+perMin+' min':'');
+  // freshness: a reading older than ~2 publications (min 30 min) has TIMED OUT —
+  // we no longer know the current rate, so the card shows 0 mm/h and greys, rather
+  // than presenting a hours-old value as if it were live. The tooltip keeps the
+  // true last-reported time and value. No visible age chip (an "m" reads as miles).
+  const ageMs=(r.dt?Date.now()-Date.parse(r.dt):null);
+  const timeoutMs=Math.max(30*60000, 2*((r.period_s||900)*1000));
+  const stale=(ageMs!=null && ageMs>timeoutMs);
+  let rate=(r.mm_h!=null?r.mm_h:r.mm);
+  if(stale) rate=0;                     // timed out -> no current rain reported
+  // border/tint hold the highest band of the last 2h (server-tracked), so a gauge
+  // that has stopped still shows recent activity; the value stays the current rate.
+  const peak=(r.mm_h_max2h!=null?Math.max(r.mm_h_max2h,rate):rate);
+  const cardTitle=((r.dt?'last reported '+hhmm(r.dt)+' ('+agePlain(r.dt)+')':'no reading time')
+                   +(rawTip?' · '+rawTip:'')).replace(/"/g,'&quot;');
   const nm='<span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+'">'+loc+'</span>';
-  const cls=eaRainBand(r.mm)+(near?' rn-here':'')+(r.ref===eaSelRef?' sel':'');
-  return '<div class="rn '+cls+'" data-rainref="'+(r.ref||'')+'" data-rainloc="'+loc.replace(/"/g,'')+'">'+nm+
-    '<span class="rn-val"><span class="rn-mm"><b>'+r.mm.toFixed(1)+'</b> mm · '+timeAgo(r.dt)+'</span>'+
+  const cls=eaRainBand(rate)+' '+rnbBand(peak)+(near?' rn-here':'')+(r.ref===eaSelRef?' sel':'')+(stale?' rn-stale':'');
+  return '<div class="rn '+cls+'" data-rainref="'+(r.ref||'')+'" data-rainloc="'+loc.replace(/"/g,'')+'" title="'+cardTitle+'">'+nm+
+    '<span class="rn-val"><span class="rn-mm"><b>'+(rate!=null?rate.toFixed(1):'\u2014')+'</b> mm/h</span>'+
     (dist?'<span class="rn-d"> · '+dist+'</span>':'')+'</span></div>';
 }
 
@@ -5153,8 +5262,9 @@ function eaRenderWindDials(){
     return '#7a4fd0';                 // very heavy / violet
   };
   const isSnow = (c.snow_1h!=null && c.snow_1h>0);
+  const SNOW_PINK = '#ff7ed6';                    // radar-map snow convention
   const precip = isSnow
-      ? {label:'Snow 1h', val:cVal(c.snow_1h.toFixed(1), rainColour(c.snow_1h), 'mm')}
+      ? {label:'Snow 1h', val:cVal(c.snow_1h.toFixed(1), SNOW_PINK, 'mm')}
       : {label:'Rain 1h',
          val:(c.rain_1h!=null&&c.rain_1h>0)
             ? cVal(c.rain_1h.toFixed(1), rainColour(c.rain_1h), 'mm')
@@ -5350,7 +5460,7 @@ function eaRenderRainMap(rainfall){
   const cols=[...usedCol].sort((a,b)=>a-b);        // active columns, west -> east
 
   let out='<div class="ea-rainmap"><div class="rmnote">Rough layout — direction &amp; relative distance from here, not to scale · dotted = nearest · dashed = modelled, offshore</div>'
-        + '<div class="rmgrid" style="grid-template-columns:repeat('+cols.length+',minmax(118px,1fr))">';
+        + '<div class="rmgrid" style="grid-template-columns:repeat('+cols.length+',minmax(132px,1fr))">';
   for(let rr=minR; rr<=maxR; rr++){
     let rowHas=false;
     for(const cc of cols){ if(placed.has(key(rr,cc))){ rowHas=true; break; } }
@@ -5425,21 +5535,30 @@ function eaRender(){
   // title line with a chevron. Expanding one collapses the others.
   const warns=((eaFloods&&eaFloods.warnings)||[]).filter(w=>w.severity_level&&w.severity_level<=3);
   if(warns.length){
-    const capped = warns.slice(0,12);
+    // "Local" = a national warning whose flood area is within the radius the EA
+    // page is currently showing (20/40/80 km). The server resolves those IDs from
+    // the same lat/lon/dist. Highlight them and float them to the top (stable sort
+    // preserves the server's worst-first severity order within each group).
+    const localSet=new Set((eaData&&eaData.local_flood_area_ids)||[]);
+    const isLocal=w=>!!(w.area_id && localSet.has(w.area_id));
+    warns.sort((a,b)=>(isLocal(a)?0:1)-(isLocal(b)?0:1));
+    const capped = warns;                     // all in force; the list scrolls
     const collapsed = eaFloodCollapsed && capped.length>1;   // show the first only
     const shown = collapsed ? capped.slice(0,1) : capped;
-    html+='<div class="ea-flood-list" id="eaFloodList">';
+    html+='<div class="ea-flood-list'+(collapsed?'':' scroll')+'" id="eaFloodList">';
     shown.forEach((w,i)=>{
       const open = (i===eaFloodOpen);
       // The message field carries the cause + timing + affected area (e.g.
       // "High tides this evening may lead to flooding..."). Tidy whitespace.
       let msg=(w.message||"").replace(/\s+/g," ").trim();
       const tidal = w.is_tidal ? '<span class="fi-tag">tidal</span>' : '';
-      html+='<div class="ea-flood-item sev'+w.severity_level+(open?' open':'')+'" data-fi="'+i+'">'+
+      const loc = isLocal(w);
+      const locTag = loc ? '<span class="fi-tag fi-local">near you</span>' : '';
+      html+='<div class="ea-flood-item sev'+w.severity_level+(loc?' loc':'')+(open?' open':'')+'" data-fi="'+i+'">'+
         '<div class="fi-head">'+
           '<div class="fi-htext">'+
             '<div class="fi-sev">'+(w.severity||'')+(w.county?' · '+w.county:'')+
-              (w.river_or_sea?' · '+w.river_or_sea:'')+tidal+'</div>'+
+              (w.river_or_sea?' · '+w.river_or_sea:'')+locTag+tidal+'</div>'+
             '<div class="fi-desc">'+(w.description||w.river_or_sea||'')+'</div>'+
           '</div>'+
           '<span class="fi-chev">'+(msg?'▾':'')+'</span>'+
@@ -5499,11 +5618,15 @@ function eaRender(){
         const band=s.band||"unknown";
         const val = s.level_m!=null ? s.level_m.toFixed(3)+'<span class="u"> m</span>'
                   : (s.flow_cumecs!=null ? s.flow_cumecs.toFixed(1)+'<span class="u"> m\u00b3/s</span>' : '—');
+        const _p=riverPct(s);
+        const _pr=(_p==null)?null:Math.round(_p);
+        const _pc=(_pr==null)?'':(_pr<0?' lo':(_pr<80?' ok':(_pr<=100?' warn':' hi')));
+        const pctHtml=(_pr==null)?'':'<span class="st-pct'+_pc+'" title="% of typical range (100% = typical high)">'+_pr+'%</span>';
         html+='<div class="ea-st'+(s.ref===eaSelRef?' sel':'')+'" data-ref="'+s.ref+'">'+
           '<span class="dot '+band+'"></span>'+
-          '<span class="nm">'+(s.label||s.ref)+'</span>'+
+          '<span class="nm">'+(s.label||s.ref)+'</span>'+pctHtml+
           '<span class="rd">'+val+'</span>'+
-          '<span class="ago">'+(s.latest_dt?timeAgo(s.latest_dt):'')+'</span></div>';
+          '<span class="ago">'+(s.latest_dt?riverAge(s.latest_dt):'')+'</span></div>';
       });
       html+='</div>';
     });
@@ -5529,10 +5652,7 @@ function eaRender(){
     const periodLbl = ps==900?"15-minute rainfall" : ps==3600?"Hourly rainfall"
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
     let pulled='';
-    if(eaData.generated){
-      try{ pulled=' · pulled '+new Date(eaData.generated)
-        .toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"})+' UT'; }catch(e){}
-    }
+    if(eaData.generated){ pulled=' · updated '+timeAgo(eaData.generated); }
     rainBlock+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
       '<span class="note">'+eaData.rainfall.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':'')+' · '+
       (eaRainView==="map"?"roughly by direction":"nearest first")+
@@ -5656,7 +5776,7 @@ function eaDrawChart(d, s){
   const dpr=devicePixelRatio||1, W=c.clientWidth||360, H=170;
   c.width=W*dpr;c.height=H*dpr;c.style.height=H+"px";
   const g=c.getContext("2d"); g.scale(dpr,dpr);
-  const padL=42,padR=10,padT=12,padB=30;
+  const padL=42,padR=10,padT=22,padB=30;   // extra top room for the % readout
   const xs=series.map(p=>new Date(p.t).getTime()), ys=series.map(p=>p.v);
   let ymin=Math.min(...ys), ymax=Math.max(...ys);
   // include typical band in the y-range if present
@@ -5668,15 +5788,31 @@ function eaDrawChart(d, s){
   const X=t=>padL+(W-padL-padR)*(t-x0)/((x1-x0)||1);
   const Y=v=>padT+(H-padT-padB)*(1-(v-ymin)/((ymax-ymin)||1));
   g.clearRect(0,0,W,H);
-  // typical-range band
+  // typical-range band + explicit min/max (0% / 100%) marker lines
   if(s&&s.typical_low!=null&&s.typical_high!=null){
     g.fillStyle="rgba(57,217,138,.10)";
     g.fillRect(padL,Y(s.typical_high),W-padL-padR,Y(s.typical_low)-Y(s.typical_high));
+    g.setLineDash([4,3]); g.lineWidth=1;
+    g.strokeStyle="rgba(57,217,138,.55)";              // range max = 100%
+    g.beginPath(); g.moveTo(padL,Y(s.typical_high)); g.lineTo(W-padR,Y(s.typical_high)); g.stroke();
+    g.strokeStyle="rgba(91,141,239,.5)";               // range min = 0%
+    g.beginPath(); g.moveTo(padL,Y(s.typical_low)); g.lineTo(W-padR,Y(s.typical_low)); g.stroke();
+    g.setLineDash([]);
+    g.font="9px "+cssv("--mono"); g.textAlign="right";
+    g.fillStyle="rgba(57,217,138,.9)"; g.textBaseline="bottom";
+    g.fillText("max "+(+s.typical_high).toFixed(2)+" m · 100%", W-padR, Y(s.typical_high)-1);
+    g.fillStyle="rgba(91,141,239,.9)"; g.textBaseline="top";
+    g.fillText("min "+(+s.typical_low).toFixed(2)+" m · 0%", W-padR, Y(s.typical_low)+1);
   }
   // axes labels (min/max)
   g.fillStyle=cssv("--ink-faint"); g.font="10px "+cssv("--mono"); g.textAlign="right"; g.textBaseline="middle";
   g.fillText(ymax.toFixed(2),padL-5,Y(ymax));
   g.fillText(ymin.toFixed(2),padL-5,Y(ymin));
+  // current level as % of range — lifted into the top margin, clear of the max line
+  { const rp=riverPct(s);
+    if(rp!=null){ g.font="13px "+cssv("--mono"); g.textAlign="left"; g.textBaseline="top";
+      g.fillStyle=(rp>100?cssv("--crit"):(rp<0?cssv("--accent2"):cssv("--ink-dim")));
+      g.fillText(Math.round(rp)+"% of range", padL+2, 3); } }
   // trace
   const col = (s&&s.band==="high")?cssv("--crit"):(s&&s.band==="low")?cssv("--accent2"):cssv("--accent");
   g.strokeStyle=col; g.lineWidth=2; g.beginPath();
@@ -5732,7 +5868,8 @@ async function eaLoadRain(ref, loc){
     let series=null;
     for(const k in d.series){ if(!series || d.series[k].length>series.length) series=d.series[k]; }
     if(!series || !series.length){ host.innerHTML='<div class="ea-detail-empty">No history.</div>'; return; }
-    const total24=series.slice(-96).reduce((a,p)=>a+(p.v||0),0);  // 96×15min = 24h
+    const _t24=Date.now()-86400000;
+    const total24=series.reduce((a,p)=>a+((Date.parse(p.t)>=_t24)?(p.v||0):0),0);  // last 24h by time
     host.innerHTML='<div class="ea-detail-card"><h3>'+
       '<button class="ea-clearsel" data-act="clearsel" title="Clear selection">✕</button>'+
       loc+' <span class="ea-badge">rain</span></h3>'+
@@ -5745,57 +5882,53 @@ async function eaLoadRain(ref, loc){
 
 function eaDrawRain(series){
   const c=$("#eaRainChart"); if(!c) return;
-  // last ~24h of 15-min bars
-  const pts=series.slice(-96);
+  // Fixed 24h window ending at NOW, so the plot ADVANCES even when no new reading
+  // has arrived (a gap shows as empty bars to the right, not a frozen last bar).
+  const now=Date.now(), SLOT=900000;          // 15-min cadence
+  const x0=now-96*SLOT, x1=now;
+  const pts=series.filter(p=>{const t=Date.parse(p.t); return !isNaN(t)&&t>=x0-SLOT&&t<=x1;});
   const dpr=devicePixelRatio||1, W=c.clientWidth||360, H=170;
   c.width=W*dpr;c.height=H*dpr;c.style.height=H+"px";
   const g=c.getContext("2d"); g.scale(dpr,dpr);
   const padL=42,padR=10,padT=12,padB=30;
-  const xs=pts.map(p=>new Date(p.t).getTime()), ys=pts.map(p=>p.v||0);
-  const ymax=Math.max(...ys,0.5)*1.15;
-  const x0=xs[0], x1=xs[xs.length-1];
-  const plotW=W-padL-padR, plotH=H-padT-padB, bw=plotW/pts.length;
+  const ymax=Math.max(...pts.map(p=>p.v||0),0.5)*1.15;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const X=t=>padL+plotW*(t-x0)/(x1-x0);
   const Y=v=>padT+plotH*(1-v/ymax);
+  const bw=Math.max(1, plotW*SLOT/(x1-x0));
   g.clearRect(0,0,W,H);
   // y grid + mm labels
-  g.fillStyle=cssv("--ink-faint"); g.font="10px "+cssv("--mono"); g.textAlign="right"; g.textBaseline="middle";
+  g.font="10px "+cssv("--mono"); g.textAlign="right"; g.textBaseline="middle";
   const step=ymax<=1?0.25:ymax<=3?0.5:1;
   for(let v=0; v<=ymax; v+=step){
     const y=Y(v); g.strokeStyle="rgba(90,110,140,.13)"; g.beginPath(); g.moveTo(padL,y); g.lineTo(W-padR,y); g.stroke();
     g.fillStyle="#7c8aa0"; g.fillText(v.toFixed(step<1?2:0),padL-5,y);
   }
-  // bars coloured by intensity
+  // bars coloured by intensity, positioned by TIME (missing intervals = no bar)
   const bandCol=mm=> mm<=0?"rgba(120,140,170,.25)":mm<0.5?"#5b8def":mm<1.25?cssv("--accent"):mm<2.5?"#f5934a":cssv("--crit");
-  pts.forEach((p,i)=>{
-    const v=p.v||0, x=padL+i*bw, bh=plotH*v/ymax;
-    g.fillStyle=bandCol(v); g.fillRect(x+0.5, padT+plotH-bh, Math.max(1,bw-0.8), bh);
+  pts.forEach(p=>{
+    const t=Date.parse(p.t), v=p.v||0; if(t<x0||t>x1) return;
+    const bh=plotH*v/ymax;
+    g.fillStyle=bandCol(v); g.fillRect(X(t)-bw/2+0.4, padT+plotH-bh, Math.max(1,bw-0.8), bh);
   });
-  // ---- x-axis: 2-hourly tick marks, 6-hourly time labels (UT) ----
-  // Bars are index-positioned (even 15-min spacing), so map a target time to the
-  // nearest bar's centre x. Ticks every 2h; labels every 6h so text can't clash.
+  // ---- x-axis: 2-hourly ticks, 6-hourly labels (UT), spanning through to NOW ----
   const axisY=H-padB;
   g.strokeStyle="rgba(90,110,140,.25)"; g.lineWidth=1; g.textBaseline="top";
   const utcHH=ms=>{const dt=new Date(ms);
     return String(dt.getUTCHours()).padStart(2,"0")+":"+String(dt.getUTCMinutes()).padStart(2,"0");};
   const utcDate=ms=>new Date(ms).toLocaleDateString("en-GB",{timeZone:"UTC",day:"2-digit",month:"short"});
-  const barX=t=>{
-    // nearest 15-min sample index to time t, then that bar's centre
-    let best=0, bd=Infinity;
-    for(let i=0;i<xs.length;i++){ const dd=Math.abs(xs[i]-t); if(dd<bd){bd=dd;best=i;} }
-    return padL+best*bw+bw/2;
-  };
   const H2=2*3600000;
   let t=Math.ceil(x0/H2)*H2; while(new Date(t).getUTCHours()%2!==0) t+=3600000;
   for(; t<=x1; t+=H2){
-    const x=barX(t), isLabel=(new Date(t).getUTCHours()%6===0);
+    const x=X(t), isLabel=(new Date(t).getUTCHours()%6===0);
     g.beginPath(); g.moveTo(x,axisY); g.lineTo(x,axisY+(isLabel?5:3)); g.stroke();
-    if(isLabel && x>padL+24 && x<W-padR-18){
+    if(isLabel && x>padL+30 && x<W-padR-46){
       g.fillStyle=cssv("--ink-faint"); g.textAlign="center";
       g.fillText(utcHH(t),x,axisY+6);
       if(new Date(t).getUTCHours()===0){ g.fillStyle="#7c8aa0"; g.fillText(utcDate(t),x,axisY+16); }
     }
   }
-  // left-end anchor + right-end latest time (UT)
+  // left-end anchor + right-end = now
   g.font="9px "+cssv("--mono");
   g.fillStyle=cssv("--ink-faint"); g.textAlign="left";
   g.fillText(utcHH(x0),padL,axisY+6);
@@ -6078,14 +6211,29 @@ const Alarm = (function(){
   }
 
   // ---- evaluation from flood summary (called when flood counts refresh) ----
-  function evaluateFloods(counts){
+  function _floodLocalClause(localFloods){
+    // Name the nearest in-force LOCAL flood (within the EA page radius) after the
+    // national count, so a listener hears whether anything is happening near them.
+    const locals=(Array.isArray(localFloods)?localFloods:[])
+      .filter(f=>f&&f.severity_level&&f.severity_level<=3)
+      .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
+    if(!locals.length) return "";
+    const n=locals.length, nn=locals[0];
+    const place=nn.name||nn.river_or_sea||"your area";
+    const where=(nn.dist_km!=null)?", "+distPhrase(nn.dist_km)+" from you":"";
+    return (n===1)
+      ? " Including one locally at "+place+where+"."
+      : " Including "+n+" locally, the nearest at "+place+where+".";
+  }
+  function evaluateFloods(counts, localFloods){
     if(!counts) return;
     const sev1=+(counts["1"]||0);   // severe = danger to life
     const sev2=+(counts["2"]||0);   // warning
+    const localClause=_floodLocalClause(localFloods);
     set("flood","flood-severe", sev1>0, "crit",
-      "Critical. "+sev1+" severe flood warning"+(sev1>1?"s":"")+" active.");
+      "Critical. "+sev1+" national severe flood warning"+(sev1>1?"s":"")+" active."+localClause);
     set("flood","flood-warning", sev2>0, "warn",
-      "Warning. "+sev2+" flood warning"+(sev2>1?"s":"")+" active.");
+      "Warning. "+sev2+" national flood warning"+(sev2>1?"s":"")+" active."+localClause);
   }
 
   // ---- aggregated EA situations (rivers, rainfall) ----
@@ -6202,11 +6350,11 @@ const Alarm = (function(){
     if(distKm<15) return RAIN_BASE_MID;
     return RAIN_BASE_FAR;
   }
-  function _rainBandName(mm){
+  function _rainBandName(mm){   // mm/h rate (see eaRainBand); thresholds x4 of the old 15-min cuts
     if(mm==null||mm<=0) return null;
-    if(mm<0.5) return "light rain";
-    if(mm<1.25) return "moderate rain";
-    if(mm<2.5) return "heavy rain";
+    if(mm<2)  return "light rain";
+    if(mm<5)  return "moderate rain";
+    if(mm<10) return "heavy rain";
     return "extremely heavy rain";
   }
   function _rainPhrase(band, nearest, sustained){
@@ -6220,12 +6368,14 @@ const Alarm = (function(){
   }
   function evaluateRainfall(rainfall){
     if(!Array.isArray(rainfall)){ return; }
-    // Only count gauges whose reading is fresh — same rationale as rivers, so a
-    // cached-seed rainfall list can't fire on old tips (r.dt is the reading time).
+    // A gauge counts as "raining now" only while its reading is fresh by the SAME
+    // timeout the cards use (~2 publications, min 30 min) — NOT the 2 h river window.
+    // Otherwise the alarm fires "light rain nearby" on an hours-old reading that the
+    // cards have already timed out to 0, so you hear rain the gauges no longer show.
     const now=Date.now();
     const fresh=r=>{ if(!r.dt) return false; const t=Date.parse(r.dt);
-                     return !isNaN(t) && (now-t) <= EA_READING_FRESH_MS; };
-    const wet=rainfall.map(r=>({...r, band:_rainBandName(r.mm)}))
+                     return !isNaN(t) && (now-t) <= Math.max(30*60000, 2*((r.period_s||900)*1000)); };
+    const wet=rainfall.map(r=>({...r, band:_rainBandName(r.mm_h!=null?r.mm_h:r.mm)}))
                       .filter(r=>r.band && fresh(r))
                       .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
     const byBand={}; wet.forEach(r=>{ byBand[r.band]=(byBand[r.band]||0)+1; });
