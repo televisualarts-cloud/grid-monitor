@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260827.4  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260827.10  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -72,6 +72,14 @@ except Exception:            # never let a missing/broken probe stop the server
     _rain_probe = None
     _RAIN_PROBE_STATE = None
 
+def _meter(api, tag, n=1, note=""):
+    """Log n real upstream calls (api/tag) via rain_probe's meter. Never raises."""
+    if _rain_probe is not None:
+        try:
+            _rain_probe.meter_api(api, tag, n, note)
+        except Exception:
+            pass
+
 try:
     import owm_onecall as _owm_onecall
 except Exception:            # missing helper -> server just uses the free 2.5 call
@@ -86,7 +94,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260827.4"
+SERVER_BUILD = "260904.9"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -118,16 +126,19 @@ FUEL_META = {
     "BIOMASS":  ("Biomass",       "renewable",      "#7bb662"),
     "OTHER":    ("Other",         "other",          "#9aa0aa"),
     "SOLAR":    ("Solar",         "renewable",      "#f5c542"),
-    "INTFR":    ("IC France (IFA)",   "interconnector", "#5b8def"),
-    "INTIFA2":  ("IC France (IFA2)",  "interconnector", "#5b8def"),
-    "INTELEC":  ("IC France (ElecLink)","interconnector","#5b8def"),
-    "INTNED":   ("IC Netherlands",    "interconnector", "#5b8def"),
-    "INTEW":    ("IC Ireland (E-W)",  "interconnector", "#5b8def"),
-    "INTIRL":   ("IC Ireland (Moyle)","interconnector", "#5b8def"),
-    "INTNEM":   ("IC Belgium (Nemo)", "interconnector", "#5b8def"),
-    "INTNSL":   ("IC Norway (NSL)",   "interconnector", "#5b8def"),
-    "INTVKL":   ("IC Denmark (Viking)","interconnector","#5b8def"),
-    "INTGRNL":  ("IC Greenlink",      "interconnector", "#5b8def"),
+    # Interconnectors: a shared blue family (navy -> pale azure) so they read as
+    # one class yet stay individually distinguishable when stacked. Deliberately
+    # kept off the cyan/teal that WIND (#3fb6c9) uses.
+    "INTFR":    ("IC France (IFA)",   "interconnector", "#0b2a66"),
+    "INTNSL":   ("IC Norway (NSL)",   "interconnector", "#103680"),
+    "INTEW":    ("IC Ireland (E-W)",  "interconnector", "#17469a"),
+    "INTIFA2":  ("IC France (IFA2)",  "interconnector", "#1f57b6"),
+    "INTELEC":  ("IC France (ElecLink)","interconnector","#2867cf"),
+    "INTIRL":   ("IC Ireland (Moyle)","interconnector", "#3576dd"),
+    "INTNED":   ("IC Netherlands",    "interconnector", "#4585e6"),
+    "INTVKL":   ("IC Denmark (Viking)","interconnector","#5a97ec"),
+    "INTNEM":   ("IC Belgium (Nemo)", "interconnector", "#72aaf1"),
+    "INTGRNL":  ("IC Greenlink",      "interconnector", "#8dbdf6"),
 }
 
 
@@ -298,6 +309,274 @@ def get_generation():
             "interconnector_net_mw": round(ic_net)}
 
 
+# ───────────────────────── System risk engine ───────────────────────────────
+# A real-time inertia/vulnerability proxy from the generation mix, combined with
+# frequency deviation and a derived RoCoF into a Composite Grid Risk Index (CGRI).
+# All values are proxies from public feeds (national, not locational) and every
+# threshold here is a TUNABLE seed anchored to GB industry reference points:
+#   * Frequency: nominal 50; operational band +/-0.2; statutory operational +/-0.5;
+#     first-stage automatic load-shedding (LFDD) at 48.8 Hz.
+#   * Inertia H (s, stored energy on the unit rating) — literature seeds.
+#   * RoCoF: historic Loss-of-Mains setting 0.125 Hz/s (vulnerability anchor).
+#   * Largest credible single infeed loss NESO secures against ~1320 MW.
+NOMINAL_HZ = 50.0
+FREQ_OP_LO,   FREQ_OP_HI   = 49.8, 50.2     # normal operational band
+FREQ_STAT_LO, FREQ_STAT_HI = 49.5, 50.5     # statutory operational limits (hard floor)
+LFDD_HZ = 48.8                               # first-stage auto load-shedding begins
+LARGEST_INFEED_LOSS_MW = 1320                # largest credible single loss (secured event)
+# Notional post-fault RoCoF anchors (Hz/s). Modern deployment withstand is ~1 Hz/s
+# (the old Loss-of-Mains relay setting of 0.125 was a protection concern, not a
+# fragility limit), so we band toward the genuine stability range.
+ROCOF_AMBER    = 0.25   # notional post-fault RoCoF band cuts (Hz/s)
+ROCOF_RED      = 0.5
+ROCOF_VULN_REF = 0.5    # notional-RoCoF scale for the vulnerability factor V
+ROCOF_OBS_REF  = 0.1    # observed 15s-slope scale for the CGRI RoCoF multiplier
+CGRI_ALPHA  = 1.0       # weight of inertia vulnerability in the composite
+CGRI_BETA   = 1.0       # weight of observed RoCoF in the composite
+CGRI_AMBER  = 0.2       # composite band cuts (Hz-equivalent)
+CGRI_RED    = 0.5
+# Per-fuel inertia constant H (seconds). Synchronous plant only; wind/solar and
+# every interconnector (HVDC) carry none. Codes starting "INT" are forced to 0.
+FUEL_INERTIA_H = {
+    "NUCLEAR": 4.5, "COAL": 4.5, "BIOMASS": 4.0,
+    "CCGT": 4.0, "OCGT": 3.0, "OIL": 3.0,
+    "NPSHYD": 3.0, "PS": 3.0,
+    "WIND": 0.0, "SOLAR": 0.0,
+}
+# Output-based inertia underestimates: FUELINST shows MW OUTPUT, but a part-loaded
+# synchronous unit keeps its FULL rotational inertia (H is on rating), and NESO runs
+# stability services (synchronous condensers, load damping) with no output.
+# CALIBRATED to NESO's published GB System Inertia (Outturn Inertia, GVA.s) by
+# least-squares over 242 half-hourly samples spanning 2026-04..07 (real range 108-233):
+#   inertia_GVAs ~= 1.69 * (sum MW*H) + 69     R^2=0.90, MAE 7.8 GVA.s
+# (Previous seeds 1.4/30 under-read by ~35%, MAE 53 -> over-stated RoCoF ~1.5x -> false alerts.)
+INERTIA_LOAD_UPLIFT  = 1.69   # output -> synchronised-rating proxy (NESO-fitted slope)
+INERTIA_BASELINE_GWS = 69.0   # always-on stability inertia (NESO-fitted intercept, GVA.s)
+GEN_LOSS_MW        = 400.0    # an infeed drop bigger than this in one interval = flagged
+GEN_LOSS_SEVERE_MW = 800.0    # ...this much = severe (pushes risk to RED)
+GEN_HIST_KEEP_S    = 30 * 60
+_gen_hist = []               # [(ts, sync_mw, infeed_mw, {code: mw})]
+
+def _update_gen_history(gen, now):
+    """Track synchronous generation + total infeed (sync + interconnector imports)
+    across FUELINST samples and flag a sudden loss (a tripped unit or interconnector
+    shows as a step-down at the next 5-min sample). Returns a gen_loss dict or None."""
+    if not gen or not gen.get("fuels"):
+        return None
+    per = {}; sync = 0.0; ic = 0.0
+    for fu in gen["fuels"]:
+        code = fu.get("code", ""); mw = fu.get("mw") or 0
+        per[code] = mw
+        if code.startswith("INT"):
+            ic += mw
+        elif FUEL_INERTIA_H.get(code, 0) > 0 and mw > 0:
+            sync += mw
+    infeed = sync + max(ic, 0.0)
+    _gen_hist.append((now, sync, infeed, per))
+    while _gen_hist and now - _gen_hist[0][0] > GEN_HIST_KEEP_S:
+        _gen_hist.pop(0)
+    if len(_gen_hist) < 2:
+        return None
+    t0, s0, i0, p0 = _gen_hist[-2]; t1, s1, i1, p1 = _gen_hist[-1]
+    if t1 <= t0:
+        return None
+    d_inf = i1 - i0; d_sync = s1 - s0; dt = max(t1 - t0, 1.0)
+    drops = sorted(((c, p1.get(c, 0) - p0.get(c, 0)) for c in set(p0) | set(p1)),
+                   key=lambda x: x[1])
+    worst = drops[0] if drops else (None, 0.0)
+    loss = max(0.0, -d_inf)
+    out = {"flagged": loss >= GEN_LOSS_MW, "d_infeed_mw": round(d_inf),
+           "d_sync_mw": round(d_sync), "rate_mw_min": round(d_inf / (dt / 60.0), 1),
+           "interval_s": round(dt)}
+    if out["flagged"]:
+        out["severe"] = loss >= GEN_LOSS_SEVERE_MW
+        out["worst_fuel"] = worst[0]; out["worst_drop_mw"] = round(worst[1])
+    return out
+
+def _freq_rocof(ordered, window_s=90):
+    """Derived RoCoF (Hz/s) from the fine 15s frequency series: least-squares slope
+    over the last `window_s`. A slow proxy, NOT protection-grade sub-second RoCoF."""
+    if not ordered or len(ordered) < 2:
+        return None
+    try:
+        te = [(datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp(), hz)
+              for t, hz in ordered]
+    except Exception:
+        return None
+    t_last = te[-1][0]
+    pts = [(t, hz) for (t, hz) in te if t_last - t <= window_s]
+    if len(pts) < 2 or (pts[-1][0] - pts[0][0]) < 20:
+        return None
+    n = len(pts); sx = sum(t for t, _ in pts); sy = sum(h for _, h in pts)
+    sxx = sum(t * t for t, _ in pts); sxy = sum(t * h for t, h in pts)
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return None
+    return round((n * sxy - sx * sy) / denom, 4)
+
+def _risk_level(hz, cgri, gen_loss):
+    """Instantaneous band (client applies hysteresis + audio). Hard statutory floor
+    always applies; CGRI and a severe generation loss can only raise it."""
+    lvl = 0
+    if hz is not None:
+        if hz <= FREQ_STAT_LO or hz >= FREQ_STAT_HI: lvl = max(lvl, 2)
+        elif hz <= FREQ_OP_LO or hz >= FREQ_OP_HI:   lvl = max(lvl, 1)
+    if cgri is not None:
+        if cgri >= CGRI_RED:     lvl = max(lvl, 2)
+        elif cgri >= CGRI_AMBER: lvl = max(lvl, 1)
+    if gen_loss and gen_loss.get("severe"): lvl = max(lvl, 2)
+    elif gen_loss and gen_loss.get("flagged"): lvl = max(lvl, 1)
+    return lvl
+
+# Level hysteresis so the DISPLAYED band doesn't flap when hz/CGRI hover on a boundary.
+# Fast attack, slow release: a serious escalation (red / statutory / severe loss) shows
+# at once; a rise to amber must persist a short dwell (drops single-cycle noise); a drop
+# to a calmer level must hold much longer before it clears.
+RISK_AMBER_DWELL_S = 40      # amber must persist this long before it shows
+RISK_CLEAR_DWELL_S = 150     # a calmer level must hold this long before the badge drops
+_risk_state = {"level": 0, "cand": 0, "cand_since": 0.0}
+
+def _risk_hysteresis(raw, now):
+    st = _risk_state; cur = st["level"]
+    if raw == cur:
+        st["cand"] = raw; st["cand_since"] = now
+        return cur
+    if raw != st["cand"]:
+        st["cand"] = raw; st["cand_since"] = now
+    held = now - st["cand_since"]
+    if raw > cur:                                  # escalation
+        if raw >= 2 or held >= RISK_AMBER_DWELL_S:  # red/serious immediate; amber after a short dwell
+            st["level"] = raw
+    else:                                          # de-escalation: slow release
+        if held >= RISK_CLEAR_DWELL_S:
+            st["level"] = raw
+    return st["level"]
+
+def compute_system_risk(gen, freq, gen_loss=None):
+    """Inertia proxy + CGRI from the live mix and frequency. Read-only."""
+    if not gen or not gen.get("fuels"):
+        return None
+    E_mws = 0.0; sync_mw = 0.0
+    for fu in gen["fuels"]:
+        code = fu.get("code", ""); mw = fu.get("mw") or 0
+        if mw <= 0 or code.startswith("INT"):
+            continue
+        H = FUEL_INERTIA_H.get(code, 0.0)
+        if H > 0:
+            E_mws += mw * H; sync_mw += mw
+    # calibrate the output-weighted proxy toward synchronised-rating inertia
+    E_mws = E_mws * INERTIA_LOAD_UPLIFT + INERTIA_BASELINE_GWS * 1000.0 if E_mws > 0 else 0.0
+    npf = round((LARGEST_INFEED_LOSS_MW * NOMINAL_HZ) / (2 * E_mws), 3) if E_mws > 0 else None
+    if npf is None:      inertia_band = "unknown"
+    elif npf < ROCOF_AMBER: inertia_band = "green"
+    elif npf < ROCOF_RED:   inertia_band = "amber"
+    else:                   inertia_band = "red"
+    V = round(npf / ROCOF_VULN_REF, 2) if npf is not None else 0.0
+    hz = (freq or {}).get("hz")
+    rocof = (freq or {}).get("rocof_hz_s")
+    dev = round(abs(hz - NOMINAL_HZ), 3) if hz is not None else None
+    cgri = None
+    if dev is not None:
+        m_inertia = 1.0 + CGRI_ALPHA * max(0.0, V)
+        m_rocof = 1.0 + CGRI_BETA * (abs(rocof) / ROCOF_OBS_REF if rocof else 0.0)
+        cgri = round(dev * m_inertia * m_rocof, 3)
+    level = ["green", "amber", "red"][_risk_hysteresis(_risk_level(hz, cgri, gen_loss), time.time())]
+    return {
+        "inertia_gws": round(E_mws / 1000.0, 1), "sync_mw": round(sync_mw),
+        "inertia_band": inertia_band, "notional_rocof": npf,
+        "largest_loss_mw": LARGEST_INFEED_LOSS_MW, "rocof_obs": rocof,
+        "vulnerability": V, "hz": hz, "dev": dev, "cgri": cgri,
+        "level": level, "level_raw": ["green", "amber", "red"][_risk_level(hz, cgri, gen_loss)],
+        "gen_loss": gen_loss,
+        "params": {"op_lo": FREQ_OP_LO, "op_hi": FREQ_OP_HI, "stat_lo": FREQ_STAT_LO,
+                   "stat_hi": FREQ_STAT_HI, "lfdd_hz": LFDD_HZ, "rocof_vuln_ref": ROCOF_VULN_REF,
+                   "rocof_amber": ROCOF_AMBER, "rocof_red": ROCOF_RED,
+                   "cgri_amber": CGRI_AMBER, "cgri_red": CGRI_RED},
+    }
+
+
+# ───────────────────────── 15s interleaved data log ─────────────────────────
+# One time-ordered JSONL per UTC day (logs/grid_log-YYYY-MM-DD.jsonl). Interleaved
+# event rows so a later graph can merge them on a single time axis:
+#   {"t":iso,"k":"f","hz":50.02}                               — every 15s freq point
+#   {"t":iso,"k":"m","gen":{...},"demand":{...},"risk":{...}}  — each FUELINST (~5min)
+# Frequency arrives in ~2min bursts; every distinct 15s point is logged once (deduped)
+# as it appears. Daily files keep it bounded and archivable; retention is a tunable, so
+# this extends to long-term storage later without a format change.
+LOG_DIR = Path(__file__).with_name("logs")
+LOG_RETENTION_DAYS = 30
+_data_log_lock = threading.Lock()
+_freq_log_last_ts = None
+_mix_log_last_pub = None
+
+def _log_day_path():
+    return LOG_DIR / ("grid_log-" + time.strftime("%Y-%m-%d", time.gmtime()) + ".jsonl")
+
+def _data_log_write(rec):
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        line = json.dumps(rec, separators=(",", ":"))
+        with _data_log_lock:
+            with open(_log_day_path(), "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception:
+        pass
+
+def _data_log_prune():
+    try:
+        cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+        for p in LOG_DIR.glob("grid_log-*.jsonl"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def log_freq_points(ordered):
+    """Append any new 15s frequency points as interleaved 'f' rows (deduped)."""
+    global _freq_log_last_ts
+    if not ordered:
+        return
+    last = _freq_log_last_ts
+    pts = ordered[-1:] if last is None else [(t, hz) for (t, hz) in ordered if t > last]
+    for t, hz in pts:
+        _data_log_write({"t": t, "k": "f", "hz": round(hz, 3)})
+    _freq_log_last_ts = ordered[-1][0]
+
+def log_mix(snap):
+    """Append one 'm' row per new FUELINST publish: generation mix, derived demand
+    split, and the risk summary; then opportunistically prune old day files."""
+    global _mix_log_last_pub
+    gen = snap.get("generation")
+    if not gen or not gen.get("fuels"):
+        return
+    pub = gen.get("publishTime")
+    if pub and pub == _mix_log_last_pub:
+        return
+    _mix_log_last_pub = pub
+    per = {fu.get("code"): round(fu.get("mw") or 0) for fu in gen["fuels"]}
+    ic_exp = sum(-v for c, v in per.items() if c and c.startswith("INT") and v < 0)
+    ic_imp = sum(v for c, v in per.items() if c and c.startswith("INT") and v > 0)
+    ps_charge = sum(-v for c, v in per.items() if c == "PS" and v < 0)
+    batt = snap.get("battery") or {}
+    dem = snap.get("demand") or {}
+    sr = snap.get("system_risk") or {}
+    _data_log_write({
+        "t": snap.get("generated"), "k": "m", "gen": per,
+        "total_mw": gen.get("generation_total_mw"), "ic_net_mw": gen.get("interconnector_net_mw"),
+        "demand": {"national_mw": dem.get("national_mw"), "transmission_mw": dem.get("transmission_mw"),
+                   "ic_export_mw": round(ic_exp), "ic_import_mw": round(ic_imp),
+                   "storage_charge_mw": round(ps_charge + (batt.get("charge_mw") or 0))},
+        "risk": {"hz": sr.get("hz"), "dev": sr.get("dev"),
+                 "inertia_gws": sr.get("inertia_gws"), "sync_mw": sr.get("sync_mw"),
+                 "notional_rocof": sr.get("notional_rocof"), "rocof_obs": sr.get("rocof_obs"),
+                 "cgri": sr.get("cgri"), "level": sr.get("level")},
+    })
+    _data_log_prune()
+
+
 def get_frequency():
     """Latest grid frequency (Hz) plus a recent history trace.
     Uses the near-real-time system/frequency endpoint (15-second cadence,
@@ -322,13 +601,30 @@ def get_frequency():
     uniq = {r["measurementTime"]: r["frequency"] for r in rows if r.get("frequency") is not None}
     ordered = sorted(uniq.items())
     latest_t, latest_hz = ordered[-1]
-    # down-sample the last window to <=120 points for the trace, keeping timestamps
+    # Down-sample the last window for the trace using MIN/MAX-envelope decimation:
+    # within each bucket keep BOTH the lowest and highest point (in time order), not
+    # a single stride sample. Plain stride sampling (tail[::stepn]) could step right
+    # over a brief 15s excursion; the envelope guarantees a short dip below 49.8 (or a
+    # spike) always survives into the drawn trace. The raw log keeps every point
+    # regardless; this only governs what the graph shows. ~<=240 points.
     tail = ordered[-720:]
     stepn = max(1, len(tail) // 120)
-    sampled = tail[::stepn]
+    sampled = []
+    for i in range(0, len(tail), stepn):
+        bucket = tail[i:i + stepn]
+        if not bucket:
+            continue
+        lo = min(bucket, key=lambda th: th[1])
+        hi = max(bucket, key=lambda th: th[1])
+        for th in sorted({lo, hi}, key=lambda th: th[0]):   # both extremes, chronological
+            sampled.append(th)
+    if sampled and ordered and sampled[-1][0] != ordered[-1][0]:
+        sampled.append(ordered[-1])                         # end on the actual latest reading
     trace = [round(hz, 3) for _, hz in sampled]
     trace_points = [{"t": t, "hz": round(hz, 3)} for t, hz in sampled]
+    log_freq_points(ordered)                       # interleaved 15s data log
     return {"time": latest_t, "hz": latest_hz,
+            "rocof_hz_s": _freq_rocof(ordered),   # derived 15s slope (proxy)
             "trace": trace,                 # kept for the live-append path
             "trace_points": trace_points,   # timestamped, for axis labels
             "window_start": sampled[0][0] if sampled else latest_t,
@@ -1745,6 +2041,7 @@ def get_weather():
         name, lat, lon, typ, weight, offshore = site
         try:
             _budget_spend(1)          # count before the call — failures cost quota too
+            _meter("OWM", "resource", 1)
             obs = _openweather_one(lat, lon, api_key)
             fetched += 1
         except urllib.error.HTTPError as e:
@@ -1803,6 +2100,7 @@ def get_weather():
     for name, lat, lon, wt in DEMAND_SITES:
         try:
             _budget_spend(1)
+            _meter("OWM", "demand", 1)
             obs = _openweather_one(lat, lon, api_key)
         except Exception:
             continue
@@ -3882,6 +4180,59 @@ EA_FLOODS_TTL = 300
 # update rate (never miss a refresh) but ~6x fewer calls than before.
 _ea_wind_cache = {}       # keyed by (round(lat,2), round(lon,2)) -> {"wind":..., "ts":...}
 EA_WIND_TTL = 900         # 15 min (4 fetches/hour)
+
+# ---- Active forecast window -------------------------------------------------
+# Concentrate the paid API budget in the hours that matter. Inside the window,
+# sampling runs at full cadence (mult 1.0); outside it (e.g. overnight) every
+# paid cadence is stretched by quiet_mult so the budget isn't spent while asleep.
+# Persisted so it survives restarts; edited via /api/forecast_window. Local
+# wall-clock times ("HH:MM"); the window may wrap midnight.
+FORECAST_WINDOW_FILE = Path(__file__).with_name("forecast_window.json")
+_FORECAST_DEFAULT = {"enabled": False, "start": "07:00", "end": "23:00", "quiet_mult": 3.0}
+
+def _load_forecast_window():
+    out = dict(_FORECAST_DEFAULT)
+    try:
+        cfg = json.loads(FORECAST_WINDOW_FILE.read_text())
+        for k in _FORECAST_DEFAULT:
+            if k in cfg:
+                out[k] = cfg[k]
+    except Exception:
+        pass
+    return out
+
+def _save_forecast_window(cfg):
+    cur = _load_forecast_window()
+    if "enabled" in cfg:    cur["enabled"] = bool(cfg["enabled"])
+    for k in ("start", "end"):
+        if isinstance(cfg.get(k), str) and _hhmm_min(cfg[k]) is not None:
+            cur[k] = cfg[k]
+    if "quiet_mult" in cfg:
+        try: cur["quiet_mult"] = max(1.0, min(12.0, float(cfg["quiet_mult"])))
+        except Exception: pass
+    FORECAST_WINDOW_FILE.write_text(json.dumps(cur))
+    return cur
+
+def _hhmm_min(hhmm):
+    try:
+        h, m = str(hhmm).split(":"); h, m = int(h), int(m)
+        return h * 60 + m if (0 <= h < 24 and 0 <= m < 60) else None
+    except Exception:
+        return None
+
+def _forecast_sampling_mult(now=None):
+    """Paid-sampling cadence multiplier from the active window + LOCAL wall clock.
+    1.0 inside the window (or when disabled); quiet_mult outside it."""
+    cfg = _load_forecast_window()
+    if not cfg.get("enabled"):
+        return 1.0
+    a, b = _hhmm_min(cfg.get("start")), _hhmm_min(cfg.get("end"))
+    if a is None or b is None:
+        return 1.0
+    lt = time.localtime(now if now is not None else time.time())
+    cur = lt.tm_hour * 60 + lt.tm_min
+    inside = (a <= cur < b) if a < b else (cur >= a or cur < b) if a != b else True
+    return 1.0 if inside else max(1.0, float(cfg.get("quiet_mult", 3.0)))
 # Wind uses OpenWeather on its OWN daily budget, separate from Resource Conditions.
 # Per refresh: the home reading (OC4 current + one-minute nowcast = 2 calls, cached
 # 15 min) PLUS the offshore rainfall-nowcast sentinels, which on OC4 are sampled
@@ -4084,6 +4435,22 @@ def _pressure_tendency(series, now):
     return {"trend": word,
             "change_3h": round(change_3h, 1),
             "span_h": round(span_h, 1)}
+
+def _pressure_tendency_read(lat, lon):
+    """Read-only 3h tendency from the persisted pressure log (the SAME series the weather
+    panel shows), without appending a new sample. Lets the rain-probe voice use the panel's
+    authoritative figure so the two never disagree. Returns the tendency dict or None."""
+    try:
+        if not PRESSURE_LOG.exists():
+            return None
+        store = json.loads(PRESSURE_LOG.read_text())
+        series = store.get(f"{round(lat,2)},{round(lon,2)}")
+        if not series:
+            return None
+        return _pressure_tendency(series, datetime.now(timezone.utc))
+    except Exception:
+        return None
+
 _ea_station_cache = {}    # keyed by station ref -> {"data":..., "ts":...}
 EA_STATION_TTL = 300
 # National latest-readings, fetched in ONE call and indexed by measure URI.
@@ -4352,7 +4719,7 @@ def _ea_band_position(value, scale):
     return None
 
 
-def get_ea(lat=None, lon=None, dist=None, rain_only=False):
+def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sampling_mult=1.0):
     """Overview for a location: nearby river-level / flow / rainfall stations
     with their latest readings and each station's own typical-range context.
     Cached per (lat,lon,dist).
@@ -4394,8 +4761,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
         if not rain_only:
             _ea_collect_stations(out, lat, lon, dist, latest)
         _ea_collect_rainfall(out, lat, lon, dist, latest)
+        _ea_collect_wind(out, lat, lon, sampling_mult)  # TTL+budget-throttled; needed by the probe in both modes
         if not rain_only:
-            _ea_collect_wind(out, lat, lon)
             out["local_floods"] = _ea_local_floods(lat, lon, dist)
             out["local_flood_area_ids"] = [f["area_id"] for f in out["local_floods"]]
     except Exception as e:
@@ -4419,7 +4786,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
     # Reads what we already fetched (no extra OWM call) and logs the phrase the
     # alert WOULD speak; emits marked, modelled offshore virtual gauges into
     # out['rainfall_model']. Never raises past its own body; never plays a tone.
-    if _rain_probe is not None and not rain_only and out.get("wind"):
+    if _rain_probe is not None and out.get("wind"):
         try:
             _w = out["wind"]; _cond = _w.get("conditions") or {}
             _hm = _w.get("home") or {}; _spd = _hm.get("speed_ms")
@@ -4441,12 +4808,15 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
                         and _wind_budget_remaining() >= len(pts)):
                     rates = _owm_onecall.fetch_sea_precip(pts, _okey)
                     _wind_budget_spend(len(pts))
+                    _meter("OWM", "oc4_sea", len(pts))
                     return rates
+                _meter("OM", "net_fallback", len(pts))
                 return _rain_probe.fetch_om_precip(pts)   # free Open-Meteo fallback
             _res = _rain_probe.run_probe(
                 _RAIN_PROBE_STATE, home=(lat, lon),
                 rain_mm_h=_cond.get("rain_1h") or 0.0,
                 pressure_hpa=_cond.get("pressure"),
+                pressure_change_3h=((_pressure_tendency_read(lat, lon) or {}).get("change_3h")),
                 visibility_m=_cond.get("visibility_m"),
                 wind_from=_hm.get("dir_deg"),
                 wind_kmh=(_spd * 3.6) if _spd is not None else None,
@@ -4454,15 +4824,23 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False):
                 flood_active=False,          # floods come from a separate endpoint
                 feed_stale=bool(_w.get("stale")),
                 forward_precip=out.get("_owm_minute"),
-                net_sample_fn=_net_sample, track_sample_fn=_track_sample)
+                net_sample_fn=_net_sample, track_sample_fn=_track_sample,
+                cadence_mult=cadence_mult, sampling_mult=sampling_mult)
             out["rainfall_model"] = _res.get("virtual_gauges") or []
             out["diag"]["rain_probe"] = _res.get("log")
             out["rain_probe"] = {"would_speak": _res.get("would_speak"),
-                                 "signals": _res.get("signals")}
+                                 "signals": _res.get("signals"),
+                                 "situational": _res.get("situational"),
+                                 "situational_speak": _res.get("situational_speak")}
             dbg("rain-probe:", _res.get("log"))
         except Exception as _pe:
             out["diag"]["rain_probe"] = "probe error: " + _ea_errstr(_pe)
 
+    if _rain_probe is not None:
+        try:
+            out["api_usage"] = _rain_probe.api_usage_today()
+        except Exception:
+            pass
     if rain_only:
         _ea_rain_cache[key] = {"data": out, "ts": time.time()}
     else:
@@ -4652,7 +5030,10 @@ def _ea_collect_rainfall(out, lat, lon, dist, latest):
 # around the user's location costs a single request per EA refresh and does not
 # touch the OpenWeather daily budget. Uniform coverage everywhere, so any user
 # in any area gets wind. Labelled modelled in the payload (honesty convention).
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+# Free Open-Meteo forecast host is rate-limited PER IP and shared — set OPEN_METEO_BASE
+# (e.g. a self-hosted instance: http://localhost:8080/v1) to use a private quota instead.
+OM_BASE = os.environ.get("OPEN_METEO_BASE", "https://api.open-meteo.com/v1").rstrip("/")
+OPEN_METEO_URL = OM_BASE + "/forecast"
 WIND_RING_KM = 18.0        # outer sample points ~15-20 km from home
 # 8 compass bearings for the outer ring (home is the 9th, central point).
 WIND_BEARINGS = [("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
@@ -4738,10 +5119,11 @@ def _openmeteo_cloud(lat, lon, timeout=12):
     if c and time.time() - c["ts"] < OM_CLOUD_TTL:
         return c["data"]
     try:
-        url = ("https://api.open-meteo.com/v1/forecast"
-               f"?latitude={lat}&longitude={lon}"
+        url = (OPEN_METEO_URL
+               + f"?latitude={lat}&longitude={lon}"
                "&current=cloud_cover,weather_code")
         d = fetch_json(url, timeout=timeout)
+        _meter("OM", "cloud", 1)     # count this Open-Meteo call against the shared daily budget
         cur = (d or {}).get("current") or {}
         pct = cur.get("cloud_cover")
         code = cur.get("weather_code")
@@ -4762,7 +5144,7 @@ def _openmeteo_cloud(lat, lon, timeout=12):
         return None
 
 
-def _ea_collect_wind(out, lat, lon):
+def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
     """Attach the local wind reading (home point only) from OpenWeather's Current
     Weather Data endpoint to out['wind']. Cached on its OWN 15-min TTL
     (EA_WIND_TTL, 4 fetches/hour) and its OWN daily budget (WIND_DAILY_MAX,
@@ -4774,7 +5156,7 @@ def _ea_collect_wind(out, lat, lon):
     not available here — the ring is omitted and the dials show the home point."""
     wkey = (round(lat, 2), round(lon, 2))
     cached = _ea_wind_cache.get(wkey)
-    if cached and time.time() - cached["ts"] < EA_WIND_TTL:
+    if cached and time.time() - cached["ts"] < EA_WIND_TTL * max(1.0, sampling_mult):
         out["wind"] = cached["wind"]
         return
     key = _load_weather_key()
@@ -4790,7 +5172,9 @@ def _ea_collect_wind(out, lat, lon):
         return
     try:
         data, _owm_tier, _owm_minute = _fetch_owm(lat, lon, key)
-        _wind_budget_spend(2 if (_owm_tier == "OC4" and _owm_minute is not None) else 1)
+        _wind_n = 2 if (_owm_tier == "OC4" and _owm_minute is not None) else 1
+        _wind_budget_spend(_wind_n)
+        _meter("OWM", "wind", _wind_n)
         out["_owm_minute"] = _owm_minute
         w = (data or {}).get("wind") or {}
         home = {
@@ -4979,13 +5363,15 @@ def get_ea_station(ref):
 #
 # Thresholds map to GB operational reality where possible:
 #   ±0.2 Hz  operational limit (normal working band is tighter)
-#   ±0.5 Hz  statutory limit
-#   49.5 Hz  Low Frequency Demand Disconnection schemes begin to arm/act
+#   ±0.5 Hz  statutory limit (49.5-50.5 Hz)
+#   48.8 Hz  Low Frequency Demand Disconnection (LFDD) FIRST stage arms (nine stages
+#            48.8 -> 47.8 Hz shed up to ~60% of demand). 49.5 Hz is the statutory
+#            limit, NOT a disconnection level.
 # They remain named constants so they can be tuned in one place.
 FREQ_NOMINAL = 50.0
 FREQ_OP_LIMIT = 0.20      # Hz off nominal -> outside normal operational band
-FREQ_STAT_LIMIT = 0.50    # Hz off nominal -> statutory limit
-FREQ_LFDD = 49.5          # Hz -> demand-disconnection territory
+FREQ_STAT_LIMIT = 0.50    # Hz off nominal -> statutory limit (49.5 Hz low)
+FREQ_LFDD = 48.8          # Hz -> first-stage automatic demand disconnection
 FREQ_DWELL_S = 60         # must stay outside the band this long to escalate
 # The public frequency feed is ~15s cadence, which CANNOT resolve true RoCoF
 # (the protection-relevant rate of change happens over ~0.5-2s). What we can
@@ -5058,7 +5444,7 @@ def _freq_dynamics(freq):
     the parts it can't support, which the caller treats as 'unknown, don't
     escalate on this factor'."""
     out = {"rocof_hz_s": None, "secs_outside_band": None, "age_s": None,
-           "trend": None}
+           "trend": None, "secs_outside_statutory": None, "statutory_side": None}
     pts = freq.get("trace_points") or []
     # latest-sample age
     lt = _parse_iso(freq.get("time") or "")
@@ -5098,65 +5484,105 @@ def _freq_dynamics(freq):
                     excursion_start = t
                     break
             out["secs_outside_band"] = (latest_t - excursion_start).total_seconds()
+        # statutory dwell: continuous time beyond the STATUTORY limits (49.5/50.5),
+        # measured the same way — the driver for the sustained-breach alert.
+        if not (parsed[-1][1] <= FREQ_STAT_LO or parsed[-1][1] >= FREQ_STAT_HI):
+            out["secs_outside_statutory"] = 0.0
+        else:
+            st_start = parsed[0][0]
+            for t, hz in reversed(parsed):
+                if not (hz <= FREQ_STAT_LO or hz >= FREQ_STAT_HI):
+                    st_start = t; break
+            out["secs_outside_statutory"] = (latest_t - st_start).total_seconds()
+            out["statutory_side"] = "low" if parsed[-1][1] <= FREQ_STAT_LO else "high"
     return out
 
 
 def build_alerts(snap):
     alerts = []
 
-    # ---- 1. Frequency: value + rate-of-change + dwell, from the trace -------
+    # ---- 1. Frequency + system risk — ONE evaluation (snap['system_risk']) ---
+    # The cards below, the risk-panel badge and the spoken/beep alarm all read the
+    # SAME system_risk figures (level, hz, rocof_obs, gen_loss) and thresholds, so
+    # they can never disagree the way two independent evaluators would.
     freq = snap.get("frequency")
-    if freq and freq.get("hz") is not None:
-        hz = freq["hz"]
-        dev = abs(hz - FREQ_NOMINAL)
-        dyn = _freq_dynamics(freq)
-        rocof = dyn["rocof_hz_s"]
-        dwell = dyn["secs_outside_band"]
-        age = dyn["age_s"]
-
-        # (a) feed staleness — we can't alarm on frequency we can't see
+    sr = snap.get("system_risk")
+    dyn = _freq_dynamics(freq) if (freq and freq.get("hz") is not None) else {}
+    if freq and freq.get("hz") is not None:          # feed staleness (data quality)
+        age = dyn.get("age_s")
         if age is not None and age > FREQ_STALE_S:
-            mins = int(age // 60)
             alerts.append(_a("warning", "Frequency feed stale",
-                f"No fresh frequency reading for {mins} min (last {hz:.3f} Hz). "
-                "Frequency-based alerting is running blind until the feed "
-                "recovers.", tag="DATA"))
-
-        # (b) statutory / disconnection territory — always critical
-        if hz <= FREQ_LFDD or dev >= FREQ_STAT_LIMIT:
+                f"No fresh frequency reading for {int(age//60)} min (last {freq['hz']:.3f} Hz). "
+                "Frequency-based alerting is running blind until the feed recovers.", tag="DATA"))
+    if sr and sr.get("hz") is not None:
+        hz = sr["hz"]; dev = sr.get("dev") or 0.0
+        lvl = sr.get("level") or "green"; rocof = sr.get("rocof_obs"); cgri = sr.get("cgri")
+        p = sr.get("params") or {}
+        lfdd = p.get("lfdd_hz", 48.8); stat_lo = p.get("stat_lo", 49.5); stat_hi = p.get("stat_hi", 50.5)
+        # (a) statutory / disconnection territory — always critical (hard floor).
+        # 49.5/50.5 Hz are the STATUTORY limits; automatic demand disconnection
+        # (LFDD) does not begin until 48.8 Hz — keep the two distinct.
+        if hz <= lfdd or hz <= stat_lo or hz >= stat_hi:
+            if hz >= stat_hi:
+                # Over-frequency (low demand / sudden loss of load or export). No demand
+                # disconnection; the risk is generation tripping — units must ride through
+                # to ~52 Hz, beyond which over-frequency protection sheds generation.
+                tail = (f"Over-frequency, beyond the statutory {stat_lo:.1f}–{stat_hi:.1f} Hz limit. "
+                        "Sustained high frequency risks generation tripping (units ride through to ~52 Hz).")
+            elif hz <= lfdd:
+                tail = f"At/below {lfdd:.1f} Hz automatic low-frequency demand disconnection can arm."
+            else:
+                tail = (f"Under-frequency, beyond the statutory {stat_lo:.1f}–{stat_hi:.1f} Hz limit; "
+                        f"automatic demand disconnection would begin at {lfdd:.1f} Hz.")
             alerts.append(_a("critical", "Frequency outside statutory limit",
-                f"Grid frequency {hz:.3f} Hz ({dev:.3f} Hz off nominal). "
-                "At/below 49.5 Hz automatic demand disconnection can arm. "
-                "This is a severe supply/demand imbalance.", tag="FREQ"))
-        # (c) sustained excursion outside the operational band
-        elif dev >= FREQ_OP_LIMIT and (dwell is None or dwell >= FREQ_DWELL_S):
-            held = f" held ~{int(dwell)}s" if dwell else ""
-            alerts.append(_a("warning", "Sustained frequency excursion",
-                f"Grid frequency {hz:.3f} Hz, {dev:.3f} Hz off nominal{held} — "
-                "outside the normal operational band.", tag="FREQ"))
-        # (d) brief excursion — note only, likely a transient being corrected
-        elif dev >= FREQ_OP_LIMIT:
-            alerts.append(_a("notice", "Brief frequency excursion",
-                f"Grid frequency {hz:.3f} Hz, {dev:.3f} Hz off nominal — brief, "
-                "likely a transient under correction.", tag="FREQ"))
-
-        # (e) sustained slew — a persistent trend across samples. NOT true
-        # RoCoF (the 15s feed can't resolve that); this catches a frequency
-        # walking steadily away from nominal, which is worth flagging even when
-        # the current value is still inside the band.
-        if rocof is not None:
-            a_ro = abs(rocof)
-            arrow = "falling" if rocof < 0 else "rising"
+                f"Grid frequency {hz:.3f} Hz ({dev:.3f} Hz off nominal). " + tail, tag="FREQ"))
+            # SUSTAINED statutory breach — distinct from the instantaneous crossing
+            # above. Once frequency has stayed beyond a statutory limit continuously
+            # for >= FREQ_DWELL_S (60 s), raise a persisting critical alert. The TITLE
+            # is stable so the alert history records ONE episode (raised -> cleared with
+            # its duration); the elapsed time lives in the detail and updates each cycle.
+            sod = dyn.get("secs_outside_statutory")
+            if sod and sod >= FREQ_DWELL_S:
+                side = dyn.get("statutory_side") or ("low" if hz <= stat_lo else "high")
+                m, s = int(sod // 60), int(sod % 60)
+                dur = (f"{m}m {s:02d}s" if m else f"{s}s")
+                edge = f"below {stat_lo:.1f}" if side == "low" else f"above {stat_hi:.1f}"
+                cons = ("nearing automatic low-frequency demand disconnection (from 48.8 Hz)."
+                        if side == "low" else "with rising risk of over-frequency generation tripping.")
+                alerts.append(_a("critical", "Sustained statutory frequency breach",
+                    f"Grid frequency has stayed {edge} Hz for {dur} (now {hz:.3f} Hz) — {cons}", tag="FREQ"))
+        # (b) composite risk — the inertia-weighted CGRI level, so a small drift on a
+        #     low-inertia grid escalates while noise on a stiff grid stays quiet. This is
+        #     the SYSTEM-RISK alert (tag RISK), kept separate from the frequency-limit
+        #     alert above — on the dashboard it pips + banners rather than sounding tones.
+        elif lvl == "red":
+            alerts.append(_a("critical", "Elevated system risk",
+                f"Composite grid risk high (CGRI {cgri}); {hz:.3f} Hz with low system inertia "
+                f"({sr.get('inertia_gws')} GW·s, notional post-fault RoCoF {sr.get('notional_rocof')} Hz/s). "
+                "A large trip now would pull frequency down fast.", tag="RISK"))
+        elif lvl == "amber":
+            reason = "system inertia reduced" if sr.get("inertia_band") in ("amber", "red") \
+                     else "outside the normal operational band"
+            alerts.append(_a("warning", "System risk elevated",
+                f"Grid frequency {hz:.3f} Hz, {dev:.3f} Hz off nominal — {reason} (CGRI {cgri}).", tag="RISK"))
+        # (c) slew note — from the SAME rocof_obs the panel shows
+        if rocof is not None and lvl != "red" and not (hz <= stat_lo or hz >= stat_hi):
+            a_ro = abs(rocof); arrow = "falling" if rocof < 0 else "rising"
             if a_ro >= SLEW_ALERT:
                 alerts.append(_a("warning", "Frequency slewing",
-                    f"Frequency has been {arrow} steadily (~{rocof*60:+.2f} Hz/min "
-                    "trend over the last ~30s of samples). Note: the public feed "
-                    "is 15s cadence, so this is a trend, not protection-grade "
-                    "RoCoF.", tag="SLEW"))
+                    f"Frequency has been {arrow} steadily (~{rocof*60:+.2f} Hz/min over ~90s). "
+                    "The 15s public feed gives a trend, not protection-grade RoCoF.", tag="SLEW"))
             elif a_ro >= SLEW_WARN:
                 alerts.append(_a("notice", "Frequency drifting",
-                    f"Frequency is {arrow} gently (~{rocof*60:+.2f} Hz/min trend). "
+                    f"Frequency is {arrow} gently (~{rocof*60:+.2f} Hz/min). "
                     "Watch for a developing imbalance.", tag="SLEW"))
+        # (d) sudden infeed loss — from the SAME detector the panel flashes
+        gl = sr.get("gen_loss")
+        if gl and gl.get("flagged"):
+            src = f" ({gl.get('worst_fuel')})" if gl.get("worst_fuel") else ""
+            alerts.append(_a("critical" if gl.get("severe") else "warning", "Sudden infeed loss",
+                f"Infeed dropped {gl.get('d_infeed_mw')} MW in ~{int((gl.get('interval_s') or 0)/60)} min{src} — "
+                "a generator or interconnector may have tripped.", tag="RISK"))
 
     # ---- 2. Reserve vs largest infeed (N-1 security), coupled to frequency --
     r = snap.get("reserve")
@@ -5508,6 +5934,494 @@ SNAP_POOL_WORKERS = 8
 _snap_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=SNAP_POOL_WORKERS, thread_name_prefix="snap")
 
+def _hist_iso_epoch(sv):
+    if not sv:
+        return None
+    try:
+        return datetime.fromisoformat(str(sv).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+ARCHIVE_DIR = LOG_DIR / "archive"      # permanent weekly files, one per Sun-Sat week (never pruned)
+
+def _read_mix_rows(path, since=None):
+    """Read mix (k='m') rows from a JSONL log/archive file as (epoch, dict). Never raises."""
+    rows = []
+    try:
+        for line in Path(path).read_text().splitlines():
+            if '"k":"m"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("k") != "m":
+                continue
+            ep = _hist_iso_epoch(r.get("t"))
+            if ep is None or (since is not None and ep <= since):
+                continue
+            rows.append((ep, r))
+    except Exception:
+        pass
+    return rows
+
+def _read_freq_rows(path, lo=None, hi=None):
+    """Read frequency (k='f') rows from a daily log file as (epoch, hz) within
+    [lo, hi] (epochs). 15-second cadence. Never raises."""
+    rows = []
+    try:
+        for line in Path(path).read_text().splitlines():
+            if '"k":"f"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("k") != "f" or r.get("hz") is None:
+                continue
+            ep = _hist_iso_epoch(r.get("t"))
+            if ep is None or (lo is not None and ep < lo) or (hi is not None and ep > hi):
+                continue
+            rows.append((ep, r["hz"]))
+    except Exception:
+        pass
+    return rows
+
+def get_freq_history(days=30, buckets=8000):
+    """Historical grid frequency from the rolling 15-second data log, down-sampled to
+    a MIN/MAX/MEAN envelope so a whole month can be sent compactly and a brief
+    excursion is never lost. Returns t0 + bucket_s + per-bucket arrays (null where no
+    data). Read-only; never raises. Times UTC; history limited to the log retention."""
+    try:
+        days = max(1, min(int(days), LOG_RETENTION_DAYS))
+    except Exception:
+        days = 30
+    try:
+        buckets = max(500, min(int(buckets), 20000))
+    except Exception:
+        buckets = 8000
+    now = time.time()
+    lo, hi = now - days * 86400, now
+    src = []
+    for k in range(days + 1):
+        d = datetime.fromtimestamp(hi - k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+        src += _read_freq_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"), lo, hi)
+    if not src:
+        return {"t0": None, "bucket_s": 0, "n": 0, "mn": [], "mx": [], "mean": [],
+                "days": days, "generated": datetime.now(timezone.utc).isoformat()}
+    src.sort(key=lambda x: x[0])
+    t_lo, t_hi = src[0][0], src[-1][0]
+    span = max(1.0, t_hi - t_lo)
+    # bucket seconds, snapped up to a 15s multiple (the native cadence)
+    bucket_s = max(15, int(math.ceil((span / buckets) / 15.0)) * 15)
+    t0 = int(t_lo // bucket_s) * bucket_s
+    nb = int((t_hi - t0) // bucket_s) + 1
+    mn = [None] * nb; mx = [None] * nb; sm = [0.0] * nb; cn = [0] * nb
+    for ep, hz in src:
+        i = int((ep - t0) // bucket_s)
+        if i < 0 or i >= nb:
+            continue
+        if mn[i] is None or hz < mn[i]: mn[i] = hz
+        if mx[i] is None or hz > mx[i]: mx[i] = hz
+        sm[i] += hz; cn[i] += 1
+    mean = [round(sm[i] / cn[i], 3) if cn[i] else None for i in range(nb)]
+    mn = [round(v, 3) if v is not None else None for v in mn]
+    mx = [round(v, 3) if v is not None else None for v in mx]
+    return {"t0": t0, "bucket_s": bucket_s, "n": nb, "mn": mn, "mx": mx, "mean": mean,
+            "days": days, "points": len(src),
+            "from": datetime.fromtimestamp(t_lo, tz=timezone.utc).isoformat(),
+            "to": datetime.fromtimestamp(t_hi, tz=timezone.utc).isoformat(),
+            "generated": datetime.now(timezone.utc).isoformat()}
+
+CAPTURE_DIR = Path(__file__).with_name("captures")   # user-saved plot images
+def _save_capture(name, dataurl):
+    """Write a base64 data-URL image (from a client 'save PNG') into ./captures/.
+    Sanitises the filename; caps the size. Returns a small status dict; never raises."""
+    try:
+        if not isinstance(dataurl, str) or not dataurl:
+            return {"ok": False, "error": "no image data"}
+        m = re.match(r'data:image/(png|jpeg);base64,(.*)$', dataurl, re.S)
+        if not m:
+            return {"ok": False, "error": "unsupported image data"}
+        ext = "png" if m.group(1) == "png" else "jpg"
+        raw = base64.b64decode(m.group(2))
+        if len(raw) > 25 * 1024 * 1024:
+            return {"ok": False, "error": "image too large"}
+        safe = re.sub(r'[^0-9A-Za-z_.\-]', '', str(name or ""))
+        if not safe or not safe.lower().endswith("." + ext):
+            safe = "capture-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ") + "." + ext
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CAPTURE_DIR / safe, "wb") as fh:
+            fh.write(raw)
+        return {"ok": True, "file": safe, "bytes": len(raw)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+def get_freq_tail(since):
+    """Raw 15-second frequency points logged AFTER `since` (epoch). Small and cheap —
+    reads only today's and yesterday's daily files — so the open history plot can be
+    kept live without re-pulling the whole envelope. Returns [[epoch,hz],...]."""
+    try:
+        since = float(since)
+    except Exception:
+        return {"points": [], "now": time.time()}
+    now = time.time()
+    pts = []
+    for k in (1, 0):
+        d = datetime.fromtimestamp(now - k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+        for ep, hz in _read_freq_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"), since + 1e-6, now):
+            pts.append([round(ep, 1), hz])
+    pts.sort()
+    return {"points": pts, "now": now}
+
+def _week_start_from_arg(week=None, archive=None):
+    """Resolve a `week=YYYY-MM-DD` (any day in the week) or an archive filename
+    (YYYY-MM-DD-gen) to that week's Sunday-00:00-UTC epoch. None if unparseable."""
+    s = None
+    if week:
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', str(week))
+        if m: s = m
+    elif archive:
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})', re.sub(r'[^0-9A-Za-z_.\-]', '', str(archive)))
+        if m: s = m
+    if not s:
+        return None
+    try:
+        base = datetime(int(s.group(1)), int(s.group(2)), int(s.group(3)), tzinfo=timezone.utc).timestamp()
+        return _week_start_utc(base)          # snap to that week's Sunday
+    except Exception:
+        return None
+
+def get_gen_history(days=7, bucket_min=30, archive=None, week=None):
+    """Generation mix bucketed to `bucket_min` and ZERO-FILLED where data is missing.
+    Two modes, both UTC:
+      * Rolling (default): last `days` UTC days from the daily logs — the two live plots.
+      * Fixed week (`week=` any day in it, or `archive=` a file): ALWAYS a full
+        Sunday->Saturday window of exactly 7 days (336 half-hour buckets). The plot is
+        never stretched — all 7 days are present with gaps zero-filled, and a
+        current/partial week simply fills left-to-right. Reads that week's permanent
+        archive file if present, else the daily logs (so a not-yet-archived recent week
+        still shows). Returns per-fuel MW arrays aligned to one axis (+ total, demand,
+        CGRI). Read-only; never raises."""
+    week_start = _week_start_from_arg(week=week, archive=archive) if (week or archive) else None
+    if week_start is not None:
+        bucket_min = 30
+        bucket_s = bucket_min * 60
+        t0 = int(week_start // bucket_s) * bucket_s        # Sunday 00:00 UTC
+        nb = 7 * 24 * 60 // bucket_min                      # 336 fixed buckets, Sun->Sat
+        week_end = t0 + 7 * 86400
+        wk_iso = datetime.fromtimestamp(t0, tz=timezone.utc).strftime("%Y-%m-%d")
+        # MERGE the self-logged daily logs with the week's archive file, LIVE first:
+        # BMRS/archive rows only fill 30-min buckets the live log doesn't already cover,
+        # so a partially-logged week (incl. the current one) can carry gap-fill without
+        # ever overwriting real self-logged readings.
+        pf = ARCHIVE_DIR / (wk_iso + "-gen.jsonl")
+        live = []
+        for k in range(8):                                  # 7 days + boundary day
+            d = datetime.fromtimestamp(t0 + k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+            live += _read_mix_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"))
+        live = [(ep, r) for ep, r in live if t0 <= ep < week_end]
+        live_buckets = set(int((ep - t0) // bucket_s) for ep, _ in live)
+        arch = [(ep, r) for ep, r in (_read_mix_rows(pf) if pf.exists() else [])
+                if t0 <= ep < week_end]
+        arch_fill = [(ep, r) for ep, r in arch
+                     if int((ep - t0) // bucket_s) not in live_buckets]
+        arch_bmrs_used = any((r.get("src") == "bmrs") for _, r in arch_fill)
+        src = live + arch_fill
+        if live and arch_bmrs_used:   source = "mixed"       # self-logged + BMRS gap-fill
+        elif live:                    source = "live"
+        elif arch:                    source = "bmrs" if any(r.get("src") == "bmrs" for _, r in arch) else "archive"
+        else:                         source = "live"
+    else:
+        try:
+            days = max(1, min(int(days), 30))
+        except Exception:
+            days = 7
+        bucket_s = bucket_min * 60
+        now = time.time()
+        nb = int(days * 24 * 60 // bucket_min)
+        t0 = (int(now // bucket_s) - (nb - 1)) * bucket_s
+        src = []
+        for k in range(days + 1):
+            d = datetime.fromtimestamp(now - k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+            src += _read_mix_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"))
+        source = "rolling"; week_start = None; wk_iso = None
+    nb = max(1, nb)
+    per = {}; cnt = [0]*nb; tot = [0.0]*nb
+    dsum = [0.0]*nb; dcnt = [0]*nb; csum = [0.0]*nb; ccnt = [0]*nb; seen = set()
+    for ep, r in src:
+        i = int((ep - t0) // bucket_s)
+        if i < 0 or i >= nb:
+            continue
+        for code, mw in (r.get("gen") or {}).items():
+            seen.add(code); per.setdefault(code, [0.0]*nb)[i] += (mw or 0)
+        cnt[i] += 1; tot[i] += (r.get("total_mw") or 0)
+        _d = (r.get("demand") or {}).get("national_mw")
+        if _d is not None: dsum[i] += _d; dcnt[i] += 1
+        _c = (r.get("risk") or {}).get("cgri")
+        if _c is not None: csum[i] += _c; ccnt[i] += 1
+    def _avg(a, c, i): return round(a[i] / c[i]) if c[i] else 0
+    axis = [datetime.fromtimestamp(t0 + i * bucket_s, tz=timezone.utc).isoformat() for i in range(nb)]
+    fuels = []
+    for code in seen:
+        arr = per.get(code, [0.0]*nb)
+        mw = [_avg(arr, cnt, i) for i in range(nb)]
+        name, cat, colour = FUEL_META.get(code, (code.title(), "other", "#9aa0aa"))
+        fuels.append({"code": code, "name": name, "category": cat, "colour": colour,
+                      "mw": mw, "_mean": (sum(mw)/nb if nb else 0)})
+    fuels.sort(key=lambda fu: fu["_mean"], reverse=True)
+    for fu in fuels: fu.pop("_mean", None)
+    has_data = any(cnt)
+    out = {"days": (7 if week_start is not None else days),
+           "bucket_min": bucket_min, "n": nb, "t": axis, "fuels": fuels, "archive": archive,
+           "total": [_avg(tot, cnt, i) for i in range(nb)],
+           "demand": [round(dsum[i]/dcnt[i]) if dcnt[i] else 0 for i in range(nb)],
+           "cgri": [round(csum[i]/ccnt[i], 3) if ccnt[i] else 0 for i in range(nb)],
+           "source": source, "has_data": has_data,
+           "generated": datetime.now(timezone.utc).isoformat()}
+    if week_start is not None:
+        MO = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        st = datetime.fromtimestamp(t0, tz=timezone.utc)
+        en = st + timedelta(days=6)
+        out["week"] = wk_iso
+        out["week_start"] = st.isoformat()
+        out["prev_week"] = (st - timedelta(days=7)).strftime("%Y-%m-%d")
+        out["next_week"] = (st + timedelta(days=7)).strftime("%Y-%m-%d")
+        out["label"] = f"{st.day} {MO[st.month]} – {en.day} {MO[en.month]} {en.year}"
+        # this-week flag lets the client label the in-progress week and cap 'next'
+        now_ep = time.time()
+        out["is_current"] = (t0 <= now_ep < t0 + 7 * 86400)
+        # A "past bucket" is one that has already elapsed; BMRS can only fill those.
+        past_n = max(0, min(nb, int((min(week_end, now_ep) - t0) // bucket_s)))
+        out["fillable"] = (t0 < now_ep) and any(cnt[i] == 0 for i in range(past_n))
+        out["has_bmrs"] = source in ("bmrs", "mixed")
+        # kept for compatibility: an entirely-empty PAST week
+        out["backfillable"] = (not has_data) and (t0 < _week_start_utc(now_ep))
+    return out
+
+
+# ---- permanent weekly archive (Sunday 00:00 UTC, catch-up on next start) ----
+def _archive_marker():
+    try:
+        return float(json.loads((ARCHIVE_DIR / ".gen_archive.json").read_text()).get("last_ts", 0.0))
+    except Exception:
+        return 0.0
+
+def _set_archive_marker(ts):
+    try:
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_DIR / ".gen_archive.json").write_text(json.dumps({"last_ts": ts}))
+    except Exception:
+        pass
+
+def _week_start_utc(now):
+    """Epoch of the most recent Sunday 00:00 UTC at or before `now`.
+    Weeks run Sunday 00:00 -> Saturday 23:59:59 UTC (the user's 'Saturday night'
+    cutover). Python weekday(): Mon=0..Sun=6, so Sunday is 6."""
+    dt = datetime.fromtimestamp(now, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    back = (dt.weekday() + 1) % 7          # days since the week's Sunday
+    return (dt - timedelta(days=back)).timestamp()
+
+_archive_lock = threading.Lock()
+def maybe_run_weekly_archive(force=False):
+    """Roll each week's generation data into a permanent per-week archive file
+    (logs/archive/YYYY-MM-DD-gen.jsonl, where YYYY-MM-DD is that week's Sunday).
+    Fires once a Sunday-00:00-UTC boundary has passed since the last run — so a run
+    missed because the server was off simply happens on the next start after that time.
+    Monotonic marker -> idempotent (no double-archiving). Cheap when not due."""
+    now = time.time()
+    with _archive_lock:
+        marker = _archive_marker()
+        if not force and marker >= _week_start_utc(now):
+            return
+        try:
+            span_days = min(45, int((now - marker) / 86400) + 2) if marker else 40
+            by_week = {}
+            for k in range(span_days + 1):
+                d = datetime.fromtimestamp(now - k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+                for ep, r in _read_mix_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"), since=marker):
+                    if ep > now:            # never archive past 'now' (keeps the marker exact)
+                        continue
+                    # file each reading into its calendar week (starting Sunday 00:00 UT)
+                    wk = datetime.fromtimestamp(_week_start_utc(ep), tz=timezone.utc).strftime("%Y-%m-%d")
+                    by_week.setdefault(wk, []).append((ep, r))
+            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            n = 0
+            for wk, items in by_week.items():
+                items.sort(key=lambda x: x[0])
+                with open(ARCHIVE_DIR / (wk + "-gen.jsonl"), "a", encoding="utf-8") as fh:
+                    for ep, r in items:
+                        fh.write(json.dumps(r, separators=(",", ":")) + "\n"); n += 1
+            _set_archive_marker(now)
+            dbg("weekly gen archive:", n, "mix rows ->", len(by_week), "weekly file(s)")
+        except Exception as e:
+            dbg("weekly archive failed:", e)
+
+def get_gen_archives():
+    """List the permanent archive files (name + month label + size). Never raises."""
+    out = []
+    try:
+        for p in sorted(ARCHIVE_DIR.glob("*-gen.jsonl")):
+            name = p.name[:-6]                 # strip .jsonl
+            m = re.match(r'(\d{4})-(\d{2})-(\d{2})-gen$', name)
+            label = name
+            if m:
+                try:
+                    MO = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                    st = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+                    en = st + timedelta(days=6)
+                    label = f"{st.day} {MO[st.month]} \u2013 {en.day} {MO[en.month]}"
+                except Exception:
+                    pass
+            src = ""
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    first = fh.readline()
+                if first and '"src":"bmrs"' in first:
+                    src = "bmrs"
+            except Exception:
+                pass
+            out.append({"file": name, "label": label, "bytes": p.stat().st_size, "src": src})
+    except Exception:
+        pass
+    return {"archives": out}
+
+
+# ---- BMRS gap-fill: backfill one missing week from Elexon FUELINST -----------
+# Elexon's Insights FUELINST dataset carries 5-minute generation-by-fuel-type
+# (keyless, free) back to at least 2017-01-01 UTC, so any past week the local
+# logger missed can be reconstructed. This is pulled ONLY on explicit user
+# request (selecting a missing week), never automatically. Backfilled rows are
+# tagged src="bmrs" so the archive/plot can label them as externally sourced
+# (honesty over plausibility). Interconnectors and PS are carried through as-is.
+# FUELINST carries no embedded solar (it is unmetered), so — exactly as the live
+# panel does — embedded SOLAR is added from Sheffield PVLive's historical series
+# as a modelled estimate. Grid-scale BATTERY has no historical feed here, so that
+# one band is genuinely absent for reconstructed weeks rather than shown as zero.
+BMRS_FUELINST_URL = "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELINST"
+_backfill_lock = threading.Lock()
+
+def _bmrs_fetch_day(day_iso):
+    """Fetch one UTC day of FUELINST. Returns list of records or [] on failure."""
+    url = (BMRS_FUELINST_URL + "?format=json"
+           + "&publishDateTimeFrom=" + day_iso + "T00:00Z"
+           + "&publishDateTimeTo=" + day_iso + "T23:59Z")
+    try:
+        j = fetch_json(url, timeout=40)
+        return (j or {}).get("data", []) or []
+    except Exception as e:
+        dbg("bmrs fetch failed", day_iso, e)
+        return []
+
+def _pvlive_solar_week(ws):
+    """Historical embedded-solar estimate (MW) for the Sun->Sat week starting at
+    epoch `ws`, from Sheffield PVLive (GSP 0, national). Returns a dict keyed by
+    30-minute bucket-START epoch. PVLive stamps each value with its period-ENDING
+    half hour, so shift back 30 min to align with FUELINST's start-of-interval
+    convention. Never raises — returns {} on any failure (solar simply omitted)."""
+    out = {}
+    try:
+        start = datetime.fromtimestamp(ws, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        end = datetime.fromtimestamp(ws + 7 * 86400, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        j = fetch_json(SOLAR_URL + "?start=" + start + "&end=" + end, timeout=45)
+        for row in (j or {}).get("data", []) or []:
+            # row: [gsp_id, datetime_gmt, generation_mw]
+            ep = _hist_iso_epoch(row[1])
+            if ep is None or row[2] is None:
+                continue
+            bstart = int((ep - 1800) // 1800) * 1800     # period-ending -> start bucket
+            out[bstart] = row[2]
+    except Exception as e:
+        dbg("pvlive backfill fetch failed", e)
+    return out
+
+def bmrs_backfill_week(week=None, force=False):
+    """Fill a Sunday->Saturday week's generation archive from Elexon FUELINST
+    (+ PVLive solar). `week` is any date in the target week (YYYY-MM-DD).
+
+    GAP-FILL (default): only the 30-minute buckets that are ALREADY ELAPSED and
+    not already covered by self-logged data OR a prior fill are added, appended to
+    logs/archive/<sunday>-gen.jsonl and tagged src=bmrs. Self-logged rows are never
+    touched, and the not-yet-elapsed part of the current week is left alone — so the
+    current, in-progress week can have its earlier gaps filled safely.
+
+    RE-PULL (`force=True`): rebuilds the whole week, but ONLY when the existing file
+    is entirely a prior BMRS pull (no self-logged rows) and the week is not the
+    current one. Refuses a future week. Returns a status dict."""
+    ws = _week_start_from_arg(week=week)
+    if ws is None:
+        return {"ok": False, "error": "bad week"}
+    now = time.time()
+    cur_ws = _week_start_utc(now)
+    if ws > cur_ws:
+        return {"ok": False, "error": "cannot backfill a future week"}
+    is_current = (ws == cur_ws)
+    week_end = ws + 7 * 86400
+    fill_to = min(week_end, now)                       # never fetch/fill the future
+    wk_iso = datetime.fromtimestamp(ws, tz=timezone.utc).strftime("%Y-%m-%d")
+    pf = ARCHIVE_DIR / (wk_iso + "-gen.jsonl")
+    _bkt = lambda ep: int((ep - ws) // 1800)
+    with _backfill_lock:
+        # What we already have: self-logged daily rows + any existing archive rows.
+        live_buckets = set()
+        for k in range(8):
+            d = datetime.fromtimestamp(ws + k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+            for ep, _ in _read_mix_rows(LOG_DIR / ("grid_log-" + d + ".jsonl")):
+                if ws <= ep < week_end:
+                    live_buckets.add(_bkt(ep))
+        arch_rows = [(ep, r) for ep, r in (_read_mix_rows(pf) if pf.exists() else [])
+                     if ws <= ep < week_end]
+        arch_all_bmrs = bool(arch_rows) and all(r.get("src") == "bmrs" for _, r in arch_rows)
+        # Re-pull only a pure-BMRS, non-current week; otherwise gap-fill (append).
+        replace = bool(force and arch_all_bmrs and not live_buckets and not is_current)
+        covered = set(live_buckets)
+        if not replace:
+            covered |= {_bkt(ep) for ep, _ in arch_rows}
+        # Pull BMRS only for elapsed, uncovered buckets.
+        by_ts = {}
+        for k in range(7):
+            day_start = ws + k * 86400
+            if day_start >= fill_to:
+                break                                  # this day hasn't happened yet
+            day_iso = datetime.fromtimestamp(day_start, tz=timezone.utc).strftime("%Y-%m-%d")
+            for rec in _bmrs_fetch_day(day_iso):
+                code = rec.get("fuelType"); st = rec.get("startTime")
+                if not code or not st:
+                    continue
+                ep = _hist_iso_epoch(st)
+                if ep is None or not (ws <= ep < fill_to) or _bkt(ep) in covered:
+                    continue
+                by_ts.setdefault(ep, {})[code] = rec.get("generation") or 0
+        if not by_ts:
+            return {"ok": True, "week": wk_iso, "rows": 0,
+                    "skipped": ("nothing to fill" if (live_buckets or arch_rows) else "no BMRS data"),
+                    "repullable": arch_all_bmrs and not is_current,
+                    "source": ("bmrs" if arch_all_bmrs else ("mixed" if arch_rows else "live"))}
+        solar_by_bucket = _pvlive_solar_week(ws)
+        solar_rows = 0
+        rows = []
+        for ep in sorted(by_ts):
+            gen = by_ts[ep]
+            sol = solar_by_bucket.get(int(ep // 1800) * 1800)
+            if sol is not None:
+                gen["SOLAR"] = round(sol); solar_rows += 1
+            total = sum(v for c, v in gen.items()
+                        if not c.startswith("INT") and isinstance(v, (int, float)) and v > 0)
+            rows.append((ep, {"t": datetime.fromtimestamp(ep, tz=timezone.utc).isoformat(),
+                              "k": "m", "src": "bmrs", "gen": gen, "total_mw": round(total)}))
+        try:
+            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(pf, "w" if replace else "a", encoding="utf-8") as fh:
+                for _, r in rows:
+                    fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        except Exception as e:
+            return {"ok": False, "week": wk_iso, "error": f"write failed: {e}"}
+        mode = "replace" if replace else "gap-fill"
+        dbg("bmrs", mode, wk_iso, len(rows), "rows", solar_rows, "with solar")
+        return {"ok": True, "week": wk_iso, "rows": len(rows), "mode": mode,
+                "solar_rows": solar_rows, "source": "bmrs"}
+
+
 SNAP_SOURCES = [
     ("generation", "get_generation"), ("frequency", "get_frequency"),
     ("demand", "get_demand"), ("margin", "get_margin"),
@@ -5519,6 +6433,7 @@ SNAP_SOURCES = [
 
 
 def build_snapshot():
+    maybe_run_weekly_archive()          # weekly permanent archive; fires on the next cycle after a missed Saturday
     snap = {"generated": datetime.now(timezone.utc).isoformat(),
             "backend_version": "2026-08-07a",   # bump when adding data fields
             "server_build": SERVER_BUILD,       # shown in the dashboard footer
@@ -5713,6 +6628,19 @@ def build_snapshot():
     hist = _log_margin_history(m)
     if m is not None:
         m["history"] = [{"time": t, "margin_mw": v} for t, v in hist]
+    # System risk: inertia proxy + CGRI + sudden-generation-loss detector, from the
+    # now-complete fuel list and the frequency (with its derived RoCoF).
+    try:
+        _gl = _update_gen_history(snap.get("generation"), time.time())
+        snap["system_risk"] = compute_system_risk(snap.get("generation"),
+                                                  snap.get("frequency"), _gl)
+    except Exception as e:
+        snap["system_risk"] = None
+        snap["errors"].append("system_risk: " + str(e))
+    try:
+        log_mix(snap)
+    except Exception as e:
+        snap["errors"].append("data_log: " + str(e))
     snap["alerts"] = build_alerts(snap)
     _log_alerts(snap["alerts"])
     snap["alert_level"] = ("critical" if any(a["level"] == "critical" for a in snap["alerts"])
@@ -5723,6 +6651,7 @@ def build_snapshot():
 
 # ---- HTTP server ------------------------------------------------------------
 HTML_PATH = Path(__file__).with_name("grid_dashboard.html")
+ENGINE_PATH = Path(__file__).with_name("engine_view_live.html")
 _cache = {"snap": None, "ts": 0}
 CACHE_TTL = 55  # seconds
 
@@ -5790,6 +6719,23 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 _save_octopus_cfg(cfg)
                 self._send_json({"ok": True})
+            elif self.path.startswith("/api/forecast_window"):
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                saved = _save_forecast_window(payload)
+                self._send_json({"ok": True, "config": saved})
+            elif self.path.startswith("/api/save-capture"):
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                self._send_json(_save_capture(payload.get("name"), payload.get("data")))
             else:
                 self.send_error(404)
         except (ConnectionError, BrokenPipeError):
@@ -5806,6 +6752,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/weather-key"):
             # Status only — never returns the key itself, just whether one is set.
             self._send_json({"has_key": bool(_load_weather_key())})
+        elif self.path.startswith("/api/forecast_window"):
+            self._send_json(_load_forecast_window())
         elif self.path.startswith("/api/octopus-carpet"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -5883,6 +6831,42 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}",
                                  "series": {}}, 500)
+        elif self.path.startswith("/api/gen-archives"):
+            try:
+                self._send_json(get_gen_archives())
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "archives": []}, 500)
+        elif self.path.startswith("/api/gen-backfill"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                wk = qs.get("week", [None])[0]
+                force = qs.get("force", ["0"])[0] in ("1", "true", "yes")
+                self._send_json(bmrs_backfill_week(week=wk, force=force))
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/gen-history"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                days = qs.get("days", ["7"])[0]
+                arch = qs.get("archive", [None])[0]
+                wk = qs.get("week", [None])[0]
+                self._send_json(get_gen_history(days=int(days) if days else 7,
+                                                archive=arch, week=wk))
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "fuels": [], "t": []}, 500)
+        elif self.path.startswith("/api/freq-tail"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send_json(get_freq_tail(qs.get("since", ["0"])[0]))
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "points": []}, 500)
+        elif self.path.startswith("/api/freq-history"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                days = qs.get("days", ["30"])[0]
+                self._send_json(get_freq_history(days=int(days) if days else 30))
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "mn": [], "mx": [], "mean": []}, 500)
         elif self.path.startswith("/api/ea-floods"):
             try:
                 self._send_json(get_ea_floods())
@@ -5896,11 +6880,13 @@ class Handler(BaseHTTPRequestHandler):
                 lon = qs.get("lon", [None])[0]
                 dist = qs.get("dist", [None])[0]
                 rain_only = qs.get("rain", ["0"])[0] in ("1", "true", "yes")
+                cad = 2.0 if qs.get("cadence", ["normal"])[0] == "low" else 1.0
+                smult = _forecast_sampling_mult()
                 self._send_json(get_ea(
                     float(lat) if lat else None,
                     float(lon) if lon else None,
                     float(dist) if dist else None,
-                    rain_only=rain_only))
+                    rain_only=rain_only, cadence_mult=cad, sampling_mult=smult))
             except Exception as e:
                 # get_ea is internally resilient (returns partial data with a
                 # soft 'error' field); this outer guard only trips on a total
@@ -5954,6 +6940,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             else:
                 self.send_error(404, "grid_dashboard.html not found next to server")
+        elif self.path in ("/engine", "/engine_view_live.html"):
+            if ENGINE_PATH.exists():
+                body = ENGINE_PATH.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(404, "engine_view_live.html not found next to server")
         else:
             self.send_error(404)
 

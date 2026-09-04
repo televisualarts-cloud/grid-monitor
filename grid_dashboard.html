@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260827.19  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260904.9  (version = YYMMDD.N in UT; bump on every change to this file)
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -242,10 +242,39 @@
   .delta.up{color:var(--ok)}.delta.down{color:var(--crit)}
 
   /* frequency heartbeat */
-  .freq-top{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
-  .freq-metric{flex:1 1 auto;min-width:0}
-  .freq-dial-wrap{display:flex;align-items:center;gap:14px;flex:none}
-  #freqDial{flex:none}
+  .freq-top{display:flex;align-items:center;gap:12px;flex-wrap:nowrap}
+  .freq-risk{flex:0 1 auto;margin-left:auto;min-width:210px;max-width:250px;
+    border:1px solid var(--line);border-radius:10px;padding:13px 15px;background:rgba(255,255,255,.02)}
+  .freq-risk .fr-head{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:7px}
+  .freq-risk .fr-badge{font-family:var(--mono);font-weight:700;font-size:17px;letter-spacing:.03em;padding:3px 10px;border-radius:5px;display:inline-block;margin-bottom:10px;color:#08131c}
+  .freq-risk .fr-badge.green{background:var(--ok,#39d98a)}
+  .freq-risk .fr-badge.amber{background:var(--warn,#f5b942)}
+  .freq-risk .fr-badge.red{background:var(--crit,#ff5c6c)}
+  .freq-risk .fr-badge.unknown{background:var(--ink-faint);color:#08131c}
+  /* Severity colouring: BACKGROUND carries the live level; BORDER holds the highest
+     level for 10 min after a clearance/change (applied by JS). Tints kept subtle so
+     text stays legible on the dark theme. */
+  .sev-bg-green{background:linear-gradient(180deg,rgba(57,217,138,.06),rgba(57,217,138,.03))!important}
+  .sev-bg-amber{background:linear-gradient(180deg,rgba(245,185,66,.12),rgba(245,185,66,.05))!important}
+  .sev-bg-red{background:linear-gradient(180deg,rgba(255,92,108,.15),rgba(255,92,108,.06))!important}
+  .sev-bd-green{border-color:var(--ok)!important}
+  .sev-bd-amber{border-color:var(--warn)!important}
+  .sev-bd-red{border-color:var(--crit)!important}
+  .freq-risk.sev-bd-green,.freq-risk.sev-bd-amber,.freq-risk.sev-bd-red{border-width:1px}
+  #freqCard.sev-bd-amber,#freqCard.sev-bd-red{border-width:1.5px}
+  .freq-risk .fr-rows{display:flex;flex-direction:column;gap:5px;font-family:var(--mono);font-size:12px}
+  .freq-risk .fr-rows>div{display:flex;justify-content:space-between;gap:8px}
+  .freq-risk .fr-k{color:var(--ink-faint);white-space:nowrap} .freq-risk .fr-v{color:var(--ink);white-space:nowrap}
+  .freq-risk .fr-rows>div[title]{cursor:help}
+  .freq-risk .fr-genloss{margin-top:10px;font-family:var(--mono);font-size:12px;font-weight:600;color:#ff8892;
+    background:rgba(255,92,108,.12);border:1px solid rgba(255,92,108,.5);border-radius:6px;padding:4px 7px}
+  @keyframes frFlash{0%,100%{opacity:1}50%{opacity:.4}}
+  .freq-risk .fr-genloss.flash{animation:frFlash 1s ease-in-out infinite}
+  .freq-metric{flex:0 0 auto;min-width:0}
+  .freq-metric .val{font-size:30px}
+  .freq-metric .metric{gap:6px}
+  .freq-dial-wrap{display:flex;align-items:center;gap:8px;flex:none}
+  #freqDial{flex:none;width:140px;height:auto}
   .freq-dial-read{display:flex;flex-direction:column;gap:1px}
   .freq-dial-read .fdr-val{font-size:24px;font-weight:600;line-height:1;
     font-variant-numeric:tabular-nums}
@@ -487,6 +516,9 @@
   .alarm-cat .ac-tier.notice{color:var(--accent2);border-color:rgba(91,141,239,.4)}
   .alarm-cat .ac-desc{font-family:var(--mono);font-size:10px;color:var(--ink-faint);
     margin-top:3px;line-height:1.4}
+  .alarm-cat .ac-cad{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:4px 12px;cursor:pointer;flex:none;white-space:nowrap}
+  .alarm-cat .ac-cad.low{color:var(--accent2);border-color:var(--accent2)}
   .alarm-cat .ac-test{font-family:var(--mono);font-size:10px;color:var(--ink-dim);
     background:var(--panel2);border:1px solid var(--line2);border-radius:6px;
     padding:5px 9px;cursor:pointer;flex:none}
@@ -502,6 +534,46 @@
   .gen-overlay{position:fixed;inset:0;background:var(--bg);z-index:200;
     display:none;flex-direction:column}
   .gen-overlay.open{display:flex}
+  .gh-plots{flex:1;display:flex;flex-direction:column;gap:14px;padding:14px 18px;overflow:auto}
+  .gh-plot{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .gh-plot .gh-title{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim);margin-bottom:4px}
+  .gh-plot canvas{width:100%;height:300px;display:block}
+  .gh-note{color:var(--ink-faint);font-size:11px;padding:0 18px 14px;line-height:1.5}
+  .gen-legend .gh-sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px;vertical-align:middle}
+  .gh-archives{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:2px 2px 4px}
+  .gh-archives .gh-albl{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-right:2px}
+  .gh-abtn{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:4px 9px;cursor:pointer}
+  .gh-abtn:hover{border-color:var(--accent)}
+  .gh-abtn.on{color:#08131c;background:var(--accent);border-color:transparent;font-weight:600}
+  .gh-anone{font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+  .gh-arcpanel .gh-archead{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+  .gh-arctitle{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)}
+  .gh-arclabel{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .gh-tgset{display:inline-flex;border:1px solid var(--line2);border-radius:6px;overflow:hidden;margin-left:4px}
+  .gh-tg{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel2);border:0;padding:4px 11px;cursor:pointer}
+  .gh-tg.on{color:#08131c;background:var(--accent);font-weight:600}
+  .gh-nav{font-family:var(--mono);font-size:12px;color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:3px 9px;cursor:pointer}
+  .gh-nav:hover:not(:disabled){border-color:var(--accent)}
+  .gh-nav:disabled{opacity:.35;cursor:default}
+  .gh-pick{margin-left:auto;display:inline-flex;gap:5px}
+  .gh-pick select{font-family:var(--mono);font-size:11px;background:var(--panel2);color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:3px 6px}
+  .gh-fill{font-family:var(--mono);font-size:11px;color:#08131c;background:var(--warn,#f5b544);border:0;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:600}
+  .gh-fill:hover:not(:disabled){filter:brightness(1.08)}
+  .gh-fill:disabled{opacity:.55;cursor:default}
+  /* frequency-history viewer */
+  .freq-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}
+  .freq-foot .gh-nav{padding:2px 8px;font-size:11px}
+  .fh-nav{display:inline-flex;gap:6px;align-items:center}
+  .fh-nav .gh-nav.on{color:#08131c;background:var(--ok,#39d98a);border-color:transparent;font-weight:600}
+  .fh-summary{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-left:auto}
+  .fh-wrap{flex:1;min-height:0;padding:12px 18px;position:relative}
+  #fhCanvas{width:100%;height:100%;display:block;cursor:crosshair;touch-action:none}
+  #fhCanvas.drag{cursor:grabbing}
+  #fhCross{position:absolute;top:0;width:1px;background:rgba(230,237,245,.45);pointer-events:none;display:none}
+  #fhTip{position:absolute;pointer-events:none;display:none;background:var(--panel,#0f1622);
+    border:1px solid var(--line2,#2a3a4d);border-radius:6px;padding:5px 8px;font-family:var(--mono);
+    font-size:11px;color:var(--ink);white-space:nowrap;transform:translate(-50%,0);z-index:5;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  #fhTip .k{color:var(--ink-faint)}
   .gen-bar{display:flex;align-items:center;gap:14px;padding:12px 18px;
     border-bottom:1px solid var(--line);flex:none}
   .gen-bar h1{font-size:15px;margin:0;font-weight:600}
@@ -1088,6 +1160,8 @@
   @media(max-width:980px){
     .span3,.span4,.span5,.span6,.span7,.span8{grid-column:span 12}
     .metric .val{font-size:34px}
+    .freq-top{flex-wrap:wrap}
+    .freq-risk{margin-left:0}
   }
 </style>
 </head>
@@ -1126,7 +1200,7 @@
     <!-- LEFT COLUMN: frequency, demand, generation, weather -->
     <div class="col col-l">
       <!-- Frequency -->
-      <section class="card">
+      <section class="card" id="freqCard">
         <h2>System frequency</h2>
         <div class="freq-top">
           <div class="freq-metric">
@@ -1142,11 +1216,25 @@
               <span class="fdr-rocof" id="freqDialRocof"></span>
             </div>
           </div>
+          <div class="freq-risk" id="freqRisk">
+            <div class="fr-head">System risk</div>
+            <div class="fr-badge unknown" id="riskBadge">—</div>
+            <div class="fr-rows">
+              <div title="System inertia (GVA·s) — stored rotational kinetic energy from synchronous plant (wind, solar and interconnectors carry none). Calibrated to NESO's published GB Outturn Inertia. Higher = more resistance to frequency change.">
+                <span class="fr-k">inertia</span><span class="fr-v" id="riskInertia">—</span></div>
+              <div title="Notional post-fault RoCoF — the initial rate of change of frequency (Hz/s) if the largest credible infeed (~1320 MW) tripped right now, given current inertia. Higher = the grid would fall faster.">
+                <span class="fr-k">if largest trips</span><span class="fr-v" id="riskNpf">—</span></div>
+              <div title="Composite Grid Risk Index — frequency deviation from 50 Hz, amplified by low system inertia (vulnerability) and by the rate of change of frequency. A 0.1 Hz wobble reads higher on a fragile grid than a robust one. Green under 0.2, amber 0.2–0.5, red 0.5 and above.">
+                <span class="fr-k">CGRI</span><span class="fr-v" id="riskCgri">—</span></div>
+            </div>
+            <div class="fr-genloss" id="riskGenLoss" style="display:none"></div>
+          </div>
         </div>
         <canvas id="freqTrace"></canvas>
         <div class="freq-yaxis" id="freqYaxis"></div>
         <div class="plot-axis" id="freqTimeAxis"></div>
-        <div class="sub-line" id="freqTime">—</div>
+        <div class="freq-foot"><span class="sub-line" id="freqTime">—</span>
+          <button class="gh-nav" id="freqHistBtn" title="Scrollable frequency history (up to 30 days)">⤢ history</button></div>
       </section>
 
       <!-- Demand -->
@@ -1175,6 +1263,7 @@
       <!-- Generation mix -->
       <section class="card">
         <h2>Generation and imports by source
+          <button class="keybtn" id="genHistBtn" title="7-day generation history">⤢ 7-day</button>
           <button class="keybtn" id="genDrillBtn" title="Open live generator map">⤢ generators</button>
         </h2>
         <div class="stackbar" id="stackbar"></div>
@@ -1300,7 +1389,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260827.19 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260904.9 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1375,6 +1464,54 @@
     metered group total — so a station's MW is its share of real output, not an independent meter reading. Embedded
     solar has no per-station data, so it's one estimated tile. Pumped storage shows only when generating.</div>
   <div class="gen-tip" id="genTip"></div>
+</div>
+
+<!-- 7-day generation history: full-window pop-up -->
+<div class="gen-overlay" id="genHistOverlay">
+  <div class="gen-bar">
+    <h1>Generation — last 7 days</h1>
+    <span class="gen-sub" id="ghSub">live 7 days (top) · any week Sun–Sat (below) · times UT</span>
+    <span class="gen-legend" id="ghLegend"></span>
+    <button class="gen-close" id="ghClose" title="Close (Esc)">✕</button>
+  </div>
+  <div class="gh-plots">
+    <div class="gh-plot"><div class="gh-title">Live · Output (MW)</div><canvas id="ghMw"></canvas></div>
+    <div class="gh-plot"><div class="gh-title">Live · Share of generation (%)</div><canvas id="ghShare"></canvas></div>
+    <div class="gh-plot gh-arcpanel">
+      <div class="gh-archead">
+        <span class="gh-arctitle">Archive week</span>
+        <span class="gh-arclabel" id="ghArcLabel">—</span>
+        <span class="gh-tgset"><button class="gh-tg on" id="ghArcMwBtn">MW</button><button class="gh-tg" id="ghArcShareBtn">%</button></span>
+        <button class="gh-nav" id="ghPrev" title="Previous week (←)">◀</button>
+        <button class="gh-nav" id="ghNext" title="Next week (→)">▶</button>
+        <span class="gh-pick"><select id="ghYear" title="Year"></select><select id="ghMonth" title="Month"></select><select id="ghDay" title="Day — shows that day's week"></select></span>
+        <button class="gh-fill" id="ghFill" title="This week has no local log — reconstruct it from Elexon BMRS" hidden>⭳ fill from BMRS</button>
+      </div>
+      <canvas id="ghArch"></canvas>
+    </div>
+  </div>
+  <div class="gh-note">Per-fuel output averaged into 30-minute buckets over the full Sunday–Saturday week; every day is shown even where data is missing (gaps read as zero, and the in-progress week fills left to right). The archive panel steps by week with ◀ ▶ or the year/month/day pickers. A past week with no local log can be reconstructed with “fill from BMRS” — Elexon FUELINST for the metered fuels plus Sheffield PVLive for embedded solar (a modelled estimate, as on the main panel). These weeks are labelled “BMRS”; only grid-scale battery is absent, as no historical feed for it is used here. Solar on all weeks is an estimate; interconnector exports and storage charging are omitted from the stack total.</div>
+</div>
+
+<!-- Frequency history: scrollable full-window plot from the 15s data log -->
+<div class="gen-overlay" id="freqHistOverlay">
+  <div class="gen-bar">
+    <h1>Frequency history</h1>
+    <span class="gen-sub" id="fhSub">15-second log · updates live · drag to scroll · click to lock readout · times UT</span>
+    <span class="fh-summary" id="fhSummary"></span>
+    <span class="fh-nav">
+      <button class="gh-nav" id="fhLive" title="Realtime: keep the latest data in view (same zoom)">● live</button>
+      <button class="gh-nav" id="fhPrev" title="Back one week (←)">◀ week</button>
+      <button class="gh-nav" id="fhNext" title="Forward one week (→)">week ▶</button>
+      <button class="gh-nav" id="fhZoomOut" title="Zoom out">－</button>
+      <button class="gh-nav" id="fhZoomIn" title="Zoom in">＋</button>
+      <button class="gh-nav" id="fhAll" title="Fit all logged history">fit all</button>
+      <button class="gh-nav" id="fhSave" title="Save this view as a PNG in the captures folder">⭳ save</button>
+    </span>
+    <button class="gen-close" id="fhClose" title="Close (Esc)">✕</button>
+  </div>
+  <div class="fh-wrap"><canvas id="fhCanvas"></canvas><div id="fhCross"></div><div id="fhTip"></div></div>
+  <div class="gh-note" id="fhNote">Grid frequency from the local 15-second data log, drawn as a min/max envelope (the shaded band = spread within each time bucket) with the mean line through it. The green zone is the normal operational band (49.8–50.2 Hz); dashed lines mark the statutory limits (49.5 / 50.5 Hz). During an excursion the band and line are recoloured — amber outside the operational band, red beyond statutory. Hover for the value at a point; drag left/right to scroll; use the week / zoom buttons or arrow keys; ⭳ save writes a PNG to the captures folder. While open, the plot updates live every 15 seconds. History spans the log retention (about 30 days).</div>
 </div>
 
 <!-- Octopus home usage: full-window cost/usage pop-out -->
@@ -1732,7 +1869,8 @@ let freqPollTimer=null;
 async function pollFrequencyFast(){
   try{
     const r=await fetch("/api/frequency",{cache:"no-store"});
-    if(r.ok){ const fq=await r.json(); if(fq && !fq.error) freqMerge(fq); }
+    if(r.ok){ const fq=await r.json(); if(fq && !fq.error){ freqMerge(fq);
+        if(Alarm && Alarm.evaluateSystemRisk && fq.hz!=null) Alarm.evaluateSystemRisk({hz:fq.hz, stale:!!fq.stale}, LAST_RISK); } }
   }catch(e){ /* transient; next tick retries */ }
   freqPollTimer=setTimeout(pollFrequencyFast, 2000);
 }
@@ -1884,6 +2022,60 @@ function setStatus(level,text){
   if(pill) pill.classList.toggle("dot-only", level==="ok" && text==="nominal");
 }
 
+let LAST_RISK=null;
+function fuelShort(code){ const m={INTFR:"IFA",INTNED:"BritNed",INTEW:"EWIC",INTIRL:"Moyle",INTNSL:"NSL",INTNEM:"Nemo",INTIFA2:"IFA2",INTELEC:"ElecLink",INTVKL:"Viking",CCGT:"gas",OCGT:"gas",COAL:"coal",NUCLEAR:"nuclear",BIOMASS:"biomass",WIND:"wind",NPSHYD:"hydro",PS:"pumped"}; return m[code]||code; }
+// Severity colouring. The two panels are coloured from DIFFERENT sources, kept
+// separate on purpose: the FREQUENCY panel reflects the frequency's own state (an
+// actual band excursion = a real alarm); the SYSTEM-RISK sub-panel reflects the
+// composite risk level (a notification). BACKGROUND = live level; BORDER = highest
+// level seen in the last 10 min (a cleared/downgraded state lingers on the border).
+const SEV_HOLD_MS=600000;
+const _sevSeenFreq={green:0, amber:0, red:0};
+const _sevSeenRisk={green:0, amber:0, red:0};
+function sevBorderLevel(seen, live, now){
+  if(live && Object.prototype.hasOwnProperty.call(seen,live)) seen[live]=now;
+  for(const L of ["red","amber","green"]) if(seen[L] && now-seen[L]<=SEV_HOLD_MS) return L;
+  return null;
+}
+function sevApply(el, live, hold){
+  if(!el) return;
+  el.classList.remove("sev-bg-green","sev-bg-amber","sev-bg-red","sev-bd-green","sev-bd-amber","sev-bd-red");
+  if(live) el.classList.add("sev-bg-"+live);
+  if(hold) el.classList.add("sev-bd-"+hold);
+}
+// Frequency's OWN severity from the reading vs the operational/statutory bands —
+// independent of the composite risk index. green in-band, amber outside operational,
+// red outside statutory.
+function freqSevLevel(sr){
+  const hz=(sr && sr.hz!=null)?sr.hz:null;
+  if(hz==null) return null;
+  const p=sr.params||{};
+  const opLo=p.op_lo!=null?p.op_lo:49.8, opHi=p.op_hi!=null?p.op_hi:50.2;
+  const stLo=p.stat_lo!=null?p.stat_lo:49.5, stHi=p.stat_hi!=null?p.stat_hi:50.5;
+  if(hz<=stLo || hz>=stHi) return "red";
+  if(hz<=opLo || hz>=opHi) return "amber";
+  return "green";
+}
+function renderSystemRisk(sr){
+  if(!sr) return;
+  const b=$("#riskBadge"); if(b){ b.textContent=(sr.level||"\u2014").toUpperCase(); b.className="fr-badge "+(sr.level||"unknown"); }
+  // Colour each panel from its OWN source, separately:
+  //  * frequency panel  -> the frequency's own band state (the real alarm)
+  //  * system-risk panel -> the composite risk level (the notification)
+  const _now=Date.now();
+  const _fLive=freqSevLevel(sr);
+  sevApply($("#freqCard"), _fLive, sevBorderLevel(_sevSeenFreq, _fLive, _now));
+  const _rLive=["green","amber","red"].includes(sr.level)?sr.level:null;
+  sevApply($("#freqRisk"), _rLive, sevBorderLevel(_sevSeenRisk, _rLive, _now));
+  const inE=$("#riskInertia"); if(inE) inE.textContent=(sr.inertia_gws!=null?sr.inertia_gws+" GVA\u00b7s":"\u2014");
+  const npf=$("#riskNpf");    if(npf) npf.textContent=(sr.notional_rocof!=null?sr.notional_rocof+" Hz/s":"\u2014");
+  const cg=$("#riskCgri");    if(cg)  cg.textContent=(sr.cgri!=null?Number(sr.cgri).toFixed(2):"\u2014");
+  const gl=$("#riskGenLoss");
+  if(gl){ const g=sr.gen_loss;
+    if(g && g.flagged){ gl.style.display="block"; gl.className="fr-genloss flash";
+      gl.textContent="\u26a0 infeed "+g.d_infeed_mw+" MW"+(g.worst_fuel?(" \u00b7 "+fuelShort(g.worst_fuel)):""); }
+    else { gl.style.display="none"; gl.className="fr-genloss"; } }
+}
 function render(d){
   // ---- backend staleness check ----
   // If the running server predates the solar/weather/freq-trace features, the
@@ -1919,6 +2111,7 @@ function render(d){
   // 60s snapshot (full 2h trace) and the fast poll (fresh 15s points); one
   // freqTick ticker owns all display and repaints every second)
   if(d.frequency) freqMerge(d.frequency);
+  if(d.system_risk){ LAST_RISK=d.system_risk; renderSystemRisk(d.system_risk); }
 
   // ---- margin ----
   if(d.margin){
@@ -2748,6 +2941,7 @@ function riverAge(iso){
   const cls = s>4*3600 ? 'age-red' : (s>3600 ? 'age-amber' : 'fresh');
   return '<span class="'+cls+'">'+out+"</span>";
 }
+function alarmCadenceLow(){ try{ return localStorage.getItem("alarmCadenceLow")==="1"; }catch(e){ return false; } }
 function agePlain(ts){                       // ts: ISO string or epoch SECONDS
   if(ts==null||ts==='') return '';
   const ms = (typeof ts==='number') ? ts*1000 : Date.parse(ts);
@@ -2949,6 +3143,468 @@ function genCloseFn(){
   if(genPoll){clearInterval(genPoll);genPoll=null;}
   if(genRaf){cancelAnimationFrame(genRaf);genRaf=null;}
 }
+// ---- 7-day generation history pop-up ----
+let GHL=null;            // live 7-day data (top two plots)
+let GHA=null;            // selected week's data (bottom plot), from /api/gen-history?week=
+let ghOpen=false;
+let ghArchives=[];       // [{file,label,start,src}] permanent archive files (for the picker floor)
+let ghWeek="";           // selected week — its Sunday, "YYYY-MM-DD" UTC
+let ghBusy=false;        // guard against overlapping fetch/backfill
+let ghArcMode="mw";      // MW | share toggle for the archive plot
+const GH_MO=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const GH_FLOOR="2017-01-01";   // Elexon FUELINST reaches back to ~2017 (backfill floor)
+
+function ghWeekStartUTC(y,mo,d){          // Date at the Sunday 00:00 UTC on/before y-mo-d
+  const t=Date.UTC(y,mo-1,d);
+  const back=new Date(t).getUTCDay();     // getUTCDay: Sun=0 -> already the offset back to Sunday
+  return new Date(t-back*86400000);
+}
+function ghDateStr(dt){ return dt.getUTCFullYear()+"-"+String(dt.getUTCMonth()+1).padStart(2,"0")+"-"+String(dt.getUTCDate()).padStart(2,"0"); }
+function ghCurWeek(){ return ghDateStr(ghWeekStartUTC(new Date().getUTCFullYear(), new Date().getUTCMonth()+1, new Date().getUTCDate())); }
+function ghShiftWeek(sun, weeks){ const p=sun.split("-"); return ghDateStr(new Date(Date.UTC(+p[0],+p[1]-1,+p[2]+weeks*7))); }
+
+async function ghOpenFn(){
+  $("#genHistOverlay").classList.add("open"); ghOpen=true;
+  try{ const r=await fetch("/api/gen-history?days=7",{cache:"no-store"}); GHL=await r.json(); }catch(e){ GHL=null; }
+  ghLegend(GHL); ghDrawLive();
+  await ghLoadArchives();
+}
+function ghCloseFn(){ $("#genHistOverlay").classList.remove("open"); ghOpen=false; }
+function ghSize(cv){ if(cv){ cv.width=Math.max(320, cv.clientWidth||900); cv.height=300; } }
+function ghDrawLive(){ const mw=$("#ghMw"), sh=$("#ghShare"); ghSize(mw); ghSize(sh); ghDrawStack(mw,"mw",GHL); ghDrawStack(sh,"share",GHL); }
+function ghDrawArch(){
+  const cv=$("#ghArch"); ghSize(cv); ghDrawStack(cv, ghArcMode, GHA);
+  const lbl=$("#ghArcLabel");
+  if(lbl){
+    let t="—";
+    if(GHA&&GHA.label){
+      t=GHA.label+" · UT";
+      if(GHA.is_current) t+=" · this week";
+      if(GHA.source==="bmrs") t+=" · BMRS";
+      else if(GHA.source==="mixed") t+=" · gaps filled (BMRS)";
+      else if(!GHA.is_current && GHA.has_data===false) t+=" · no data";
+    }
+    lbl.textContent=t;
+  }
+  // Prev/next step by a week; floored at BMRS start, capped at the current week.
+  const pv=$("#ghPrev"), nx=$("#ghNext");
+  if(pv) pv.disabled = !(ghWeek>GH_FLOOR);
+  if(nx) nx.disabled = !(ghWeek<ghCurWeek());
+  // Fill / re-pull offer:
+  //   * any week (incl. the current one) with elapsed gaps -> "fill from BMRS" /
+  //     "fill gaps"; only the missing periods are added, self-logged data is kept.
+  //   * a week that is entirely a prior BMRS pull            -> "re-pull" (refresh).
+  const fb=$("#ghFill");
+  if(fb){
+    let show=false, label="", title="";
+    if(GHA && GHA.fillable){
+      show=true;
+      label = GHA.has_data ? "⭳ fill gaps" : "⭳ fill from BMRS";
+      title = "Fill this week's missing periods from Elexon BMRS + PVLive solar. Self-logged data is kept — only gaps are added.";
+    } else if(GHA && GHA.source==="bmrs"){
+      show=true; label="↻ re-pull";
+      title = "Re-fetch this BMRS week (e.g. to refresh solar). Self-logged weeks are never overwritten.";
+    }
+    fb.hidden=!show;
+    fb.disabled=ghBusy;
+    fb.title=title;
+    fb.textContent = ghBusy ? "⧗ fetching…" : label;
+  }
+}
+function ghLegend(data){
+  const el=$("#ghLegend"); if(!el) return;
+  if(!data||!data.fuels){ el.innerHTML=""; return; }
+  el.innerHTML=data.fuels.filter(f=>f.mw&&f.mw.some(v=>v>0)).slice(0,12)
+    .map(f=>'<span style="margin-right:10px"><span class="gh-sw" style="background:'+f.colour+'"></span>'+f.name+'</span>').join('');
+}
+async function ghLoadArchives(){
+  try{ const r=await fetch("/api/gen-archives",{cache:"no-store"}); const j=await r.json();
+       ghArchives=((j&&j.archives)||[]).map(a=>({file:a.file,label:a.label,src:a.src||"",start:(String(a.file).match(/^(\d{4}-\d{2}-\d{2})/)||[])[1]||""})); }
+  catch(e){ ghArchives=[]; }
+  ghArchives=ghArchives.filter(a=>a.start).sort((a,b)=> a.start<b.start?-1:1);
+  ghBuildPickers();
+  // Default view: the week with the most recent archive, else the current week.
+  const start = ghArchives.length ? ghArchives[ghArchives.length-1].start : ghCurWeek();
+  await ghGotoWeek(start);
+}
+async function ghGotoWeek(sun){
+  if(!sun) return;
+  if(sun<GH_FLOOR) sun=GH_FLOOR;
+  if(sun>ghCurWeek()) sun=ghCurWeek();
+  ghWeek=sun;
+  ghBusy=true; ghDrawArch();
+  try{ const r=await fetch("/api/gen-history?week="+encodeURIComponent(sun),{cache:"no-store"}); GHA=await r.json(); }
+  catch(e){ GHA=null; }
+  ghBusy=false;
+  ghSyncPickers(); ghDrawArch();
+}
+async function ghBackfill(){
+  if(!ghWeek||ghBusy) return;
+  // Re-pull (replace) only a pure-BMRS week with nothing left to gap-fill; otherwise gap-fill.
+  const force = !!(GHA && GHA.source==="bmrs" && !GHA.fillable);
+  ghBusy=true; ghDrawArch();
+  let ok=false, msg="";
+  try{ const r=await fetch("/api/gen-backfill?week="+encodeURIComponent(ghWeek)+(force?"&force=1":""),{cache:"no-store"});
+       const j=await r.json(); ok=!!(j&&j.ok); msg=(j&&(j.error||("rows "+(j.rows||0))))||""; }
+  catch(e){ msg=String(e); }
+  ghBusy=false;
+  if(ok){
+    // Refresh the archive list quietly (new file now exists) without navigating away,
+    // then re-fetch the now-filled week so the plot updates in place.
+    try{ const r=await fetch("/api/gen-archives",{cache:"no-store"}); const j=await r.json();
+         ghArchives=((j&&j.archives)||[]).map(a=>({file:a.file,label:a.label,src:a.src||"",start:(String(a.file).match(/^(\d{4}-\d{2}-\d{2})/)||[])[1]||""}))
+                    .filter(a=>a.start).sort((a,b)=> a.start<b.start?-1:1); }catch(e){}
+    await ghGotoWeek(ghWeek);
+  } else {
+    const lbl=$("#ghArcLabel"); if(lbl) lbl.textContent="backfill failed: "+msg; ghDrawArch();
+  }
+}
+function ghBuildPickers(){
+  const ys=$("#ghYear"), ms=$("#ghMonth"), ds=$("#ghDay"); if(!ys) return;
+  const y0=+GH_FLOOR.slice(0,4), y1=new Date().getUTCFullYear();
+  let yh=''; for(let y=y1;y>=y0;y--) yh+='<option>'+y+'</option>'; ys.innerHTML=yh;
+  ys.onchange=()=>{ ghFillDays(); ghPickJump(); };
+  if(ms){ ms.innerHTML=GH_MO.slice(1).map((n,i)=>'<option value="'+(i+1)+'">'+n+'</option>').join(''); ms.onchange=()=>{ ghFillDays(); ghPickJump(); }; }
+  ghFillDays();
+}
+function ghFillDays(){
+  const ys=$("#ghYear"), ms=$("#ghMonth"), ds=$("#ghDay"); if(!ys||!ms||!ds) return;
+  const y=+ys.value, m=+ms.value, nd=new Date(Date.UTC(y,m,0)).getUTCDate();
+  const cur=ds.value;
+  let h=''; for(let d=1;d<=nd;d++) h+='<option>'+d+'</option>'; ds.innerHTML=h;
+  if(cur&&+cur<=nd) ds.value=cur;
+  ds.onchange=ghPickJump;
+}
+function ghSyncPickers(){
+  if(!ghWeek) return;
+  const ys=$("#ghYear"), ms=$("#ghMonth"), ds=$("#ghDay");
+  if(ys) ys.value=ghWeek.slice(0,4);
+  if(ms) ms.value=String(+ghWeek.slice(5,7));
+  ghFillDays();
+  if(ds) ds.value=String(+ghWeek.slice(8,10));
+}
+function ghPickJump(){
+  const ys=$("#ghYear"), ms=$("#ghMonth"), ds=$("#ghDay"); if(!ys||!ms||!ds) return;
+  const y=+ys.value, m=+ms.value, d=+ds.value; if(!y||!m||!d) return;
+  ghGotoWeek(ghDateStr(ghWeekStartUTC(y,m,d)));
+}
+
+function ghDrawStack(cv, mode, data){
+  if(!cv) return;
+  const g=cv.getContext("2d"), W=cv.width, H=cv.height;
+  g.clearRect(0,0,W,H);
+  const padL=54,padR=12,padT=10,padB=24, plotW=W-padL-padR, plotH=H-padT-padB;
+  const css=getComputedStyle(document.documentElement);
+  const faint=(css.getPropertyValue('--ink-faint')||'#566277').trim();
+  const line=(css.getPropertyValue('--line')||'#22303f').trim();
+  const mono=(css.getPropertyValue('--mono')||'monospace');
+  if(!data||!data.fuels||!data.n){ g.fillStyle=faint; g.font="13px system-ui"; g.textAlign="center"; g.fillText("no data",W/2,H/2); return; }
+  const n=data.n, fuels=data.fuels;
+  const sums=new Array(n).fill(0);
+  for(let i=0;i<n;i++){ let sm=0; for(const f of fuels){ const v=f.mw[i]; if(v>0)sm+=v; } sums[i]=sm; }
+  let peak=1; for(const v of sums) if(v>peak) peak=v;
+  const yMax = mode==="share" ? 100 : peak*1.03;
+  const X=i=> padL + (n<=1?0:(i/(n-1))*plotW);
+  const Y=v=> padT + plotH - (v/yMax)*plotH;
+  g.font="10px "+mono; g.textAlign="right"; g.textBaseline="middle";
+  const ticks = mode==="share" ? [0,25,50,75,100] : [0,0.25,0.5,0.75,1].map(fr=>fr*yMax);
+  for(const tv of ticks){
+    const py=Y(tv); g.strokeStyle=line; g.globalAlpha=.5; g.beginPath(); g.moveTo(padL,py); g.lineTo(padL+plotW,py); g.stroke(); g.globalAlpha=1;
+    g.fillStyle=faint; g.fillText(mode==="share" ? tv+"%" : (tv/1000).toFixed(tv>=1000?0:1)+" GW", padL-6, py);
+  }
+  const base=new Array(n).fill(0);
+  for(const f of fuels){
+    const top=new Array(n);
+    for(let i=0;i<n;i++){ let v=f.mw[i]; if(v<0)v=0; const sc = mode==="share" ? (sums[i]>0? v/sums[i]*100 : 0) : v; top[i]=base[i]+sc; }
+    g.beginPath();
+    for(let i=0;i<n;i++){ const px=X(i),py=Y(top[i]); if(i===0)g.moveTo(px,py); else g.lineTo(px,py); }
+    for(let i=n-1;i>=0;i--){ g.lineTo(X(i), Y(base[i])); }
+    g.closePath(); g.fillStyle=f.colour; g.globalAlpha=.92; g.fill(); g.globalAlpha=1;
+    for(let i=0;i<n;i++) base[i]=top[i];
+  }
+  g.textAlign="left"; g.textBaseline="alphabetic";
+  const WD=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const totalDays = n*((data.bucket_min||30)/1440);
+  const lblStep = totalDays>10 ? Math.ceil(totalDays/8) : 1;   // fewer labels on long spans -> no overlap
+  let lastDay=null, dayIdx=-1;
+  for(let i=0;i<n;i++){
+    const d=new Date(data.t[i]); const day=d.getUTCDate();      // UTC day boundaries
+    if(day!==lastDay){ lastDay=day; dayIdx++; const px=X(i);
+      g.strokeStyle=line; g.globalAlpha=.45; g.beginPath(); g.moveTo(px,padT); g.lineTo(px,padT+plotH); g.stroke(); g.globalAlpha=1;
+      if(dayIdx % lblStep === 0){ g.fillStyle=faint; g.fillText(WD[d.getUTCDay()]+"/"+String(day).padStart(2,"0"), px+3, H-8); }
+    }
+  }
+  g.strokeStyle=line; g.globalAlpha=1; g.strokeRect(padL,padT,plotW,plotH);
+}
+(function wireGH(){
+  const b=$("#genHistBtn"); if(b) b.onclick=ghOpenFn;
+  const c=$("#ghClose"); if(c) c.onclick=ghCloseFn;
+  const pv=$("#ghPrev"); if(pv) pv.onclick=()=>{ if(ghWeek>GH_FLOOR) ghGotoWeek(ghShiftWeek(ghWeek,-1)); };
+  const nx=$("#ghNext"); if(nx) nx.onclick=()=>{ if(ghWeek<ghCurWeek()) ghGotoWeek(ghShiftWeek(ghWeek,1)); };
+  const fb=$("#ghFill"); if(fb) fb.onclick=ghBackfill;
+  const mwb=$("#ghArcMwBtn"), shb=$("#ghArcShareBtn");
+  if(mwb) mwb.onclick=()=>{ ghArcMode="mw"; mwb.classList.add("on"); if(shb)shb.classList.remove("on"); ghDrawArch(); };
+  if(shb) shb.onclick=()=>{ ghArcMode="share"; shb.classList.add("on"); if(mwb)mwb.classList.remove("on"); ghDrawArch(); };
+  addEventListener("keydown",e=>{ if(!ghOpen)return;
+    if(e.key==="Escape") ghCloseFn();
+    else if(e.key==="ArrowLeft"){ if(ghWeek>GH_FLOOR) ghGotoWeek(ghShiftWeek(ghWeek,-1)); }
+    else if(e.key==="ArrowRight"){ if(ghWeek<ghCurWeek()) ghGotoWeek(ghShiftWeek(ghWeek,1)); } });
+  addEventListener("resize",()=>{ if(ghOpen){ ghDrawLive(); ghDrawArch(); } });
+})();
+
+// ---- scrollable frequency history (from the 15s data log) ----
+let FH=null, fhOpen=false, fhStart=0, fhSpan=7*86400, fhDrag=null, fhGeo=null;
+let fhLastEp=0, fhTimer=null, fhAcc={}, fhFollow=true, fhLockT=null;
+const FH_MINSPAN=1800, FH_MAXSPAN=31*86400, FH_LIVE_MS=15000;
+const FH_R3=v=>Math.round(v*1000)/1000;
+function fhSetFollow(on){ fhFollow=!!on; const b=$("#fhLive"); if(b) b.classList.toggle("on",fhFollow);
+  if(fhFollow && FH && FH.n){ fhStart=fhDataHi()-fhSpan; fhClamp(); fhDraw(); } }
+function fhDataLo(){ return FH?FH.t0:0; }
+function fhDataHi(){ return FH?(FH.t0+(FH.n-1)*FH.bucket_s):0; }
+function fhClamp(){
+  fhSpan=Math.max(FH_MINSPAN, Math.min(FH_MAXSPAN, fhSpan));
+  const lo=fhDataLo(), hi=fhDataHi(), full=Math.max(1,hi-lo);
+  if(fhSpan>full) fhSpan=full;
+  if(fhStart<lo) fhStart=lo;
+  if(fhStart+fhSpan>hi) fhStart=hi-fhSpan;
+  if(fhStart<lo) fhStart=lo;
+}
+async function fhOpenFn(){
+  $("#freqHistOverlay").classList.add("open"); fhOpen=true; fhAcc={}; fhLockT=null;
+  try{ const r=await fetch("/api/freq-history?days=30",{cache:"no-store"}); FH=await r.json(); }catch(e){ FH=null; }
+  if(FH && FH.n){ fhSpan=Math.min(7*86400, Math.max(FH_MINSPAN, fhDataHi()-fhDataLo())); fhStart=fhDataHi()-fhSpan; fhClamp(); fhLastEp=fhDataHi(); }
+  fhFollow=true; const lb=$("#fhLive"); if(lb) lb.classList.add("on");
+  fhDraw();
+  fhStartLive();
+}
+function fhCloseFn(){ $("#freqHistOverlay").classList.remove("open"); fhOpen=false; fhHideTip(); fhStopLive(); }
+// ---- live update while open: poll a small tail every 15s and merge it in ----
+function fhStartLive(){ fhStopLive(); if(FH && FH.n) fhTimer=setInterval(fhTick, FH_LIVE_MS); }
+function fhStopLive(){ if(fhTimer){ clearInterval(fhTimer); fhTimer=null; } }
+async function fhTick(){
+  if(!fhOpen || !FH || !FH.n){ return; }
+  let j; try{ const r=await fetch("/api/freq-tail?since="+encodeURIComponent(fhLastEp),{cache:"no-store"}); j=await r.json(); }
+  catch(e){ return; }
+  const pts=(j&&j.points)||[]; if(!pts.length) return;
+  fhMerge(pts);
+  if(fhFollow){ fhStart=fhDataHi()-fhSpan; fhClamp(); }   // realtime: keep latest in view, same zoom
+  fhDraw();
+}
+function fhMerge(pts){
+  const t0=FH.t0, bs=FH.bucket_s;
+  for(const p of pts){ const ep=p[0], hz=p[1];
+    if(ep<=fhLastEp) continue; fhLastEp=ep;
+    let i=Math.round((ep-t0)/bs); if(i<0) continue;
+    if(i>=FH.n){ for(let k=FH.n;k<=i;k++){ FH.mn[k]=null; FH.mx[k]=null; FH.mean[k]=null; } FH.n=i+1; }
+    let a=fhAcc[i];
+    if(!a){ a=fhAcc[i]={mn:null,mx:null,sum:0,cnt:0};
+      if(FH.mn[i]!=null){ a.mn=FH.mn[i]; a.mx=FH.mx[i]; a.sum=FH.mean[i]; a.cnt=1; } }  // seed from server value
+    if(a.mn==null||hz<a.mn)a.mn=hz; if(a.mx==null||hz>a.mx)a.mx=hz; a.sum+=hz; a.cnt++;
+    FH.mn[i]=FH_R3(a.mn); FH.mx[i]=FH_R3(a.mx); FH.mean[i]=FH_R3(a.sum/a.cnt);
+  }
+}
+function fhZoom(factor, anchorFrac){
+  const a=(anchorFrac==null?0.5:anchorFrac), at=fhStart+fhSpan*a;
+  fhSpan*=factor; fhClamp();
+  fhStart = fhFollow ? (fhDataHi()-fhSpan) : (at-fhSpan*a);   // stay pinned to live edge if following
+  fhClamp(); fhDraw();
+}
+function fhPan(dt){ fhStart+=dt; fhClamp(); fhDraw(); }
+function fhLevel(v){ return (v<=49.5||v>=50.5)?2:(v<=49.8||v>=50.2)?1:0; }
+function fhDraw(){
+  const cv=$("#fhCanvas"); if(!cv) return;
+  const dpr=devicePixelRatio||1, W=cv.clientWidth||900, H=cv.clientHeight||420;
+  cv.width=W*dpr; cv.height=H*dpr; const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+  const css=getComputedStyle(document.documentElement);
+  const faint=(css.getPropertyValue('--ink-faint')||'#566277').trim();
+  const line=(css.getPropertyValue('--line')||'#22303f').trim();
+  const mono=(css.getPropertyValue('--mono')||'monospace');
+  const padL=44,padR=12,padT=10,padB=26, plotW=Math.max(10,W-padL-padR), plotH=Math.max(10,H-padT-padB);
+  if(!FH || !FH.n){ g.fillStyle=faint; g.font="13px system-ui"; g.textAlign="center"; g.fillText("no frequency history logged yet",W/2,H/2); return; }
+  fhClamp();
+  const t0=FH.t0, bs=FH.bucket_s;
+  const iLo=Math.max(0,Math.floor((fhStart-t0)/bs)), iHi=Math.min(FH.n-1,Math.ceil((fhStart+fhSpan-t0)/bs));
+  // y-range: operational/statutory frame, expanded to fit any excursion in view
+  let yLo=49.5,yHi=50.5;
+  for(let i=iLo;i<=iHi;i++){ const a=FH.mn[i],b=FH.mx[i]; if(a==null)continue; if(a<yLo)yLo=a; if(b>yHi)yHi=b; }
+  yLo=Math.floor((yLo-0.02)*10)/10; yHi=Math.ceil((yHi+0.02)*10)/10;
+  const X=t=>padL+(t-fhStart)/fhSpan*plotW;
+  const Y=v=>padT+(yHi-v)/(yHi-yLo)*plotH;
+  // operational band + statutory lines + Hz grid
+  g.fillStyle="rgba(57,217,138,.06)"; g.fillRect(padL,Y(50.2),plotW,Y(49.8)-Y(50.2));
+  g.font="10px "+mono; g.textBaseline="middle"; g.textAlign="right";
+  const yticks=[]; for(let v=Math.ceil(yLo*10)/10; v<=yHi+1e-9; v+=0.1){ yticks.push(Math.round(v*10)/10); }
+  yticks.forEach(v=>{ const stat=(Math.abs(v-49.5)<1e-9||Math.abs(v-50.5)<1e-9), nom=Math.abs(v-50)<1e-9;
+    g.strokeStyle=nom?"rgba(230,237,245,.28)":(stat?"rgba(255,92,108,.35)":line);
+    g.globalAlpha=nom?1:.6; g.setLineDash(nom?[]:(stat?[5,4]:[2,5]));
+    g.beginPath(); g.moveTo(padL,Y(v)); g.lineTo(padL+plotW,Y(v)); g.stroke(); g.globalAlpha=1; g.setLineDash([]);
+    g.fillStyle=faint; g.fillText(v.toFixed(1),padL-5,Y(v)); });
+  // Draw DIRECTLY from the visible buckets (bounded by the envelope size), in
+  // contiguous runs broken only by data gaps. This never fragments or blanks at any
+  // zoom (unlike per-pixel aggregation, which stipples when buckets ~= pixels).
+  let vmin=99,vmax=0,outBuckets=0,dataBuckets=0;
+  const colOf=v=>(v<=49.5||v>=50.5)?"#ff5c6c":(v<=49.8||v>=50.2)?"#f5b942":"#3fb6c9";
+  const THS=[49.5,49.8,50.2,50.5];
+  function drawRun(seg){                 // seg: [{x,mn,mx,me},...] contiguous
+    if(!seg.length) return;
+    // min/max envelope ribbon (always cyan — it shows spread, not alert state)
+    if(seg.length===1){ const p=seg[0]; g.strokeStyle="rgba(63,182,201,.5)"; g.lineWidth=2;
+      g.beginPath(); g.moveTo(p.x,Y(p.mx)); g.lineTo(p.x,Y(p.mn)); g.stroke(); }
+    else{ g.beginPath(); seg.forEach((p,k)=>{ const y=Y(p.mx); k?g.lineTo(p.x,y):g.moveTo(p.x,y); });
+      for(let k=seg.length-1;k>=0;k--) g.lineTo(seg[k].x,Y(seg[k].mn));
+      g.closePath(); g.fillStyle="rgba(63,182,201,.22)"; g.fill(); }
+    // mean line, recoloured EXACTLY where it crosses a trigger level (split at crossings)
+    g.lineWidth=1.7; g.lineJoin="round"; g.lineCap="round";
+    for(let k=0;k<seg.length-1;k++){
+      const x0=seg[k].x,v0=seg[k].me,x1=seg[k+1].x,v1=seg[k+1].me;
+      let cuts=[0,1];
+      for(const th of THS){ if((v0<th)!==(v1<th)){ const f=(th-v0)/(v1-v0); if(f>0&&f<1)cuts.push(f); } }
+      cuts=Array.from(new Set(cuts)).sort((a,b)=>a-b);
+      for(let c=0;c<cuts.length-1;c++){ const fa=cuts[c],fb=cuts[c+1],fm=(fa+fb)/2;
+        g.strokeStyle=colOf(v0+(v1-v0)*fm);
+        g.beginPath(); g.moveTo(x0+(x1-x0)*fa,Y(v0+(v1-v0)*fa)); g.lineTo(x0+(x1-x0)*fb,Y(v0+(v1-v0)*fb)); g.stroke(); }
+    }
+    if(seg.length===1){ const p=seg[0]; g.fillStyle=colOf(p.me); g.beginPath(); g.arc(p.x,Y(p.me),2,0,7); g.fill(); }
+  }
+  { let seg=[];
+    for(let i=iLo;i<=iHi;i++){ const a=FH.mn[i]; if(a==null){ drawRun(seg); seg=[]; continue; }
+      const b=FH.mx[i],m=FH.mean[i]; dataBuckets++; if(a<vmin)vmin=a; if(b>vmax)vmax=b;
+      if(Math.max(fhLevel(a),fhLevel(b))>0)outBuckets++;
+      seg.push({x:X(t0+i*bs),mn:a,mx:b,me:m}); }
+    drawRun(seg);
+  }
+  // x-axis. Day boundaries (00:00 UT — Unix midnights are exact multiples of 86400)
+  // get a gridline + a day/date label; short spans also get HH:MM ticks. Axis is UT.
+  g.strokeStyle=line; g.globalAlpha=1; g.strokeRect(padL,padT,plotW,plotH);
+  g.font="10px "+mono; g.textBaseline="alphabetic";
+  const DS=86400, pxPerDay=plotW*DS/fhSpan;
+  const dayLblStep=Math.max(1, Math.ceil(96/Math.max(1,pxPerDay)));   // >=~96px between date labels
+  const first=Math.ceil(fhStart/DS)*DS; let dc=0;
+  for(let t=first; t<=fhStart+fhSpan; t+=DS){ const x=X(t);
+    g.strokeStyle="rgba(230,237,245,.22)"; g.globalAlpha=1; g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+plotH); g.stroke();
+    if(dc % dayLblStep===0){ const d=new Date(t*1000);
+      g.fillStyle=(css.getPropertyValue('--ink-dim')||'#8595a8').trim(); g.textAlign="left";
+      g.fillText(d.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",timeZone:"UTC"}), x+3, H-8); }
+    dc++;
+  }
+  if(fhSpan<=2*DS){                                   // intra-day time ticks
+    g.fillStyle=faint; g.textAlign="center";
+    const nlab=Math.max(2,Math.min(10,Math.floor(plotW/90)));
+    for(let k=0;k<=nlab;k++){ const t=fhStart+fhSpan*k/nlab, x=X(t);
+      if((((t%DS)+DS)%DS) < fhSpan/nlab*0.5) continue;  // don't clash with a date label at midnight
+      const d=new Date(t*1000);
+      if(x>=padL+16&&x<=padL+plotW-16) g.fillText(d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"}), x, H-8); }
+  }
+  g.fillStyle=(css.getPropertyValue('--ink-dim')||'#8595a8').trim(); g.textAlign="right"; g.textBaseline="top";
+  g.fillText("UT", padL+plotW-2, padT+2);            // axis is Universal Time
+  // LOCKED readout (click to lock) — drawn on the canvas so it is captured in a saved PNG
+  if(fhLockT!=null){
+    const i=Math.round((fhLockT-t0)/bs);
+    if(i>=iLo && i<=iHi && FH.mn[i]!=null){
+      const x=X(t0+i*bs), me=FH.mean[i], mn=FH.mn[i], mx=FH.mx[i];
+      g.strokeStyle="rgba(234,252,255,.7)"; g.lineWidth=1; g.setLineDash([]);
+      g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+plotH); g.stroke();
+      g.fillStyle="#eafcff"; g.beginPath(); g.arc(x,Y(me),3,0,7); g.fill();
+      const d=new Date((t0+i*bs)*1000);
+      const l1=me.toFixed(3)+" Hz"+(mx>mn?"  ("+mn.toFixed(3)+"–"+mx.toFixed(3)+")":"");
+      const l2=d.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"UTC"})+" UT";
+      g.font="11px "+mono; g.textAlign="left"; g.textBaseline="top";
+      const bw=Math.max(g.measureText(l1).width,g.measureText(l2).width)+12, bh=32;
+      let bx=x+8; if(bx+bw>padL+plotW) bx=x-8-bw; if(bx<padL) bx=padL+2; const by=padT+6;
+      g.fillStyle="rgba(15,22,34,.92)"; g.strokeStyle="rgba(90,110,140,.7)"; g.lineWidth=1;
+      g.beginPath(); g.rect(bx,by,bw,bh); g.fill(); g.stroke();
+      g.fillStyle="#e6edf5"; g.fillText(l1,bx+6,by+5);
+      g.fillStyle="#8595a8"; g.fillText(l2,bx+6,by+18);
+    }
+  }
+  // summary
+  const sm=$("#fhSummary");
+  if(sm){ const pct=dataBuckets?Math.round(1000*outBuckets/dataBuckets)/10:0;
+    const s=new Date(fhStart*1000),e=new Date((fhStart+fhSpan)*1000);
+    const fmt=d=>d.toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",timeZone:"UTC"});
+    sm.textContent = dataBuckets ? (fmt(s)+" – "+fmt(e)+" UT · min "+vmin.toFixed(3)+" / max "+vmax.toFixed(3)+" Hz · "+pct+"% outside band")
+                                 : "no data in view"; }
+  fhGeo={padL,padT,plotW,plotH,yLo,yHi,W,H};   // for hover tooltip / crosshair
+}
+function fhHideTip(){ const t=$("#fhTip"),c=$("#fhCross"); if(t)t.style.display="none"; if(c)c.style.display="none"; }
+// map a canvas-space x to the nearest data bucket index (or -1)
+function fhBucketAtX(x){
+  if(!FH||!FH.n||!fhGeo) return -1;
+  if(x<fhGeo.padL || x>fhGeo.padL+fhGeo.plotW) return -1;
+  const t=fhStart+(x-fhGeo.padL)/fhGeo.plotW*fhSpan;
+  const i=Math.round((t-FH.t0)/FH.bucket_s);
+  return (i>=0 && i<FH.n && FH.mn[i]!=null) ? i : -1;
+}
+function fhHover(clientX){
+  if(fhLockT!=null){ fhHideTip(); return; }         // locked: the on-canvas marker is authoritative
+  const cv=$("#fhCanvas"); if(!cv||!fhGeo){ fhHideTip(); return; }
+  const wrap=cv.parentElement, tip=$("#fhTip"), cross=$("#fhCross");
+  const r=cv.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
+  const i=fhBucketAtX(clientX-r.left);
+  if(i<0){ fhHideTip(); return; }
+  const bx=fhGeo.padL+(FH.t0+i*FH.bucket_s-fhStart)/fhSpan*fhGeo.plotW;  // snap to the bucket (canvas space)
+  const offX=r.left-wr.left, offY=r.top-wr.top;                          // canvas offset inside the padded wrap
+  const mean=FH.mean[i],mn=FH.mn[i],mx=FH.mx[i];
+  const when=new Date((FH.t0+i*FH.bucket_s)*1000).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit",timeZone:"UTC"});
+  const rng=(mx>mn)?(' <span class="k">('+mn.toFixed(3)+'–'+mx.toFixed(3)+')</span>'):'';
+  if(cross){ cross.style.display="block"; cross.style.left=(bx+offX)+"px"; cross.style.top=(fhGeo.padT+offY)+"px"; cross.style.height=fhGeo.plotH+"px"; }
+  if(tip){ tip.style.display="block"; tip.innerHTML='<b>'+mean.toFixed(3)+' Hz</b>'+rng+'<br><span class="k">'+when+' UT</span>';
+    tip.style.left=(bx+offX)+"px"; tip.style.top=(fhGeo.padT+offY+8)+"px"; }
+}
+// Click to LOCK the readout at a point (drawn on-canvas so it's in a saved PNG); click again to unlock.
+function fhToggleLock(clientX){
+  if(fhLockT!=null){ fhLockT=null; fhDraw(); return; }
+  const cv=$("#fhCanvas"); if(!cv) return;
+  const i=fhBucketAtX(clientX-cv.getBoundingClientRect().left);
+  if(i<0) return;
+  fhLockT=FH.t0+i*FH.bucket_s; fhHideTip(); fhDraw();
+}
+async function fhSaveFn(){
+  const cv=$("#fhCanvas"); if(!cv) return;
+  const sm=$("#fhSummary"), prev=sm?sm.textContent:"";
+  let data; try{ data=cv.toDataURL("image/png"); }catch(e){ if(sm)sm.textContent="save failed (canvas)"; return; }
+  const name="freq-"+new Date().toISOString().replace(/[:.]/g,"-").replace("Z","Z")+".png";
+  if(sm) sm.textContent="saving…";
+  try{ const r=await fetch("/api/save-capture",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({name,data})}); const j=await r.json();
+    if(sm) sm.textContent=(j&&j.ok)?("saved → captures/"+j.file):("save failed: "+((j&&j.error)||"?"));
+  }catch(e){ if(sm) sm.textContent="save failed: "+e; }
+  setTimeout(()=>{ if(sm && fhOpen) fhDraw(); }, 4000);
+}
+(function wireFH(){
+  const b=$("#freqHistBtn"); if(b) b.onclick=fhOpenFn;
+  const c=$("#fhClose"); if(c) c.onclick=fhCloseFn;
+  const lv=$("#fhLive"); if(lv) lv.onclick=()=>fhSetFollow(!fhFollow);
+  const pv=$("#fhPrev"); if(pv) pv.onclick=()=>{ fhSetFollow(false); fhPan(-7*86400); };
+  const nx=$("#fhNext"); if(nx) nx.onclick=()=>{ fhSetFollow(false); fhPan(7*86400); };
+  const zi=$("#fhZoomIn"); if(zi) zi.onclick=()=>fhZoom(0.5);
+  const zo=$("#fhZoomOut"); if(zo) zo.onclick=()=>fhZoom(2);
+  const fa=$("#fhAll"); if(fa) fa.onclick=()=>{ fhSetFollow(false); fhSpan=fhDataHi()-fhDataLo(); fhStart=fhDataLo(); fhClamp(); fhDraw(); };
+  const sv=$("#fhSave"); if(sv) sv.onclick=fhSaveFn;
+  const cv=$("#fhCanvas");
+  if(cv){
+    cv.addEventListener("pointerdown",e=>{ fhDrag={x:e.clientX,start:fhStart,moved:false}; cv.classList.add("drag"); fhHideTip(); cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener("pointermove",e=>{ if(fhDrag){ const w=cv.clientWidth||900;
+        if(Math.abs(e.clientX-fhDrag.x)>2){ fhDrag.moved=true; if(fhFollow){ fhFollow=false; const lb2=$("#fhLive"); if(lb2)lb2.classList.remove("on"); } }
+        const dt=-(e.clientX-fhDrag.x)/w*fhSpan; fhStart=fhDrag.start+dt; fhClamp(); fhDraw(); }
+      else fhHover(e.clientX); });
+    cv.addEventListener("pointerleave",()=>{ if(!fhDrag) fhHideTip(); });
+    const end=e=>{ if(fhDrag){ if(!fhDrag.moved) fhToggleLock(fhDrag.x); fhDrag=null; cv.classList.remove("drag"); } };
+    cv.addEventListener("pointerup",end); cv.addEventListener("pointercancel",end);
+    cv.addEventListener("wheel",e=>{ e.preventDefault(); const r=cv.getBoundingClientRect();
+      const frac=Math.max(0,Math.min(1,(e.clientX-r.left-44)/Math.max(1,(cv.clientWidth-56))));
+      fhZoom(e.deltaY>0?1.2:1/1.2, frac); },{passive:false});
+  }
+  addEventListener("keydown",e=>{ if(!fhOpen)return;
+    if(e.key==="Escape") fhCloseFn();
+    else if(e.key==="ArrowLeft"){ fhSetFollow(false); fhPan(-fhSpan*0.25); }
+    else if(e.key==="ArrowRight"){ fhSetFollow(false); fhPan(fhSpan*0.25); }
+    else if(e.key==="+"||e.key==="=") fhZoom(0.5);
+    else if(e.key==="-") fhZoom(2); });
+  addEventListener("resize",()=>{ if(fhOpen) fhDraw(); });
+})();
+
 (function wireGen(){
   const btn=$("#genDrillBtn");if(btn)btn.onclick=genOpenFn;
   const cl=$("#genClose");if(cl)cl.onclick=genCloseFn;
@@ -4037,7 +4693,18 @@ function gasDrawFlow(g){
   function bez(x1,y1,x2,y2,t){const mx=(x1+x2)/2,c1x=mx,c1y=y1,c2x=mx,c2y=y2,u=1-t;
     return {x:u*u*u*x1+3*u*u*t*c1x+3*u*t*t*c2x+t*t*t*x2, y:u*u*u*y1+3*u*u*t*c1y+3*u*t*t*c2y+t*t*t*y2};}
   const WAVES=[];
-  function connector(x1,y1,x2,y2,w,col,dir){
+  function connector(x1,y1,x2,y2,w,col,dir,mag){
+    // A feed carrying no flow is drawn as a thin, static dark-grey line with no
+    // wave animation — so an idle terminal (e.g. an LNG berth with 0.0 mcm/d)
+    // reads as present-but-inactive rather than a live-coloured stream.
+    if(mag!=null && mag<0.05){
+      const dead=document.createElementNS(NS,"path");
+      dead.setAttribute("d",flowPath(x1,y1,x2,y2));dead.setAttribute("fill","none");
+      dead.setAttribute("stroke","#4a5160");dead.setAttribute("stroke-width",1.2);
+      dead.setAttribute("stroke-opacity",0.7);dead.setAttribute("stroke-linecap","round");
+      s.appendChild(dead);
+      return;
+    }
     const base=document.createElementNS(NS,"path");
     base.setAttribute("d",flowPath(x1,y1,x2,y2));base.setAttribute("fill","none");
     base.setAttribute("stroke",col);base.setAttribute("stroke-width",w);
@@ -4046,11 +4713,11 @@ function gasDrawFlow(g){
     const grp=document.createElementNS(NS,"g"); s.appendChild(grp);
     WAVES.push({x1,y1,x2,y2,dir,w,col,g:grp,segs:null});
   }
-  S.forEach(o=>connector(o.x+6,o.y,spineX-spineW/2,spineMidY,wOf(Math.abs(o.mcm_d)),GAS_KIND_COLOUR[o.kind]||GF_DEMAND,+1));
+  S.forEach(o=>connector(o.x+6,o.y,spineX-spineW/2,spineMidY,wOf(Math.abs(o.mcm_d)),GAS_KIND_COLOUR[o.kind]||GF_DEMAND,+1,Math.abs(o.mcm_d)));
   rightAll.forEach(o=>{
     const importing=o.typ==="ex"&&o.mcm_d<0;
     const col=o.typ!=="ex"?GF_DEMAND:(importing?GF_ICIMPORT:GF_IC);
-    connector(spineX+spineW/2,spineMidY,o.x-6,o.y,wOf(Math.abs(o.mcm_d)),col,importing?-1:+1);
+    connector(spineX+spineW/2,spineMidY,o.x-6,o.y,wOf(Math.abs(o.mcm_d)),col,importing?-1:+1,Math.abs(o.mcm_d));
   });
 
   const NSEG=80, CYCLES=4.0;
@@ -4787,6 +5454,7 @@ function eaSeedFromCache(){
   eaData=ov;
   if(Alarm.riverWatchWanted() && ov.stations) Alarm.evaluateRivers(ov.stations);
   if(Alarm.rainWatchWanted() && ov.rainfall)  Alarm.evaluateRainfall(ov.rainfall);
+  if(Alarm.rainWatchWanted() && ov.rain_probe) Alarm.evaluateSituational(ov.rain_probe);
   if(Alarm.nowcastWatchWanted() && ov.rain_probe) Alarm.evaluateNowcast(ov.rain_probe);
   return true;
 }
@@ -4807,13 +5475,14 @@ async function eaWatchTick(){
   if(Date.now()-eaLastFetchTs < RAINWATCH_FRESH_MS){
     if(eaData && eaData.stations && wantRiver) Alarm.evaluateRivers(eaData.stations);
     if(eaData && eaData.rainfall && wantRain)  Alarm.evaluateRainfall(eaData.rainfall);
+    if(eaData && eaData.rain_probe && wantRain) Alarm.evaluateSituational(eaData.rain_probe);
     if(eaData && eaData.rain_probe && wantNowcast) Alarm.evaluateNowcast(eaData.rain_probe);
     if(!doFull) return;   // nothing more to do unless a full pull is now due
   }
-  if(!doFull && !wantRain) return;              // nothing to pull this tick
+  if(!doFull && !wantRain && !wantNowcast) return;  // nothing to pull this tick
   rainWatchBusy=true;
   try{
-    const q="/api/ea?dist="+eaDist+"&lat="+eaLoc.lat+"&lon="+eaLoc.lon+(doFull?"":"&rain=1");
+    const q="/api/ea?dist="+eaDist+"&lat="+eaLoc.lat+"&lon="+eaLoc.lon+(doFull?"":"&rain=1")+(alarmCadenceLow()?"&cadence=low":"");
     const ctl=("AbortController" in window)?new AbortController():null;
     const to=ctl?setTimeout(()=>{ try{ctl.abort();}catch(e){} }, 20000):null;
     const ov=await fetch(q, ctl?{signal:ctl.signal}:undefined).then(r=>r.json());
@@ -4827,9 +5496,12 @@ async function eaWatchTick(){
       eaSaveOverview(ov);                        // persist metadata for next load
       if(ov && ov.stations && wantRiver) Alarm.evaluateRivers(ov.stations);
       if(ov && ov.rainfall && wantRain)  Alarm.evaluateRainfall(ov.rainfall);
+      if(ov && ov.rain_probe && wantRain) Alarm.evaluateSituational(ov.rain_probe);
       if(ov && ov.rain_probe && wantNowcast) Alarm.evaluateNowcast(ov.rain_probe);
     } else {
       if(ov && ov.rainfall && wantRain) Alarm.evaluateRainfall(ov.rainfall);
+      if(ov && ov.rain_probe && wantRain) Alarm.evaluateSituational(ov.rain_probe);
+      if(ov && ov.rain_probe && wantNowcast) Alarm.evaluateNowcast(ov.rain_probe);
       if(!eaData) eaData={rainfall:ov.rainfall, dist:ov.dist, attribution:ov.attribution};
     }
   }catch(e){
@@ -4896,7 +5568,7 @@ async function eaGeocode(){
 
 async function eaFetch(){
   try{
-    const q="/api/ea?dist="+eaDist+"&lat="+eaLoc.lat+"&lon="+eaLoc.lon;
+    const q="/api/ea?dist="+eaDist+"&lat="+eaLoc.lat+"&lon="+eaLoc.lon+(alarmCadenceLow()?"&cadence=low":"");
     const [ov, fl] = await Promise.all([
       fetch(q).then(r=>r.json()),
       fetch("/api/ea-floods").then(r=>r.json()),
@@ -4910,6 +5582,7 @@ async function eaFetch(){
       eaSaveOverview(eaData);        // persist station metadata for next load
     }
     if(eaData && eaData.rainfall) Alarm.evaluateRainfall(eaData.rainfall);
+    if(eaData && eaData.rain_probe) Alarm.evaluateSituational(eaData.rain_probe);
   }catch(e){
     $("#eaBody").innerHTML='<div class="octo-loading">Could not load Environment Agency data: '+e.message+'</div>';
   }
@@ -5653,8 +6326,14 @@ function eaRender(){
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
     let pulled='';
     if(eaData.generated){ pulled=' · updated '+timeAgo(eaData.generated); }
+    // offshore model feed health (Open-Meteo daily-limit / outage) — so a blanked
+    // sea reads as "feed down", never as a falsely-calm sea.
+    const _nf=((eaData.rain_probe&&eaData.rain_probe.situational)||{}).net_feed;
+    const feedNote=(_nf&&_nf!=='ok')
+      ? ' · <span style="color:var(--warn)">offshore feed '+(_nf==='degraded'?'degraded — OC4 fallback':(_nf==='exhausted'?'exhausted — daily limit':'down'))+'</span>'
+      : '';
     rainBlock+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
-      '<span class="note">'+eaData.rainfall.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':'')+' · '+
+      '<span class="note">'+eaData.rainfall.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':'')+feedNote+' · '+
       (eaRainView==="map"?"roughly by direction":"nearest first")+
       (rained.length?'':' · all dry')+pulled+'</span>'+
       '<span class="rn-viewtoggle">'+
@@ -6005,8 +6684,10 @@ const Alarm = (function(){
 
   // Categories. `on` is the enabled state (persisted). Defaults: frequency only.
   const CATS={
-    freq:  {name:"Frequency high / low", tier:"crit", on:true,
-            desc:"Critical outside 49.5–50.5 Hz, warning outside 49.8–50.2 Hz. Fresh data only."},
+    freq:  {name:"Frequency limits", tier:"crit", on:true,
+            desc:"Escalating tones when frequency ITSELF leaves the band — below 49.8 / 49.7 / 49.5 Hz or above 50.2 / 50.3 / 50.5 Hz; statutory limits always fire; warns of possible power cuts (or generation tripping) if it stays out. Fresh data only."},
+    risk:  {name:"System risk index", tier:"warn", on:true,
+            desc:"A short pip plus the on-screen banner when the composite grid-risk level rises (low inertia / high CGRI) or a sudden infeed loss is detected. Pips and banner only — no escalating tones."},
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
@@ -6016,7 +6697,7 @@ const Alarm = (function(){
     river: {name:"River level high", tier:"crit", on:false,
             desc:"Nearby EA stations above their normal range. Needs the EA panel open. Nearest (<5mi) treated as critical."},
     rain:  {name:"Rainfall nearby", tier:"warn", on:false,
-            desc:"Informational: nearby EA gauges reporting rain (light to extremely heavy). Extra hysteresis for stop/start rain."},
+            desc:"Spoken rain/snow situation from the unified engine — isolated or widespread showers, continuous rain, or arrival at your location — on a low, state-driven cadence (not per-gauge). Needs the EA panel data."},
     gas:   {name:"Gas margin (derived)", tier:"notice", on:false,
             desc:"Soft blip only, no speech — this is a derived early-warning signal."},
     nowcast:{name:"Weather nowcast (One Call 4.0)", tier:"warn", on:false,
@@ -6135,14 +6816,23 @@ const Alarm = (function(){
   // spoken feature), so it bypasses the notice=tone-only rule in fire().
   let nowcastSaid=new Set(), nowcastPrimed=false;
   function primeNowcast(){ nowcastPrimed=false; }
+  // Keys the SITUATIONAL (rain) engine owns — the at-home intensity, approach,
+  // offshore and clearing narrative. When the rain category is armed AND situational
+  // is actively describing rain, the nowcast channel stays quiet on these so the two
+  // never double-announce (or contradict) the same event. Nowcast keeps its UNIQUE
+  // signals: minute-ahead onset (forward/nowcast), visibility, pressure and compound.
+  const NOWCAST_OVERLAP={band:1, confirm:1, modelonly:1, trend:1, approach:1, sea:1, land_fade:1, settled:1};
   function evaluateNowcast(rp){
     if(!armed || !(CATS.nowcast && CATS.nowcast.on)) return;
     const ws=(rp && rp.would_speak) || [];
+    const sit=rp && rp.situational;
+    const sitActive=!!(CATS.rain && CATS.rain.on && sit && sit.base_state && sit.base_state!=="clear");
     const cur=new Set(ws.map(w=>(w.key||"")+"|"+(w.phrase||"")));
     if(!nowcastPrimed){ nowcastSaid=cur; nowcastPrimed=true; return; }
     ws.forEach(w=>{
       const sig=(w.key||"")+"|"+(w.phrase||"");
       if(nowcastSaid.has(sig)) return;
+      if(sitActive && NOWCAST_OVERLAP[w.key]) return;   // situational owns this line
       tone(w.tier||"notice");
       if(w.phrase) say(w.phrase);
       flashBtn();
@@ -6151,28 +6841,195 @@ const Alarm = (function(){
   }
   function nowcastWatchWanted(){ return armed && !!(CATS.nowcast && CATS.nowcast.on); }
 
+  // ---- situational rainfall/snow voice (server-side unified engine) ----
+  // Voices `situational_speak` from the rain probe under the RAIN category,
+  // edge-triggered (each new phrase once). This is the single rainfall voice; the
+  // old per-gauge escalation cadence in evaluateRainfall is retired.
+  let sitSaid=new Set(), sitPrimed=false;
+  function primeSituational(){ sitPrimed=false; }
+  function evaluateSituational(rp){
+    if(!armed || !(CATS.rain && CATS.rain.on)) return;
+    const sp=(rp && rp.situational_speak) || [];
+    const cur=new Set(sp.map(w=>(w.key||"")+"|"+(w.phrase||"")));
+    if(!sitPrimed){ sitSaid=cur; sitPrimed=true; return; }
+    sp.forEach(w=>{
+      const k=(w.key||"")+"|"+(w.phrase||"");
+      if(sitSaid.has(k)) return;
+      tone(w.tier||"notice");
+      if(w.phrase) say(w.phrase);
+      flashBtn();
+    });
+    sitSaid=cur;
+  }
+
+  // ---- integrated frequency + system-risk alarm (escalating) --------------
+  const SR={tier:0, level:"green", since:0, lastVoice:0, powerCutSaid:false,
+            running:false, lastHz:null, worsening:false, high:false, freqTier:0, lastRiskSev:0};
+  const SR_TIER_HZ=[49.8,49.7,49.5];        // under-frequency tier floors
+  const SR_HI_TIER_HZ=[50.2,50.3,50.5];     // over-frequency tier ceilings (mirror)
+  const SR_DEADBAND=0.03;
+  // Burst-based cadence (curbs alarm fatigue): each burst is a capped run of SOUND,
+  // followed by a long silent gap until the next. Index = tier.
+  const SR_BURST_S =[0, 10, 15, 15];     // max seconds of sound per burst
+  const SR_PERIOD_S=[0,120,120, 60];     // seconds between burst starts
+  // After a persisting alarm has run this long, wind right down to a quiet reminder
+  // (any tier): a short ping every 15 min, so a stuck-low grid never blares on.
+  const SR_FATIGUE_MS=240000;            // 4 minutes
+  const SR_FATIGUE_BURST_S=5, SR_FATIGUE_PERIOD_S=900;   // <=5 s every 15 min
+  const SR_POWERCUT_S=150;
+  // Symmetric tiering: under-frequency (generation loss) AND over-frequency (low
+  // demand / sudden loss of load or export) escalate through the same tiers.
+  // Returns {tier, high} — `high` says which side of nominal triggered it.
+  function srTierOf(hz){
+    if(hz==null) return {tier:0, high:false};
+    if(hz<=SR_TIER_HZ[2])    return {tier:3, high:false};
+    if(hz>=SR_HI_TIER_HZ[2]) return {tier:3, high:true};
+    if(hz<=SR_TIER_HZ[1])    return {tier:2, high:false};
+    if(hz>=SR_HI_TIER_HZ[1]) return {tier:2, high:true};
+    if(hz<=SR_TIER_HZ[0])    return {tier:1, high:false};
+    if(hz>=SR_HI_TIER_HZ[0]) return {tier:1, high:true};
+    return {tier:0, high:(hz>50)};
+  }
+  // System-risk severity (server level + a sudden infeed-loss detection). This drives
+  // ONLY a pip + the banner — NOT the escalating tones. amber / infeed-loss -> 1,
+  // red / severe infeed-loss -> 2.
+  function riskSev(risk){
+    if(!risk) return 0;
+    const gl=risk.gen_loss||{};
+    let s=0;
+    if(risk.level==="amber") s=1; else if(risk.level==="red") s=2;
+    if(gl.flagged) s=Math.max(s,1);
+    if(gl.severe)  s=Math.max(s,2);
+    return s;
+  }
+  // Pip once when the risk severity RISES (edge-triggered); the banner (alert card +
+  // panel colour) carries the persistent state. Never plays the escalating tones.
+  function riskPip(risk, suppressed){
+    const sev=riskSev(risk);
+    // Pip only on a genuine RISE after baseline (adopt the current state silently on
+    // load). Suppressed while an actual frequency-band tone is already sounding — the
+    // tones own that case, so risk only pips when frequency itself is in-band.
+    if(!suppressed && armed && baselined && CATS.risk && CATS.risk.on && sev>SR.lastRiskSev){
+      tone(sev>=2?"crit":"warn");   // short pip signature — no speech
+      flashBtn();
+    }
+    SR.lastRiskSev=sev;
+  }
+  const SR_F1=600, SR_F2=720, SR_LO=523, SR_HI=784;   // tier tones + siren pair
+  let srOsc=[], srTimers=[];
+  // A SUSTAINED beep (flat hold), not a decaying pip. `when` schedules ahead.
+  function srBeepTone(freq, dur, gain, when){
+    if(!ensureCtx()) return;
+    when=when||0;
+    const o=ac.createOscillator(), g=ac.createGain();
+    o.type="sine"; o.frequency.value=freq;
+    o.connect(g); g.connect(ac.destination);
+    const t=ac.currentTime+when;
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(gain,t+0.012);
+    g.gain.setValueAtTime(gain,t+Math.max(0.02,dur-0.05));
+    g.gain.linearRampToValueAtTime(0.0001,t+dur);
+    o.start(t); o.stop(t+dur+0.02);
+    srOsc.push(o); o.onended=()=>{ const i=srOsc.indexOf(o); if(i>=0) srOsc.splice(i,1); };
+  }
+  function srSiren(secs){ const n=Math.round((secs||10)/0.5);
+    for(let i=0;i<n;i++) srBeepTone(i%2?SR_HI:SR_LO, 0.5, 0.32, i*0.5); return n*0.5; }
+  function srClear(){ srTimers.forEach(clearTimeout); srTimers=[];
+    srOsc.forEach(o=>{ try{ o.stop(); }catch(e){} }); srOsc=[]; }
+  function srAt(ms,fn){ const id=setTimeout(fn,ms); srTimers.push(id); return id; }
+  // Cadence for the NEXT burst: capped sound length + period between burst starts.
+  //  T1: <=10s every 2 min.  T2: <=15s every 2 min.  T3: <=15s every 1 min.
+  //  Once the alarm has been running >4 min (any tier): <=5s every 15 min.
+  function srBurstPlan(){
+    if((Date.now()-SR.since) >= SR_FATIGUE_MS)
+      return {burst:SR_FATIGUE_BURST_S, period:SR_FATIGUE_PERIOD_S};
+    const t=Math.min(3, SR.tier);
+    return {burst:SR_BURST_S[t], period:SR_PERIOD_S[t]};
+  }
+  // One burst of the tier's pattern, its SOUND capped at maxS seconds, then it speaks once.
+  //  T1: 1s 600Hz tone every 3s.  T2: 0.5s 720Hz tone every 1.5s.  T3: low-high siren.
+  function srBurst(maxS){
+    if(SR.tier>=3){ const d=srSiren(maxS); srAt(Math.min(d,maxS)*1000, ()=>srVoice(SR.lastHz)); }
+    else if(SR.tier===2){ for(let t=0; t+0.5<=maxS; t+=1.5) srBeepTone(SR_F2,0.5,0.30,t); srVoice(SR.lastHz); }
+    else { for(let t=0; t+1<=maxS; t+=3) srBeepTone(SR_F1,1.0,0.28,t); srVoice(SR.lastHz); }
+  }
+  function srCycle(){
+    srClear();
+    if(!armed || !(CATS.freq&&CATS.freq.on) || SR.tier<1){ SR.running=false; return; }
+    const p=srBurstPlan();
+    srBurst(p.burst);
+    srAt(p.period*1000, srCycle);          // silent until the next burst starts
+  }
+  function srStartCycle(){ SR.running=true; srCycle(); }
+  function srStopCycle(){ SR.running=false; srClear(); }
+  // The tones speak ONLY for a real frequency-band excursion, so this is frequency-only.
+  function srVoice(hz){
+    SR.lastVoice=Date.now();
+    if(hz==null) return;
+    let msg=(SR.tier>=3?"Critical":"Warning")+". Grid frequency "+(SR.high?"high":"low")+", "+hz.toFixed(2)+" hertz.";
+    if(SR.level==="red") msg+=" System inertia is low, limited reserve.";
+    else if(SR.level==="amber") msg+=" System inertia reduced.";
+    if(SR.worsening && SR.tier>=2) msg+=(SR.high?" Still rising.":" Still falling.");
+    say(msg);
+  }
+  function evaluateSystemRisk(freq, risk){
+    if(risk) SR.level=risk.level||"green";
+    const hz=(freq && freq.hz!=null)?freq.hz:null;
+    const stale=!freq || freq.stale || hz==null;
+    // TONES escalate ONLY on an actual frequency-band excursion (symmetric under-/over-
+    // frequency). The composite risk level never adds a tone — it pips instead.
+    let freqTier=0, high=false;
+    if(!stale){
+      const ti=srTierOf(hz); freqTier=ti.tier; high=ti.high;
+      // Frequency-band hysteresis: hold the previous band tier until recovered inside
+      // the boundary + deadband (direction-aware), so a band excursion doesn't chatter.
+      if(freqTier < SR.freqTier && SR.freqTier>=1){
+        const bnd=(SR.high?SR_HI_TIER_HZ:SR_TIER_HZ)[Math.min(2,SR.freqTier-1)];
+        const recovered = SR.high ? (hz < bnd-SR_DEADBAND) : (hz > bnd+SR_DEADBAND);
+        if(!recovered){ freqTier=SR.freqTier; high=SR.high; }
+      }
+    }
+    // SYSTEM RISK (level + infeed loss) is a SEPARATE alert: pip + banner only, never
+    // the tones — and suppressed while a frequency-band tone is already sounding.
+    riskPip(risk, freqTier>=1);
+    if(stale){
+      SR.tier=0; SR.freqTier=0; srStopCycle(); SR.since=0; SR.powerCutSaid=false; SR.lastHz=null; return;
+    }
+    let eff=freqTier;
+    const rocof=(risk && risk.rocof_obs!=null)?risk.rocof_obs:null;
+    // "worsening" = moving further from nominal: falling when low, rising when high.
+    SR.worsening = high
+      ? (rocof!=null ? rocof>=0.02 : (SR.lastHz!=null && hz>SR.lastHz+0.005))
+      : (rocof!=null ? rocof<=-0.02 : (SR.lastHz!=null && hz<SR.lastHz-0.005));
+    SR.lastHz=hz;
+    const now=Date.now();
+    if(!armed || !(CATS.freq&&CATS.freq.on)){ SR.tier=eff; SR.high=high; SR.freqTier=freqTier; srStopCycle(); return; }
+    const entered=eff>=1 && SR.tier<1, rose=eff>SR.tier;
+    // First entry OR an escalation restarts the cadence clock: a fresh burst now, and
+    // the 4-min fatigue timer resets so a worsening event re-alerts at full cadence.
+    if(entered || rose){ SR.since=now; SR.powerCutSaid=false; }
+    SR.tier=eff; SR.high=high; SR.freqTier=freqTier;
+    if(!baselined){ srStopCycle(); return; }
+    if(SR.tier>=1){
+      if(entered || rose) srStartCycle();     // (re)start bursts at the new tier / cadence
+      else if(!SR.running) srStartCycle();     // resume if somehow stopped (the burst gap keeps running=true)
+      const crit=(SR.tier>=3) || (SR.tier>=1 && SR.worsening);
+      if(crit && !SR.powerCutSaid && (now-SR.since) >= SR_POWERCUT_S*1000){
+        SR.powerCutSaid=true;
+        say(SR.high
+          ? "Grid frequency remains high and is not recovering. Generation may begin tripping on over-frequency protection."
+          : "Grid frequency remains critically low and is not recovering. Power cuts may be imminent.");
+      }
+    } else { srStopCycle(); SR.since=0; SR.powerCutSaid=false; }
+  }
+
   // ---- evaluation from the main grid snapshot ----
   function evaluate(d){
     if(!d){ return; }
     // Frequency — fresh only. Hysteresis: clear bands are slightly inside the
     // trip bands so it doesn't chatter on the boundary.
-    const f=d.frequency;
-    if(f && f.hz!=null && !f.stale){
-      const hz=f.hz;
-      const critHi=hz>=50.5, critLo=hz<=49.5;
-      const warnHi=hz>=50.2, warnLo=hz<=49.8;
-      set("freq","freq-crit-hi", critHi, "crit", "Critical. Grid frequency high, "+hz.toFixed(2)+" hertz.");
-      set("freq","freq-crit-lo", critLo, "crit", "Critical. Grid frequency low, "+hz.toFixed(2)+" hertz.");
-      // warning only when not already critical (avoid double-speak)
-      set("freq","freq-warn-hi", warnHi && !critHi, "warn", "Warning. Grid frequency high, "+hz.toFixed(2)+" hertz.");
-      set("freq","freq-warn-lo", warnLo && !critLo, "warn", "Warning. Grid frequency low, "+hz.toFixed(2)+" hertz.");
-    } else {
-      // stale/missing: clear latches so recovery re-arms, but never fire
-      ["freq-crit-hi","freq-crit-lo","freq-warn-hi","freq-warn-lo"].forEach(k=>{
-        if(active[k]){ delete active[k]; critActiveCount=Math.max(0,critActiveCount-1); }
-      });
-      stopCritRepeat();
-    }
+    // Integrated frequency + system-risk alarm (hard floor + escalating ladder).
+    evaluateSystemRisk(d.frequency, d.system_risk);
 
     // Reserve — CRITICAL when spinning reserve < largest infeed.
     const r=d.reserve;
@@ -6398,50 +7255,10 @@ const Alarm = (function(){
       ? wet.filter(r=>r.dist_km!=null && r.dist_km<=15 && _bandRank(r.band)>=worstRank).length > 5
       : false;
 
-    // --- escalation cadence (only while latched-on) ---
-    // Re-announce when the worst band steps UP, and otherwise repeat at the
-    // current band on a distance-scaled, log-widening schedule. This overrides
-    // the plain latch's one-shot behaviour so intensifying rain is heard.
-    let spoken=null, forceAnnounce=false;
-    if(want){
-      const base=_rainBaseInterval(nearestAtWorst ? nearestAtWorst.dist_km : null);
-      if(!wasLatched){
-        // fresh latch: normal first announcement, seed the cadence
-        rainWorstRank=worstRank; rainRepeatStep=0;
-        rainNextAnnounce=now+base;
-      } else if(worstRank>rainWorstRank){
-        // STEP UP — override hysteresis, announce now, reset cadence to base
-        rainWorstRank=worstRank; rainRepeatStep=0;
-        rainNextAnnounce=now+base; forceAnnounce=true;
-        spoken=_rainPhrase(worst, nearestAtWorst, sustained);
-      } else if(now>=rainNextAnnounce && worst){
-        // due a repeat at the current (or lower) band — log-widen the interval
-        rainRepeatStep++;
-        const wait=Math.min(base*Math.pow(2,rainRepeatStep), RAIN_CADENCE_CAP);
-        rainNextAnnounce=now+wait; forceAnnounce=true;
-        rainWorstRank=worstRank;   // track downward drift too
-        spoken=_rainPhrase(worst, nearestAtWorst, sustained);
-      } else {
-        // no step up and not yet due: keep worst-rank tracking current
-        rainWorstRank=worstRank;
-      }
-    } else {
-      // cleared: reset cadence state
-      rainWorstRank=-1; rainRepeatStep=0; rainNextAnnounce=0;
-    }
-
-    // The base latch still handles the very first dry->wet announcement (via
-    // set() firing on the transition). For step-ups / repeats we force-announce
-    // here without toggling the latch.
-    if(!wasLatched && want && !spoken){
-      spoken=_rainPhrase(worst||"light rain", nearestAtWorst, sustained);
-    }
-    if(forceAnnounce && spoken){
-      fire("warn", spoken);        // re-announce over the held latch
-      flashBtnSafe();
-    }
-    // keep the latch itself in sync (fires once on the initial transition)
-    set("rain","rain-situation", want, "warn", (wasLatched||forceAnnounce)?null:spoken);
+    // The rainfall/snow VOICE is now the server-side situational engine (see
+    // WEATHER_ALERT_DESIGN.md / evaluateSituational). This function keeps only the visual
+    // situation + header popup below; the old per-cell escalation cadence and its
+    // spoken latch are retired, so there is a single, state-driven voice.
 
     // --- main-page popup (driven by this same engine, only while armed) ---
     // Wording per spec: "<Band> now" when the nearest raining gauge is within
@@ -6462,9 +7279,15 @@ const Alarm = (function(){
                      here: here && freshNow, dist_km:dist, sustained});
       rainPopupWasWet=true;
     } else if(rainPopupWasWet){
-      // transition wet -> dry: show "Rain stopped" (auto-clears after timeout)
-      showRainPopup({kind:"stopped"});
-      rainPopupWasWet=false;
+      // gauges dry — but only say "Rain stopped" if the situational engine also reports
+      // clear. While it still sees showers in the airmass (model-confirmed between the
+      // gauges) hold the badge, so an intermittent shower can't flash a false all-clear.
+      const _sit=(eaData&&eaData.rain_probe&&eaData.rain_probe.situational);
+      const _sitActive=_sit&&_sit.base_state&&_sit.base_state!=="clear"&&_sit.base_state!=="wet";
+      if(!_sitActive){
+        showRainPopup({kind:"stopped"});
+        rainPopupWasWet=false;
+      }
     }
     // if already dry and stopped shown, the timeout handles removal
   }
@@ -6492,7 +7315,7 @@ const Alarm = (function(){
   // ---- arm / disarm ----
   function arm(){
     armed=true; ensureCtx();
-    primeNowcast();
+    primeNowcast(); primeSituational();
     // a tiny confirmation blip so the user knows sound is live
     tone("notice");
     updateBtn();
@@ -6547,15 +7370,49 @@ const Alarm = (function(){
         '<button class="ac-toggle'+(c.on?' on':'')+'" aria-label="toggle"></button>';
       const [testBtn, tog]=[row.querySelector(".ac-test"), row.querySelector(".ac-toggle")];
       testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
-        if(cat==="rain") say("Rain warning: Moderate rain detected within 5 kilometres. Test.");
+        if(cat==="rain") say("Isolated heavy showers to the north-west, which may be with you soon. Test.");
         else if(cat==="nowcast") say("Weather nowcast: Rain is approaching from the south west and may arrive in twenty to thirty minutes. Test.");
         else if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
       tog.onclick=()=>{ c.on=!c.on; tog.classList.toggle("on",c.on); persist();
         if(cat==="nowcast" && c.on) primeNowcast();   // adopt current state silently
+        if(cat==="rain" && c.on) primeSituational();
         notifyWatchChange();   // rain/nowcast toggle may start/stop the background watch
       };
       host.appendChild(row);
     });
+    // forecast-alert cadence: Normal / Low (halves the repeat rate of ongoing situations)
+    const crow=document.createElement("div"); crow.className="alarm-cat";
+    crow.innerHTML='<div class="ac-main"><div class="ac-name">Forecast alert cadence</div>'+
+      '<div class="ac-desc">How often an ongoing rain or snow situation repeats. <b>Low</b> roughly halves it; arrivals within 5 km and one-off alerts are unaffected.</div></div>'+
+      '<button class="ac-cad">'+(alarmCadenceLow()?"Low":"Normal")+'</button>';
+    const cbtn=crow.querySelector(".ac-cad"); cbtn.classList.toggle("low",alarmCadenceLow());
+    cbtn.onclick=()=>{ const nl=!alarmCadenceLow();
+      try{ localStorage.setItem("alarmCadenceLow", nl?"1":"0"); }catch(e){}
+      cbtn.textContent=nl?"Low":"Normal"; cbtn.classList.toggle("low",nl); };
+    host.appendChild(crow);
+    // active forecast window: concentrate the paid API budget in chosen hours
+    const fw=document.createElement("div"); fw.className="alarm-cat";
+    fw.innerHTML='<div class="ac-main"><div class="ac-name">Active forecast window</div>'+
+      '<div class="ac-desc">Concentrate the paid API budget (offshore model, land probes, wind) in these hours, local time. Outside them, that sampling slows by the quiet factor to protect the daily quota \u2014 alarms still run. End before start wraps past midnight.</div>'+
+      '<div class="ac-fw" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:7px;align-items:center;font-family:monospace;font-size:12px">'+
+        '<label style="display:flex;gap:5px;align-items:center"><input type="checkbox" class="fw-en"> enabled</label>'+
+        '<input type="time" class="fw-start" style="font-family:monospace"> to <input type="time" class="fw-end" style="font-family:monospace">'+
+        '<span>\u00b7 quiet \u00d7</span><input type="number" class="fw-mult" min="1" max="12" step="0.5" style="width:56px;font-family:monospace">'+
+        '<button class="fw-save">save</button><span class="fw-status" style="color:var(--muted,#8595a8)"></span>'+
+      '</div></div>';
+    host.appendChild(fw);
+    const fwEn=fw.querySelector(".fw-en"), fwS=fw.querySelector(".fw-start"), fwE=fw.querySelector(".fw-end"),
+          fwM=fw.querySelector(".fw-mult"), fwSt=fw.querySelector(".fw-status"), fwBtn=fw.querySelector(".fw-save");
+    fetch("/api/forecast_window",{cache:"no-store"}).then(r=>r.json()).then(cfg=>{
+      fwEn.checked=!!cfg.enabled; fwS.value=cfg.start||"07:00"; fwE.value=cfg.end||"23:00"; fwM.value=cfg.quiet_mult||3;
+    }).catch(()=>{ fwSt.textContent="(server offline)"; });
+    fwBtn.onclick=()=>{ fwSt.textContent="saving\u2026";
+      fetch("/api/forecast_window",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({enabled:fwEn.checked,start:fwS.value,end:fwE.value,quiet_mult:parseFloat(fwM.value)||3})})
+        .then(r=>r.json()).then(res=>{ fwSt.textContent=(res&&res.ok)?"saved":"error";
+          if(res&&res.config){ fwEn.checked=!!res.config.enabled; fwS.value=res.config.start; fwE.value=res.config.end; fwM.value=res.config.quiet_mult; }
+          setTimeout(()=>{fwSt.textContent="";},2500); })
+        .catch(()=>{ fwSt.textContent="save failed"; }); };
   }
 
   function wire(){
@@ -6570,7 +7427,7 @@ const Alarm = (function(){
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateGas, clearEA,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, clearEA,
            rainWatchWanted, riverWatchWanted, nowcastWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();
