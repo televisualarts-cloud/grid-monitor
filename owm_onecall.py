@@ -81,10 +81,17 @@ def fetch_sea_precip(points, api_key, units="metric", timeout=8, fetch=_default_
     'current' (radar/satellite-fed — the quality source). ONE call per point —
     OWM is not batched — so callers must keep the point count small and budget it.
     Returns one dict per point, aligned to `points`:
-        {"mm": <total precip rate mm/h or None>, "snow": <bool: snow-dominant>}
+        {"mm": <rate mm/h; 0.0 when dry, None only on failure>,
+         "snow": <bool: snow-dominant>, "src": "OC4", "sent": <bool>}
     'mm' is rain+snow (both OWM 1h fields are mm/h liquid-equivalent) so a wintry
     point is still DETECTED; 'snow' flags it so the card can be recoloured rather
-    than mislabelled as rain. None mm where the point is dry or the fetch failed."""
+    than mislabelled as rain.
+
+    Dry-vs-failed contract (matches the Open-Meteo net's fetch_om_precip): a
+    SUCCESSFUL read returns the real rate — 0.0 on a dry point — with sent=True,
+    so a caller can tell "no rain here" (covered) apart from "no reading"
+    (mm=None, sent=False). Collapsing dry to None previously made a dry OC4
+    fallback indistinguishable from a blind feed (honesty over plausibility)."""
     out = []
     for p in points:
         try:
@@ -93,10 +100,11 @@ def fetch_sea_precip(points, api_key, units="metric", timeout=8, fetch=_default_
             rain = c.get("rain_1h") or 0.0
             snow = c.get("snow_1h") or 0.0
             tot = rain + snow
-            out.append({"mm": (tot if tot > 0 else None),
-                        "snow": bool(snow > 0 and snow >= rain), "src": "OC4"})
+            out.append({"mm": tot,          # 0.0 on a dry point = a real reading, not "no data"
+                        "snow": bool(snow > 0 and snow >= rain),
+                        "src": "OC4", "sent": True})
         except Exception:
-            out.append({"mm": None, "snow": False, "src": "OC4"})
+            out.append({"mm": None, "snow": False, "src": "OC4", "sent": False})
     return out
 
 

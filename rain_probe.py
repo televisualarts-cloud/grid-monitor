@@ -939,14 +939,20 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
             transient = (not daily) and any(k in _r for k in ("backing off", "minute", "minutely", "hour", "hourly", "429", "rate", "too many", "quota"))
             # OC4 fallback: sample a few key sentinels through the budgeted track sampler
             # so offshore detection degrades gracefully instead of going blind.
-            applied = 0
+            #
+            # Judge COVERAGE by whether each read reached the source, not by whether it
+            # found rain: a successful DRY read (mm == 0.0, or sent=True) is coverage,
+            # not a blind spot. Counting only mm-not-None previously mislabelled a dry
+            # OC4 fallback as "exhausted"/blind on a rain-free arc, even though OC4 had
+            # answered and correctly reported no rain. (Honesty over plausibility.)
+            covered = 0
             if track_sample_fn is not None and track_sample_fn is not net_sample_fn:
                 fb = _fallback_sentinels(disp)
                 for pt, rt in zip(fb, track_sample_fn(fb) if fb else []):
-                    if isinstance(rt, dict) and rt.get("mm") is not None:
-                        _apply_sample(pt, rt); applied += 1
-            if applied:      state.net_feed = "degraded"    # OC4 is covering the gap
-            elif daily:      state.net_feed = "exhausted"   # daily cap: down until 00:00 UTC
+                    if isinstance(rt, dict) and (rt.get("sent") or rt.get("mm") is not None):
+                        _apply_sample(pt, rt); covered += 1
+            if covered:      state.net_feed = "degraded"    # OC4 covering the gap (may be dry)
+            elif daily:      state.net_feed = "exhausted"   # daily cap AND no fallback coverage
             elif transient:  state.net_feed = "throttled"   # minute/hour rate-limit: recovers shortly
             else:            state.net_feed = "down"
             state.net_feed_reason = reason
