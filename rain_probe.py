@@ -13,7 +13,7 @@
 # the EA collect path and hand it data already fetched (see INTEGRATION notes).
 
 from __future__ import annotations
-import json, math, time, random, urllib.request, urllib.parse
+import json, math, time, random, os, threading, urllib.request, urllib.parse, urllib.error
 from dataclasses import dataclass, field, asdict
 
 # ───────────────────────── tunables (all in one place) ──────────────────────
@@ -61,6 +61,13 @@ NET_RANGES       = [40, 30, 20, 10, 5]  # ranges the sea-mask tests (net rings +
 NET_DITHER_DEG   = 10                 # under-hood azimuth jitter for the detection-only fill points
 NET_FILL_RANGES  = [30, 10]           # mid ranges the dithered fill sweeps for coverage between rings
 ARC_DETECT_MMH   = 0.3                # model rate that counts as "rain on this point"
+# Frugality: each net point counts as one free-tier Open-Meteo call, so sample the
+# slow-moving offshore model at most this often and reuse the readings in between;
+# keep the hidden fill coords stable for an epoch so identical points are re-sampled
+# (cacheable) rather than a fresh random set each cycle that multiplies the call count.
+NET_SAMPLE_TTL_S   = 15 * 60          # sample the offshore net at most this often
+NET_DITHER_EPOCH_S = 60 * 60          # keep the dithered fill azimuths stable this long
+OC4_FALLBACK_MAX   = 4                # on Open-Meteo failure, sample <= this many sentinels via OC4
 SEA_MASK_TTL     = 24 * 3600          # land/sea geography is static; refresh ~daily
 GEOCODE_BASE     = "https://api.postcodes.io"
 
@@ -113,7 +120,82 @@ FRONT_WEAKEN      = -1.0              # mm/h fall over the window = easing
 FRONT_FIZZLE_MMH  = 1.0               # weakening AND peak below this = likely to fizzle out
 ARC_WEAKEN_MMH    = 0.5               # sea edge intensity drop that counts as "weakening"
 
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+# Open-Meteo forecast endpoint. The free public host is rate-limited PER IP and shared,
+# so a busy/CGNAT/cloud IP can sit permanently "daily limit exceeded". Set OPEN_METEO_BASE
+# (e.g. a self-hosted Open-Meteo: http://localhost:8080/v1) to use a private quota instead.
+OM_BASE = os.environ.get("OPEN_METEO_BASE", "https://api.open-meteo.com/v1").rstrip("/")
+OPEN_METEO_URL = OM_BASE + "/forecast"
+
+
+# ───────────────────────── API call metering (diagnostic) ───────────────────
+# Every REAL (non-cached) upstream call is logged with a tag naming what asked for
+# it, so we can see exactly where the OM / OWM budgets go. Two files next to this
+# module: a rolling JSONL event log (api_calls.jsonl) and a per-UTC-day tally
+# (api_usage_daily.json, reset at 00:00 UTC, persisted across restarts).
+METER_ENABLED = True
+_METER_DIR  = os.path.dirname(os.path.abspath(__file__))
+METER_LOG   = os.path.join(_METER_DIR, "api_calls.jsonl")
+METER_TALLY = os.path.join(_METER_DIR, "api_usage_daily.json")
+METER_LOG_MAX = 5 * 1024 * 1024                 # rotate the event log past ~5 MB
+_meter_lock = threading.Lock()
+_meter_day  = {"date": None, "counts": {}}
+
+def _utc_day():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+def _meter_load_day():
+    d = _utc_day()
+    if _meter_day["date"] == d:
+        return
+    _meter_day["date"] = d; _meter_day["counts"] = {}
+    try:
+        blob = json.loads(open(METER_TALLY, encoding="utf-8").read())
+        if blob.get("date") == d:
+            _meter_day["counts"] = dict(blob.get("counts") or {})
+    except Exception:
+        pass
+
+def _meter_save_day():
+    try:
+        with open(METER_TALLY, "w", encoding="utf-8") as fh:
+            json.dump({"date": _meter_day["date"], "counts": _meter_day["counts"]}, fh)
+    except Exception:
+        pass
+
+def meter_api(api, tag, n=1, note=""):
+    """Record n real upstream calls to `api` (OM/OWM/EA/...) made for `tag`. Appends a
+    JSONL event and bumps the per-UTC-day tally. Never raises; safe from many threads."""
+    if not METER_ENABLED or not n or n <= 0:
+        return
+    try:
+        with _meter_lock:
+            _meter_load_day()
+            key = str(api) + "/" + str(tag)
+            _meter_day["counts"][key] = _meter_day["counts"].get(key, 0) + int(n)
+            _meter_save_day()
+            try:
+                if os.path.exists(METER_LOG) and os.path.getsize(METER_LOG) > METER_LOG_MAX:
+                    os.replace(METER_LOG, METER_LOG + ".1")
+            except Exception:
+                pass
+            rec = {"iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "ts": round(time.time(), 1), "api": api, "tag": tag, "n": int(n)}
+            if note:
+                rec["note"] = note
+            with open(METER_LOG, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+def api_usage_today():
+    """Per-UTC-day call tally for surfacing: {date, counts:{'OM/offshore_net':N,...}, total}."""
+    try:
+        with _meter_lock:
+            _meter_load_day()
+            counts = dict(_meter_day["counts"])
+        return {"date": _meter_day["date"], "counts": counts, "total": sum(counts.values())}
+    except Exception:
+        return {"date": None, "counts": {}, "total": 0}
 
 
 # ───────────────────────── small geo/number helpers ─────────────────────────
@@ -186,6 +268,30 @@ class ProbeState:
     mobile_seq: int = 0                                # id counter for spawned mobiles
     net_edge_hist: list = field(default_factory=list)  # [[ts, nearest_wet_net_km, peak_mm]] — front-speed source
     net_speed_kmh: float | None = None                 # last measured net-edge closing speed
+    net_cache: dict = field(default_factory=dict)      # (bearing,range)->{mm,snow,src}: last net sample, reused within TTL
+    net_cache_ts: float = 0.0                          # when the net was last actually sampled (Open-Meteo)
+    net_dither: dict = field(default_factory=dict)     # az->stable jitter (regenerated per dither epoch)
+    net_dither_ts: float = 0.0                         # when the dither pattern was last regenerated
+    net_feed: str = "ok"                               # offshore feed state: ok | degraded | exhausted | down
+    net_feed_reason: "str | None" = None               # human reason (e.g. daily limit) when not ok
+    gauge_hist: dict = field(default_factory=dict)     # id -> [[ts, mm_h], ...] rolling per-gauge history
+    sit_state: str = "clear"                           # last situational base state (for dwell)
+    sit_state_since: float = 0.0
+    sit_group: str = "clear"                           # coarse group for dwell (here/showers/continuous/...)
+    sit_group_since: float = 0.0
+    sit_announced: dict = field(default_factory=dict)  # key -> {"phrase","next"} cadence schedule
+    sit_last_snow: bool = False
+    sit_episode_spoke: bool = False                    # did the current precip episode actually announce anything?
+    sit_dir_sect: "int | None" = None                  # last announced direction sector (8ths) for hysteresis
+    sit_tracks: list = field(default_factory=list)     # tracked precip clusters (continuity across sectors)
+    sit_track_seq: int = 0
+    sit_probes: list = field(default_factory=list)     # [{bearing,dist_km,mm,snow,ts}] land model-probe confirmations
+    sit_probe_ts: float = 0.0                          # last probe-deployment time
+    sit_probe_phase: int = 0                           # rotates so consecutive probes cover new ground
+    sit_probe_used: int = 0                            # probe SAMPLES spent this episode (budget cap)
+    sit_probe_used_ts: float = 0.0                     # when the episode budget was last touched
+    sit_last_showery_ts: float = 0.0                   # last time the situation was showery (episode memory)
+    sit_last_centroid: "list | None" = None            # [bearing, dist] of the last active cluster
     sea_pts: list = field(default_factory=list)         # [[az,range],...] that are sea
     sea_home: list | None = None
     sea_ts: float = 0.0
@@ -237,17 +343,17 @@ def compute_trend(hist, now):
     if d <= -TREND_DEADBAND: return "easing", d
     return "steady", d
 
-def pressure_tendency(hist, now):
-    """hPa/hr over the available history (up to ~3h), plus a class label."""
-    h = _trim(hist, now, 3 * 3600)
-    if len(h) < 2 or _span(h) < MIN_PRESS_SPAN_S or not _fresh(h, now):
-        return 0.0, "steady"           # warm-up / stale: no bogus slope
-    (t0, p0), (t1, p1) = h[0], h[-1]
-    dt_hr = (t1 - t0) / 3600.0
-    if dt_hr <= 0: return 0.0, "steady"
-    rate = (p1 - p0) / dt_hr
+def pcls_from_change3h(change_3h):
+    """Classify pressure tendency from the AUTHORITATIVE 3-hour change (hPa/3h) that the
+    weather panel already computes from its persisted, restart-surviving log. The spoken
+    pressure alert uses this single figure, so the voice and the panel can never disagree.
+    (This replaces a second, weaker in-memory endpoint slope that had its own volatile
+    history and could point the opposite way to the panel.)"""
+    if change_3h is None:
+        return 0.0, "steady"
+    rate = change_3h / 3.0             # hPa per hour, comparable to the thresholds below
     if abs(rate) > PRESS_RATE_SANE:
-        return rate, "steady"          # unphysical rate = bad data; report, do not alarm
+        return rate, "steady"          # unphysical = bad data; report, do not alarm
     if rate <= -PRESS_FALL_STORM: cls = "falling_storm"
     elif rate <= -PRESS_FALL_FAST: cls = "falling_fast"
     elif rate <= -PRESS_FALL: cls = "falling"
@@ -502,11 +608,62 @@ def ensure_sea_mask(state, home, now, landsea_fn):
 def _sea_set(state):
     return {(a, r) for a, r in state.sea_pts}
 
+OM_BACKOFF_S = 90               # after a minute/hour rate-limit, pause Open-Meteo this long
+# Open-Meteo's free tier is enforced PER IP and shared, so the "Daily API request limit
+# exceeded — try again tomorrow" message can appear early in the UTC day and regardless
+# of THIS app's own call count (a shared/CGNAT/cloud IP is drained by everyone on it;
+# reproducibly seen returning 429 from a fresh IP that had made zero calls). OM itself
+# says "try again tomorrow", so after a DAILY rejection we hold off until just after the
+# next 00:00 UTC reset — but keep at most an hourly probe in case a shared pool frees up
+# sooner. Non-daily (minute/hour) limits use the short pause. OC4 covers the gap meanwhile.
+OM_DAILY_PROBE_S = 900          # while daily-capped, re-probe every 15 min. This is also
+                                # how quickly it recovers by itself after you CHANGE IP
+                                # (new IP = fresh OM quota): the next probe succeeds and
+                                # the warning clears with no restart. Shorter = faster
+                                # recovery but more probing at a genuinely stuck IP.
+_om_backoff_until = 0.0
+_om_daily_until = 0.0            # until when the last rejection was a DAILY cap (for messaging)
+
+def _om_is_ratelimit(reason):
+    r = (reason or "").lower()
+    return any(k in r for k in ("limit", "429", "too many", "rate", "minutely", "hourly", "quota"))
+
+def _om_is_daily(reason):
+    """True only for Open-Meteo's DAILY-cap message, not the minute/hour ones."""
+    r = (reason or "").lower()
+    return "daily" in r or "per day" in r or "tomorrow" in r
+
+def _next_utc_midnight(now):
+    import datetime as _dt
+    dtn = _dt.datetime.fromtimestamp(now, tz=_dt.timezone.utc)
+    nxt = (dtn + _dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return nxt.timestamp() + 120.0        # +2 min so OM's counter has definitely rolled
+
+def _om_backoff_for(reason, now):
+    """Set the global Open-Meteo cooldown. A daily-cap rejection holds until the real
+    00:00 UTC reset (probing at most hourly meanwhile); other rate-limits use a short pause."""
+    global _om_backoff_until, _om_daily_until
+    if _om_is_daily(reason):
+        _om_daily_until = _next_utc_midnight(now)
+        _om_backoff_until = min(now + OM_DAILY_PROBE_S, _om_daily_until)
+    else:
+        _om_backoff_until = now + OM_BACKOFF_S
+
 def fetch_om_precip(points, timeout=8):
     """Batched Open-Meteo current precipitation (mm) for many coords in ONE call.
-    Modelled. Never raises — returns rates aligned to points (None on failure)."""
+    Modelled. Never raises — returns rates aligned to points (None on failure). A
+    rate-limit trips a short GLOBAL backoff: we stop calling Open-Meteo entirely during
+    its cooldown (respecting its "try again in one minute"), so we neither hammer it nor
+    rack up failed calls — the OC4 fallback covers the gap."""
+    global _om_backoff_until
     if not points:
         return []
+    now = time.time()
+    if now < _om_backoff_until:
+        msg = ("daily limit reached — backing off until it resets"
+               if now < _om_daily_until else "rate-limited, backing off")
+        return [{"mm": None, "snow": False, "src": "OM",
+                 "err": msg, "backoff": True}] * len(points)
     try:
         q = {"latitude": ",".join(f"{p['lat']:.4f}" for p in points),
              "longitude": ",".join(f"{p['lon']:.4f}" for p in points),
@@ -514,19 +671,39 @@ def fetch_om_precip(points, timeout=8):
         url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
         req = urllib.request.Request(url, headers={"User-Agent": "uk-grid-monitor/1.0"})
         d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+        if isinstance(d, dict) and d.get("error"):
+            # Open-Meteo signals failures (limit exceeded etc.) as a 200 body with
+            # error:true -- surface it, and back off if it is a rate-limit (longer for
+            # a daily-cap rejection). The request WAS issued, so callers may count it.
+            reason = str(d.get("reason") or "Open-Meteo error")
+            if _om_is_ratelimit(reason):
+                _om_backoff_for(reason, now)
+            return [{"mm": None, "snow": False, "src": "OM", "err": reason, "sent": True}] * len(points)
         blocks = d if isinstance(d, list) else [d]
         out = []
         for b in blocks:
             cur = b.get("current") or {}
             tot = cur.get("precipitation")           # total water-equiv, incl. snow
             if tot is None:
-                out.append({"mm": None, "snow": False, "src": "OM"}); continue
+                out.append({"mm": None, "snow": False, "src": "OM", "sent": True}); continue
             rain = (cur.get("rain") or 0.0) + (cur.get("showers") or 0.0)
             snow_we = tot - rain                     # snow water-equivalent
-            out.append({"mm": tot, "snow": bool(snow_we > 0.05 and snow_we >= rain), "src": "OM"})
+            out.append({"mm": tot, "snow": bool(snow_we > 0.05 and snow_we >= rain),
+                        "src": "OM", "sent": True})
         return out
-    except Exception:
-        return [{"mm": None, "snow": False, "src": "OM"}] * len(points)
+    except urllib.error.HTTPError as e:
+        reason = None
+        try:
+            reason = (json.loads(e.read() or b"{}") or {}).get("reason")
+        except Exception:
+            pass
+        if getattr(e, "code", None) == 429 or _om_is_ratelimit(reason):
+            _om_backoff_for(reason or ("HTTP " + str(getattr(e, "code", ""))), now)
+        # An HTTP response came back (request reached Open-Meteo) -> mark as sent.
+        return [{"mm": None, "snow": False, "src": "OM",
+                 "err": reason or ("HTTP " + str(e.code)), "sent": True}] * len(points)
+    except Exception as e:
+        return [{"mm": None, "snow": False, "src": "OM", "err": "fetch failed: " + str(e)[:80]}] * len(points)
 
 
 def _apply_sample(pt, rt):
@@ -594,7 +771,7 @@ def _net_points(state, home, seaset, sentinel_az):
             disp.append({"lat": la, "lon": lo, "range_km": PICKET_KM, "bearing": a, "kind": "picket"})
     fills = []
     for a in sentinel_az:
-        ja = (a + random.uniform(-NET_DITHER_DEG, NET_DITHER_DEG)) % 360
+        ja = (a + state.net_dither.get(a, 0.0)) % 360      # stable within a dither epoch
         for r in NET_FILL_RANGES:
             if _is_sea(seaset, ja, r):
                 la, lo = offset_latlon(home[0], home[1], ja, r)
@@ -677,8 +854,20 @@ def _spawn_mobiles(state, now, detections):
         })
 
 
+def _fallback_sentinels(disp, n=OC4_FALLBACK_MAX):
+    """Pick a FEW sentinels spread evenly across the open arc, to sample via the
+    budgeted OC4 sampler when the free Open-Meteo net has failed. Returns references
+    into `disp` so applying a sample updates the real net points."""
+    sents = [p for p in disp if p.get("kind") == "sentinel"]
+    if not sents or n <= 0:
+        return []
+    k = min(n, len(sents))
+    step = len(sents) / k
+    return [sents[int(i * step)] for i in range(k)]
+
+
 def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=None,
-               landsea_fn=fetch_landsea, wind_kmh=None, sample_fn=None):
+               landsea_fn=fetch_landsea, wind_kmh=None, sample_fn=None, net_ttl_mult=1.0):
     """Two-layer offshore rain detector.
 
       * NET (free) — permanent sentinels at 40 km + inner pickets at 20 km +
@@ -714,13 +903,71 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
         state.mobiles = []
         return info, []
 
-    # ---- NET: sample sentinels + pickets (shown) and dither fills (hidden) -----
+    # ---- dither epoch: keep the hidden fill azimuths stable for a while so the same
+    # coordinates are re-sampled (cacheable) rather than a fresh random set each cycle
+    # that multiplies the free-tier daily call count.
+    if not state.net_dither or (now - (state.net_dither_ts or 0)) >= NET_DITHER_EPOCH_S:
+        state.net_dither = {a: random.uniform(-NET_DITHER_DEG, NET_DITHER_DEG) for a in sentinel_az}
+        state.net_dither_ts = now
+    else:
+        for a in sentinel_az:
+            state.net_dither.setdefault(a, random.uniform(-NET_DITHER_DEG, NET_DITHER_DEG))
+
+    # ---- NET: sentinels + pickets (shown) + dither fills (hidden). The offshore model
+    # moves slowly, so SAMPLE at most once per NET_SAMPLE_TTL_S and reuse the cached
+    # readings in between -- the biggest cut to the Open-Meteo daily-call budget.
     disp, fills = _net_points(state, home, seaset, sentinel_az)
     net_pts = disp + fills
-    for pt, rt in zip(net_pts, net_sample_fn(net_pts) if net_pts else []):
-        _apply_sample(pt, rt)
+    due = (now - (state.net_cache_ts or 0)) >= NET_SAMPLE_TTL_S * max(1.0, net_ttl_mult) or not state.net_cache
+    if due:
+        rates = net_sample_fn(net_pts) if net_pts else []
+        for pt, rt in zip(net_pts, rates):
+            _apply_sample(pt, rt)
+        # Meter the locations Open-Meteo actually CHARGED for: every point in a request
+        # that reached its servers (returned data OR an over-limit error), but not the
+        # ones skipped locally during a backoff. Open-Meteo weights per location, so this
+        # tracks the true budget footprint rather than only the readings we kept.
+        _sent = sum(1 for rt in rates if isinstance(rt, dict)
+                    and (rt.get("sent") or rt.get("mm") is not None))
+        meter_api("OM", "offshore_net", _sent)
+        errs = [rt.get("err") for rt in rates if isinstance(rt, dict) and rt.get("err")]
+        all_none = bool(net_pts) and all(p.get("mm") is None for p in net_pts)
+        if errs and all_none:
+            reason = errs[0]
+            _r = (reason or "").lower()
+            daily = _om_is_daily(reason)
+            transient = (not daily) and any(k in _r for k in ("backing off", "minute", "minutely", "hour", "hourly", "429", "rate", "too many", "quota"))
+            # OC4 fallback: sample a few key sentinels through the budgeted track sampler
+            # so offshore detection degrades gracefully instead of going blind.
+            applied = 0
+            if track_sample_fn is not None and track_sample_fn is not net_sample_fn:
+                fb = _fallback_sentinels(disp)
+                for pt, rt in zip(fb, track_sample_fn(fb) if fb else []):
+                    if isinstance(rt, dict) and rt.get("mm") is not None:
+                        _apply_sample(pt, rt); applied += 1
+            if applied:      state.net_feed = "degraded"    # OC4 is covering the gap
+            elif daily:      state.net_feed = "exhausted"   # daily cap: down until 00:00 UTC
+            elif transient:  state.net_feed = "throttled"   # minute/hour rate-limit: recovers shortly
+            else:            state.net_feed = "down"
+            state.net_feed_reason = reason
+        else:
+            state.net_feed = "ok"; state.net_feed_reason = None
+        state.net_cache = {(round(p["bearing"]), p["range_km"]):
+                           {"mm": p.get("mm"), "snow": p.get("snow"), "src": p.get("src")}
+                           for p in net_pts}
+        state.net_cache_ts = now
+    else:
+        for pt in net_pts:
+            cp = state.net_cache.get((round(pt["bearing"]), pt["range_km"]))
+            if cp:
+                pt["mm"] = cp.get("mm"); pt["snow"] = cp.get("snow"); pt["src"] = cp.get("src")
+            else:
+                pt["mm"] = None; pt["snow"] = False; pt["src"] = None
     net_valid = [p for p in net_pts if p.get("mm") is not None]
     info["dropout"] = bool(net_pts) and not net_valid
+    info["net_feed"] = state.net_feed
+    info["net_feed_reason"] = state.net_feed_reason
+    info["net_sampled_age_s"] = int(now - state.net_cache_ts) if state.net_cache_ts else None
     detections = [p for p in net_pts if (p.get("mm") or 0) >= ARC_DETECT_MMH]
 
     # ---- front speed from the stationary net's leading wet range over time ------
@@ -795,6 +1042,7 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
 # id -> (tier, spoken text with {slots}). Spoken style: no brackets, no digits
 # read aloud beyond a plain time window. Precise figures live in screen text.
 TEMPLATES = {
+    "int_drizzle":   ("notice",  "Drizzle is starting at your location."),
     "int_light":     ("notice",  "Light rain is starting at your location."),
     "int_moderate":  ("notice",  "Rain is falling at your location."),
     "int_heavy":     ("warning", "Heavy rain starting at your location, getting heavier soon."),
@@ -834,6 +1082,16 @@ TEMPLATES = {
     "feed_stale":    ("notice",  "Weather data is out of date. Rainfall monitoring is paused for now."),
 }
 
+# Candidate keys that represent an actual rain threat — rain falling at home, or a
+# front / minute-ahead onset arriving. Only these arm the "settled" all-clear, so
+# it follows a real rain episode rather than dry-weather pressure/fog chatter.
+# Deliberately EXCLUDES: "press"/"clearing" (dry-sky pressure notes), "nowcast"/"vis"
+# (fog/visibility). "settled" itself is the all-clear, not an active signal.
+RAIN_ACTIVE_KEYS = {
+    "compound", "flood", "band", "confirm", "modelonly",
+    "trend", "approach", "sea", "forward",
+}
+
 
 def select(situation):
     """Turn the computed situation dict into an ordered list of candidate
@@ -861,7 +1119,8 @@ def select(situation):
     if band == "violent":  cands.append(("band", *TEMPLATES["int_violent"]))
     elif band == "heavy":  cands.append(("band", *TEMPLATES["int_heavy"]))
     elif band == "moderate": cands.append(("band", *TEMPLATES["int_moderate"]))
-    elif band == "light" or band == "drizzle": cands.append(("band", *TEMPLATES["int_light"]))
+    elif band == "light": cands.append(("band", *TEMPLATES["int_light"]))
+    elif band == "drizzle": cands.append(("band", *TEMPLATES["int_drizzle"]))
 
     if raining and conf: cands.append(("confirm", *TEMPLATES["gauge_confirm"]))
     if raining and situation["model_only"]:
@@ -954,10 +1213,598 @@ def select(situation):
 
 
 # ───────────────────────── main entry ───────────────────────────────────────
+# ───────────────── unified situational engine (WEATHER_ALERT_DESIGN.md, phase A/B) ──
+# Read-only for now: builds a spatial picture (per-gauge history -> character ->
+# aggregate -> situation state) and exposes it as `situational`. It does NOT yet
+# drive any alert; the voice migrates onto it in a later phase.
+SIT_HIST_WINDOW_S     = 90 * 60
+SIT_RECENCY_S         = 40 * 60      # "still active" = wet within this window (persists through shower gaps)
+SIT_WET_MMH           = ARC_DETECT_MMH      # 0.3 mm/h counts as wet
+SIT_HERE_KM           = 5
+SIT_NEAR_KM           = 20
+SIT_MID_KM            = 40
+SIT_SHOWERY_MIN_TRANS = 2                   # dry<->wet flips in window to look showery
+SIT_STEADY_WETFRAC    = 0.75               # >= this with few flips = steady
+SIT_WIDESPREAD_COVER  = 0.35               # wet fraction of the <=MID field for "widespread"
+SIT_CONTINUOUS_COVER  = 0.5
+
+_SIT_BAND_NAMES = ["dry", "light", "moderate", "heavy", "very heavy"]
+
+
+def _iso_ts(s):
+    """EA ISO dateTime ('...Z') -> epoch seconds, or None."""
+    if not s:
+        return None
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _sit_band(mm):
+    if mm is None or mm < SIT_WET_MMH: return 0
+    if mm < 2:  return 1
+    if mm < 5:  return 2
+    if mm < 10: return 3
+    return 4
+
+
+def _push_ghist(store, key, ts, mm, window=SIT_HIST_WINDOW_S):
+    """Append a [ts, mm] sample to a gauge's rolling history, trimmed to `window`
+    and deduped by timestamp so a reading isn't re-counted across polls."""
+    buf = [e for e in store.get(key, []) if ts - e[0] <= window]
+    if mm is not None and (not buf or buf[-1][0] != ts):
+        buf.append([ts, mm])
+    if buf:
+        store[key] = buf
+    else:
+        store.pop(key, None)
+    return buf
+
+
+def gauge_character(series, now):
+    """Per-gauge character over the history window: wetness, intermittency, band,
+    and a dry/steady/showery/wet label."""
+    h = [e for e in (series or []) if now - e[0] <= SIT_HIST_WINDOW_S]
+    out = {"n": len(h), "wet_fraction": 0.0, "n_transitions": 0, "spikiness": 0.0,
+           "cur_band": 0, "peak_band": 0, "wet": False, "recent_wet": False, "label": "dry"}
+    if not h:
+        return out
+    rates = [max(0.0, e[1] or 0.0) for e in h]
+    flags = [1 if r >= SIT_WET_MMH else 0 for r in rates]
+    out["wet_fraction"] = round(sum(flags) / len(flags), 2)
+    out["n_transitions"] = sum(1 for i in range(1, len(flags)) if flags[i] != flags[i-1])
+    mean = sum(rates) / len(rates)
+    peak = max(rates)
+    out["spikiness"] = round(peak / mean, 2) if mean > 0 else 0.0
+    out["cur_band"] = _sit_band(rates[-1])
+    out["peak_band"] = _sit_band(peak)
+    out["wet"] = rates[-1] >= SIT_WET_MMH
+    out["recent_wet"] = any((e[1] or 0) >= SIT_WET_MMH for e in h if now - e[0] <= SIT_RECENCY_S)
+    wf, nt = out["wet_fraction"], out["n_transitions"]
+    if wf < 0.05:
+        out["label"] = "dry"
+    elif wf >= SIT_STEADY_WETFRAC and nt <= 1:
+        out["label"] = "steady"
+    elif nt >= SIT_SHOWERY_MIN_TRANS:
+        out["label"] = "showery"
+    else:
+        out["label"] = "wet"
+    return out
+
+
+# ---- phase (d): cluster continuity — track a system as ONE object as it drifts
+# across sectors (nearest-match each cycle), with a re-centring approach + ETA. ----
+SIT_CLUSTER_LINK_KM = 18            # active gauges within this of a cluster member join it
+SIT_TRACK_MATCH_KM  = 22           # a cluster within this of a track's last centre = same track
+SIT_TRACK_MAX_MISS  = 2            # cycles a track survives unmatched before it is dropped
+SIT_TRACK_WINDOW_S  = 45 * 60      # motion (closing speed) measured over this
+
+def _polar_xy(bearing, dist):
+    r = math.radians(bearing)
+    return dist * math.sin(r), dist * math.cos(r)
+
+def _cluster(active, link_km):
+    """Single-linkage spatial clustering of active gauges (home-relative x,y)."""
+    pts = [dict(p) for p in active]
+    for p in pts:
+        p["_x"], p["_y"] = _polar_xy(p["bearing"], p["dist_km"])
+    used = [False] * len(pts)
+    clusters = []
+    for i in range(len(pts)):
+        if used[i]:
+            continue
+        stack = [i]; used[i] = True; members = []
+        while stack:
+            j = stack.pop(); members.append(pts[j])
+            for k in range(len(pts)):
+                if not used[k] and math.hypot(pts[j]["_x"] - pts[k]["_x"], pts[j]["_y"] - pts[k]["_y"]) <= link_km:
+                    used[k] = True; stack.append(k)
+        clusters.append(members)
+    return clusters
+
+def _cluster_summary(members):
+    wx = wy = w = 0.0; pk = 0; snow_ct = 0
+    for m in members:
+        ww = (m["char"]["peak_band"] or 0) + 0.5
+        x, y = _polar_xy(m["bearing"], m["dist_km"])
+        wx += ww * x; wy += ww * y; w += ww
+        pk = max(pk, m["char"]["peak_band"])
+        if m.get("snow"): snow_ct += 1
+    cx, cy = wx / w, wy / w
+    return {"bearing": math.degrees(math.atan2(cx, cy)) % 360,
+            "dist_km": math.hypot(cx, cy), "x": cx, "y": cy,
+            "peak_band": pk, "snow": snow_ct >= max(1, len(members) // 2), "n": len(members)}
+
+def _ang_diff(a, b):
+    """Smallest absolute angular difference (0-180 deg) between two bearings."""
+    d = abs((a - b) % 360.0)
+    return min(d, 360.0 - d)
+
+SIT_DIR_TOL    = 75.0    # deg: a track heading this far off the wind flow is distrusted
+SIT_UPWIND_TOL = 90.0    # deg: a track must be within this of UPWIND to count as approaching
+
+def _track_motion(t, now, wind_from=None):
+    h = [x for x in t["hist"] if now - x[0] <= SIT_TRACK_WINDOW_S]
+    out = {"approaching": False, "speed_kmh": None, "eta_text": None,
+           "eta_lo": None, "eta_hi": None,
+           "move_kmh": None, "move_deg": None, "move_trusted": False}
+    if len(h) < 2:
+        return out
+    # weather advects roughly DOWNWIND; flow_to is the direction the air moves TOWARD.
+    flow_to = ((wind_from + 180.0) % 360.0) if wind_from is not None else None
+    dt_hr = (h[-1][0] - h[0][0]) / 3600.0
+    closing = h[0][2] - h[-1][2]                 # centre distance decreasing = closing on home
+    if dt_hr > 0 and closing > 0:
+        spd = closing / dt_hr
+        mph, trusted = speed_trust(spd, None, None)   # physical band only (no wind here)
+        out["speed_kmh"] = round(spd, 1)
+        # A cell can only genuinely be APPROACHING if it sits UPWIND of home (roughly
+        # opposite the airflow). A downwind cell whose centroid appears to close is a
+        # gauge artifact, not a real approach — reject it against the wind.
+        upwind_ok = (wind_from is None) or (_ang_diff(t["bearing"], wind_from) <= SIT_UPWIND_TOL)
+        if trusted and upwind_ok and t["dist_km"] > SIT_HERE_KM:
+            out["approaching"] = True
+            txt, elo, ehi = eta_from_speed(t["dist_km"], spd, measured=True)
+            out["eta_text"] = txt; out["eta_lo"] = elo; out["eta_hi"] = ehi
+    # motion vector: HEADING of travel, CROSS-CHECKED against the wind. A heading that
+    # disagrees with the flow by more than the tolerance is distrusted (centroid jitter):
+    # we then show the wind-implied direction, unconfirmed, rather than a bogus one, and
+    # withhold a speed we don't believe.
+    if dt_hr > 0:
+        b0, d0 = math.radians(h[0][1]), h[0][2]
+        b1, d1 = math.radians(h[-1][1]), h[-1][2]
+        dx = d1 * math.sin(b1) - d0 * math.sin(b0)
+        dy = d1 * math.cos(b1) - d0 * math.cos(b0)
+        mspd = math.hypot(dx, dy) / dt_hr
+        if mspd >= 1.0:
+            obs_deg = math.degrees(math.atan2(dx, dy)) % 360.0
+            _mph, mtr = speed_trust(mspd, None, None)
+            dir_ok = (flow_to is None) or (_ang_diff(obs_deg, flow_to) <= SIT_DIR_TOL)
+            out["move_trusted"] = bool(mtr and dir_ok)
+            out["move_deg"] = round(obs_deg if dir_ok else flow_to)
+            out["move_kmh"] = round(mspd, 1) if out["move_trusted"] else None
+    return out
+
+def _next_track_id(tracks):
+    """Lowest positive id not currently used by a live track, so a number frees up
+    for reuse once its cell has dropped off — ids stay small instead of climbing
+    forever. (Uniqueness only matters among concurrent tracks.)"""
+    used = {t.get("id") for t in tracks}
+    i = 1
+    while i in used:
+        i += 1
+    return i
+
+
+def update_tracks(points, pstate, now, wind_from=None):
+    """Cluster active gauges and match to persistent tracks by nearest centre, so a
+    system keeps ONE id as it drifts across sectors. Returns a list of track summaries
+    (bearing, dist, intensity, snow, approaching, eta)."""
+    active = [p for p in points if p["char"]["wet"] or p["char"].get("recent_wet")]
+    clusters = [_cluster_summary(m) for m in _cluster(active, SIT_CLUSTER_LINK_KM)] if active else []
+    tracks = pstate.sit_tracks
+    for t in tracks:
+        t["_matched"] = False
+    for cs in clusters:
+        best, bd = None, SIT_TRACK_MATCH_KM
+        for t in tracks:
+            if t["_matched"]:
+                continue
+            d = math.hypot(cs["x"] - t["_x"], cs["y"] - t["_y"])
+            if d < bd:
+                bd, best = d, t
+        if best is not None:
+            best["_matched"] = True
+            best["hist"].append([now, cs["bearing"], cs["dist_km"], cs["peak_band"], cs["snow"]])
+            best["hist"] = [x for x in best["hist"] if now - x[0] <= SIT_TRACK_WINDOW_S]
+            best.update({"bearing": cs["bearing"], "dist_km": cs["dist_km"], "peak_band": cs["peak_band"],
+                         "snow": cs["snow"], "n": cs["n"], "last": now, "miss": 0, "_x": cs["x"], "_y": cs["y"]})
+        else:
+            tracks.append({"id": _next_track_id(tracks), "bearing": cs["bearing"], "dist_km": cs["dist_km"],
+                           "peak_band": cs["peak_band"], "snow": cs["snow"], "n": cs["n"],
+                           "hist": [[now, cs["bearing"], cs["dist_km"], cs["peak_band"], cs["snow"]]],
+                           "first": now, "last": now, "miss": 0, "_matched": True,
+                           "_x": cs["x"], "_y": cs["y"]})
+    survivors = []
+    for t in tracks:
+        if t["_matched"]:
+            survivors.append(t)
+        else:
+            t["miss"] = t.get("miss", 0) + 1
+            if t["miss"] <= SIT_TRACK_MAX_MISS:
+                survivors.append(t)
+    pstate.sit_tracks = survivors
+    out = []
+    for t in survivors:
+        mot = _track_motion(t, now, wind_from)
+        out.append({"id": t["id"], "bearing": round(t["bearing"]), "dist_km": round(t["dist_km"], 1),
+                    "peak_band": t["peak_band"], "snow": bool(t["snow"]), "n": t["n"],
+                    "approaching": mot["approaching"], "speed_kmh": mot["speed_kmh"],
+                    "eta_text": mot["eta_text"], "eta_lo": mot["eta_lo"], "eta_hi": mot["eta_hi"],
+                    "age_s": int(now - t["first"]),
+                    "move_kmh": mot["move_kmh"], "move_deg": mot["move_deg"],
+                    "move_trusted": mot["move_trusted"]})
+    return out
+
+
+# ---- frugal land model-probes: confirm a showery airmass BETWEEN the gauges ----
+# Scattered land showers often sit between EA gauges, so gauge-only detection can read
+# "clear" while showers continue. When a showery episode is live we deploy a FEW free
+# Open-Meteo probe points around the last cluster (and downwind, where the next cell
+# would be) — sparingly (a periodic check, plus one confirmation before any all-clear) —
+# so the airmass is read from the model, not guessed. Free/keyless, one batched call.
+SIT_PROBE_MAX         = 2            # at most this many probe points per deployment
+SIT_PROBE_INTERVAL_S  = 30 * 60      # slow heartbeat while gauges are wet (the clear-check is the key deploy)
+SIT_PROBE_DOWNWIND_KM = 12           # (legacy) downwind offset for the old cluster-line placement
+SIT_PROBE_UPWIND_KM   = [9.0, 16.0]  # sample the incoming corridor UPWIND OF HOME at these ranges
+SIT_PROBE_OFFSHORE_MAX = 5.0         # a probe may sit at most this far over the sea (near-shore gap)
+SIT_PROBE_JITTER_DEG  = 12           # rotate the bearing between deployments to cover new ground
+SIT_PROBE_EPISODE_CAP = 8            # hard cap on probe SAMPLES per showery episode
+SIT_PROBE_EPISODE_S   = 90 * 60      # a showery episode stays "live" this long after the last showery read
+SIT_PROBE_FRESH_S     = 30 * 60      # a probe reading older than this can't confirm anything
+SIT_PROBE_WET_MMH     = ARC_DETECT_MMH
+
+def _probe_offshore_cap(home, bearing, want_km, seaset, off=SIT_PROBE_OFFSHORE_MAX):
+    """If the upwind point is over sea, cap its distance so it sits at most `off` km
+    beyond the coastline along that bearing. Inland corridors keep the full desired
+    distance. (Sea mask is ~5 km granular, so coast is approximate.)"""
+    if not seaset:
+        return want_km
+    first_sea = None
+    for r in sorted(NET_RANGES):            # [5,10,20,30,40]
+        if _is_sea(seaset, bearing, r):
+            first_sea = r; break
+    if first_sea is None:                   # land all the way out -> desired distance
+        return want_km
+    coast = max(0.0, first_sea - 2.5)       # rough coastline
+    return max(3.0, min(want_km, coast + off))
+
+def _land_probe_points(home, centroid, wind_from, seaset=None, phase=0):
+    """Home-relevant probe placement: sample the approach corridor UPWIND OF HOME (the
+    direction weather arrives from) so a probe sees rain that is about to reach you. If
+    the upwind corridor is over water it is allowed up to SIT_PROBE_OFFSHORE_MAX offshore
+    to catch a shower before landfall. The bearing rotates a little each deployment
+    (phase) so repeated probes cover new ground rather than the same line. Falls back to
+    the last cluster's direction only when the wind is unknown."""
+    if wind_from is not None:
+        base_brg = wind_from                # upwind = toward the wind source
+    elif centroid is not None:
+        base_brg = centroid[0]
+    else:
+        return []
+    jit = ((phase % 3) - 1) * SIT_PROBE_JITTER_DEG    # -12, 0, +12 rotating
+    pts = []
+    for i, want in enumerate(SIT_PROBE_UPWIND_KM[:SIT_PROBE_MAX]):
+        # keep the pair distinct even when both are offshore-capped: the near point sits
+        # centred and closer to the coast, the far point is fanned and reaches further.
+        brg = (base_brg + jit + (0.0 if i == 0 else 8.0)) % 360
+        off = SIT_PROBE_OFFSHORE_MAX * (0.5 if i == 0 else 1.0)
+        d = _probe_offshore_cap(home, brg, want, seaset, off)
+        la, lo = offset_latlon(home[0], home[1], brg, d)
+        pts.append({"lat": la, "lon": lo,
+                    "bearing": bearing_deg(home[0], home[1], la, lo),
+                    "dist_km": haversine_km(home[0], home[1], la, lo)})
+    return pts
+
+def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0, seaset=None):
+    """Deploy the confirmation probes SPARINGLY and SMARTLY, UPWIND OF HOME. Returns
+    {active, fresh_clear, probes}.
+
+    When to fire, in priority order:
+      * clear-check (the key deploy) — gauges have just gone dry in a live showery
+        episode: sample the upwind corridor to answer "is more coming, or has it cleared?"
+        Uses the near+far pair.
+      * slow heartbeat — while gauges are still wet, an occasional SINGLE upwind look for
+        what is next (the gauges already confirm the current rain, so this is light).
+    A per-episode sample budget (SIT_PROBE_EPISODE_CAP) caps the spend, the bearing
+    rotates each deployment, and probing stops entirely outside a showery episode."""
+    if sit["base_state"] in ("isolated_showers", "widespread_showers"):
+        state.sit_last_showery_ts = now
+        ib, idm = sit["intensity"]["bearing"], sit["intensity"]["dist_km"]
+        if ib is not None and idm is not None:
+            state.sit_last_centroid = [ib, idm]
+    episode = (now - (state.sit_last_showery_ts or 0)) <= SIT_PROBE_EPISODE_S
+    if not episode or (wind_from is None and state.sit_last_centroid is None):
+        state.sit_probes = []
+        return {"active": False, "fresh_clear": False, "probes": []}
+    # reset the per-episode budget after a long gap (a fresh episode)
+    if now - (state.sit_probe_used_ts or 0) > SIT_PROBE_EPISODE_S:
+        state.sit_probe_used = 0
+    gauges_wet = sit["n_wet"] > 0
+    since = now - (state.sit_probe_ts or 0)
+    clear_check = (not gauges_wet) and since >= SIT_PROBE_FRESH_S
+    heartbeat = gauges_wet and since >= SIT_PROBE_INTERVAL_S * max(1.0, cadence_mult)
+    if (clear_check or heartbeat) and state.sit_probe_used < SIT_PROBE_EPISODE_CAP:
+        pts = _land_probe_points(home, state.sit_last_centroid, wind_from, seaset, state.sit_probe_phase)
+        if heartbeat and not clear_check:
+            pts = pts[:1]                       # a heartbeat needs only one upwind look
+        rates = sampler(pts) if pts else []
+        # Count locations Open-Meteo charged for (sent), not just the ones that returned data.
+        meter_api("OM", "land_probe", sum(1 for rt in rates if isinstance(rt, dict)
+                                          and (rt.get("sent") or rt.get("mm") is not None)))
+        probes = []
+        for pt, rt in zip(pts, rates):
+            mm = rt.get("mm") if isinstance(rt, dict) else rt
+            probes.append({"bearing": round(pt["bearing"]), "dist_km": round(pt["dist_km"], 1),
+                           "mm": mm, "snow": bool(rt.get("snow")) if isinstance(rt, dict) else False,
+                           "ts": now})
+        state.sit_probes = probes
+        state.sit_probe_ts = now
+        state.sit_probe_used += len(pts); state.sit_probe_used_ts = now
+        state.sit_probe_phase += 1
+    recent = [pr for pr in state.sit_probes if now - pr["ts"] <= SIT_PROBE_FRESH_S]
+    active = any((pr["mm"] or 0) >= SIT_PROBE_WET_MMH for pr in recent)
+    fresh_clear = bool(recent) and not active
+    return {"active": active, "fresh_clear": fresh_clear, "probes": state.sit_probes}
+
+
+# ---- phase (c): cadence + wording, one voice for the situation state ----
+CAD_HERE_HEAVY   = 10 * 60          # heartbeat while heavy+ rain is AT home
+CAD_HERE_LIGHT   = 20 * 60          # heartbeat while light/moderate at home
+CAD_SHOWERS      = 40 * 60          # heartbeat while showers persist in the area
+CAD_CONTINUOUS   = 60 * 60          # heartbeat while continuous rain persists
+SIT_DWELL_S      = 9 * 60           # a state must persist this long before an AREA announcement
+
+def _sit_group(sit):
+    if sit["here"]:
+        return "here"
+    b = sit["base_state"]
+    if b in ("isolated_showers", "widespread_showers"): return "showers"
+    if b == "continuous": return "continuous"
+    if b == "approaching": return "approaching"
+    if b == "wet": return "wet"          # active but uncharacterised: silent, but NOT clear
+    return "clear"
+
+def _cap(s): return s[0].upper() + s[1:] if s else s
+
+def _sit_here_phrase(sit):
+    noun = "snow" if sit["snow"] else "rain"
+    lead = {"very heavy": "Very heavy", "heavy": "Heavy", "moderate": "",
+            "light": "Light", "dry": ""}.get(sit["intensity"]["name"], "")
+    body = (lead + " " + noun).strip()
+    if sit["snow"]:
+        return _cap(body) + " is falling at your location."
+    return _cap(body) + " at your location."
+
+def _sit_showers_phrase(sit):
+    noun = "wintry showers" if sit["snow"] else "showers"
+    kind = "widespread " if sit["base_state"] == "widespread_showers" else "isolated "
+    inten = sit["intensity"]["name"]
+    heavy = inten in ("heavy", "very heavy")
+    dist = sit["intensity"]["dist_km"]
+    d = sit.get("_dir_word")
+    if d is None:
+        b = sit["intensity"]["bearing"]
+        d = compass(b, spoken=True) if b is not None else None
+    lead = kind + ((inten + " ") if heavy else "") + noun
+    where = (" to the " + d) if d else " in the area"
+    tail = ", which may be with you soon" if (heavy and dist is not None and dist <= 20) else ""
+    return _cap(lead) + where + tail + "."
+
+def _sit_approach_phrase(sit, tr):
+    noun = "snow" if tr["snow"] else "rain"
+    inten = _SIT_BAND_NAMES[tr["peak_band"]]
+    lead = ((inten + " ") if inten in ("heavy", "very heavy") else "") + noun
+    d = sit.get("_dir_word") or compass(tr["bearing"], spoken=True)
+    eta = tr.get("eta_text") or "soon"
+    return _cap(lead) + " is approaching from the " + d + ", " + eta + "."
+
+def _sit_continuous_phrase(sit):
+    noun = "snow" if sit["snow"] else "rain"
+    inten = sit["intensity"]["name"]
+    lead = "continuous " + ((inten + " ") if inten in ("heavy", "very heavy") else "") + noun
+    return _cap(lead) + " has set in."
+
+def _sector_hyst(prev_sect, brg, margin=12.0):
+    """Bin a bearing to an 8th, but keep the previous sector until the bearing is
+    clearly (half a sector + margin) past its centre — stops a system on a boundary
+    from flip-flopping its announced direction."""
+    if brg is None:
+        return prev_sect
+    new_sect = int(round((brg % 360) / 45.0)) % 8
+    if prev_sect is None or new_sect == prev_sect:
+        return new_sect
+    center = prev_sect * 45.0
+    diff = abs((brg - center + 180) % 360 - 180)
+    return new_sect if diff > (22.5 + margin) else prev_sect
+
+
+def schedule_situational(sit, pstate, now, mult=1.0):
+    """Turn the situation into cadence-scheduled spoken alerts. One voice: an area
+    state is announced once it is certain (dwell), then on a slow heartbeat and on any
+    material change; rain AT home is always announced immediately and repeats faster;
+    clearing is a one-shot. `mult` (Normal 1.0 / Low ~2.0) stretches the heartbeats.
+    Mutates pstate scheduling only. Returns [{tier,key,phrase}]."""
+    out = []
+    grp = _sit_group(sit)
+    prev_grp = pstate.sit_group
+    if grp != prev_grp:
+        pstate.sit_group = grp
+        pstate.sit_group_since = now
+    stable = now - (pstate.sit_group_since or now)
+    if grp not in ("showers", "approaching"):
+        pstate.sit_dir_sect = None
+
+    # clearing one-shot: only when we transition to CLEAR *and* this episode actually
+    # announced something (so a silent onset blip never says "clearing").
+    if grp == "clear":
+        if pstate.sit_episode_spoke:
+            noun = "snow" if pstate.sit_last_snow else "rain"
+            out.append({"tier": "notice", "key": "sit_clear", "phrase": "The " + noun + " is clearing."})
+        pstate.sit_episode_spoke = False
+        pstate.sit_announced = {}
+        return out
+
+    key = tier = phrase = None
+    hb = 3600.0
+    if grp == "here":
+        b = sit["intensity"]["peak_band"]
+        key, tier = "here", ("warn" if b >= 3 else "notice")
+        phrase = _sit_here_phrase(sit)
+        hb = (CAD_HERE_HEAVY if b >= 3 else CAD_HERE_LIGHT) * mult
+    elif grp == "showers" and stable >= SIT_DWELL_S:
+        key, tier = "showers", "notice"
+        stable_sect = _sector_hyst(pstate.sit_dir_sect, sit["intensity"]["bearing"])
+        pstate.sit_dir_sect = stable_sect
+        sit = dict(sit)                    # don't mutate the diagnostic object
+        sit["_dir_word"] = compass(stable_sect * 45, spoken=True) if stable_sect is not None else None
+        sit["_dir_sect"] = stable_sect
+        phrase = _sit_showers_phrase(sit)
+        hb = CAD_SHOWERS * mult
+    elif grp == "continuous" and stable >= SIT_DWELL_S:
+        key, tier = "continuous", "notice"
+        phrase = _sit_continuous_phrase(sit)
+        hb = CAD_CONTINUOUS * mult
+    elif grp == "approaching" and sit.get("approach_track") and stable >= SIT_DWELL_S:
+        tr = sit["approach_track"]
+        key, tier = "approach", "notice"
+        stable_sect = _sector_hyst(pstate.sit_dir_sect, tr["bearing"])
+        pstate.sit_dir_sect = stable_sect
+        sit = dict(sit)
+        sit["_dir_word"] = compass(stable_sect * 45, spoken=True) if stable_sect is not None else None
+        sit["_dir_sect"] = stable_sect
+        phrase = _sit_approach_phrase(sit, tr)
+        hb = CAD_CONTINUOUS * mult
+
+    if key:
+        pstate.sit_last_snow = bool(sit["snow"])
+        # signature: re-announce on a MATERIAL change (state, intensity band, snow,
+        # and — for showers — the heaviest cell's sector), or when the heartbeat is
+        # due. Direction jitter and wording tweaks never re-trigger.
+        pk = sit["intensity"]["peak_band"]
+        if key in ("showers", "approach"):
+            _sect = sit.get("_dir_sect")
+            sig = [key, sit["base_state"], pk, bool(sit["snow"]), (_sect if _sect is not None else -1)]
+        else:
+            sig = [key, pk, bool(sit["snow"])]
+        prev = pstate.sit_announced.get(key)
+        # a signature change re-announces only when it is NOT an intensity downgrade
+        # (so the peak decaying as history ages doesn't announce "easing" then clear);
+        # heartbeat and first-appearance always fire.
+        sig_changed = (prev is None) or (prev.get("sig") != sig)
+        not_downgrade = (prev is None) or (pk >= prev.get("pk", 0))
+        due = (prev is None) or (now >= prev.get("next", 0)) or (sig_changed and not_downgrade)
+        if due:
+            out.append({"tier": tier, "key": "sit_" + key, "phrase": phrase})
+            pstate.sit_episode_spoke = True
+            pstate.sit_announced = {key: {"sig": sig, "pk": pk, "next": now + hb}}
+        else:
+            pstate.sit_announced = {key: {"sig": prev.get("sig"), "pk": prev.get("pk", pk),
+                                          "next": prev.get("next", now + hb)}}
+    return out
+
+
+def build_situational(points, home, wind_from, land, sea, now):
+    """Aggregate per-gauge characters into a situation state + locus + intensity.
+    points: [{bearing, dist_km, char, snow, kind}]. Read-only diagnostic.
+
+    State is driven by RECENT ACTIVITY over the history window (so an intermittent
+    shower doesn't read "clear" during its dry phase), and coverage is measured over
+    the PHYSICAL land field only (the dry sea sentinels must not dilute it)."""
+    field = [p for p in points if p.get("dist_km") is not None and p["dist_km"] <= SIT_MID_KM]
+    phys = [p for p in field if p.get("kind") == "phys"]
+
+    def _active(p):
+        c = p["char"]
+        return c["wet"] or c.get("recent_wet", False)      # rain now, or within the recency window
+
+    active = [p for p in field if _active(p)]
+    active_phys = [p for p in phys if _active(p)]
+    wet_now = [p for p in field if p["char"]["wet"]]
+    n_phys = len(phys)
+    coverage = round(len(active_phys) / n_phys, 2) if n_phys else (
+        round(len(active) / len(field), 2) if field else 0.0)
+    # steady/showery CHARACTER comes only from physical tipping-bucket gauges — the
+    # model net points are continuous by nature and have no real intermittency signal.
+    showery = [p for p in active if p.get("kind") == "phys" and p["char"]["label"] == "showery"]
+    steady = [p for p in active if p.get("kind") == "phys" and p["char"]["label"] == "steady"]
+    shower_conf = round(sum(max(0.0, 1.0 - p["dist_km"] / SIT_MID_KM) for p in showery), 2)
+    peak_band = max((p["char"]["peak_band"] for p in active), default=0)
+    heavy = max(active, key=lambda p: (p["char"]["peak_band"], -p["dist_km"])) if active else None
+    # intensity-weighted CENTROID bearing/distance of the active cluster: a stable
+    # direction that doesn't flip when the single heaviest gauge jumps across a
+    # sector boundary (a system spanning sectors reads as one, centred smoothly).
+    _cx = _cy = _cd = _cw = 0.0
+    for _p in active:
+        _w = (_p["char"]["peak_band"] or 0) + 0.5
+        _rb = math.radians(_p["bearing"])
+        _cx += _w * math.sin(_rb); _cy += _w * math.cos(_rb); _cd += _w * _p["dist_km"]; _cw += _w
+    cbrg = (math.degrees(math.atan2(_cx, _cy)) % 360) if _cw > 0 else None
+    cdist = (_cd / _cw) if _cw > 0 else None
+    nearest = min(wet_now, key=lambda p: p["dist_km"]) if wet_now else None
+    here = bool(nearest and nearest["dist_km"] < SIT_HERE_KM)
+    snow_wet = [p for p in active if p.get("snow")]
+    snow = bool(active) and len(snow_wet) >= max(1, len(active) // 2)
+    approach = bool((land and land.get("active")) or (sea and sea.get("detected")))
+
+    # state — activity-based, with an absolute count guard so "widespread" needs a
+    # genuinely broad field, not just "all of my two gauges are wet".
+    if not active and not approach:
+        stt = "clear"
+    elif not active and approach:
+        stt = "approaching"
+    elif coverage >= SIT_CONTINUOUS_COVER and len(steady) >= max(1, len(showery)):
+        stt = "continuous"
+    elif len(showery) >= 2 and coverage >= SIT_WIDESPREAD_COVER and len(active) >= 4:
+        stt = "widespread_showers"
+    elif showery:
+        stt = "isolated_showers"
+    else:
+        stt = "wet"                                        # active but uncharacterised (onset / short history)
+
+    if here:
+        loc = {"here": True, "nearest_km": round(nearest["dist_km"], 1)}
+    elif nearest:
+        loc = {"here": False, "nearest_km": round(nearest["dist_km"], 1),
+               "bearing": round(nearest["bearing"])}
+    elif heavy:
+        loc = {"here": False, "bearing": round(heavy["bearing"]), "dist_km": round(heavy["dist_km"], 1)}
+    elif approach:
+        d = (sea.get("dir_spoken") if sea and sea.get("detected") else (land.get("dir") if land else None))
+        loc = {"here": False, "approach_dir": d}
+    else:
+        loc = None
+    return {
+        "state": stt + ("_snow" if snow and stt != "clear" else ""),
+        "base_state": stt, "snow": snow,
+        "n_field": len(field), "n_phys": n_phys, "n_active": len(active), "n_wet": len(wet_now),
+        "nearest_wet_km": (round(nearest["dist_km"], 1) if nearest else None),
+        "coverage": coverage, "shower_confidence": shower_conf,
+        "n_showery": len(showery), "n_steady": len(steady),
+        "intensity": {"peak_band": peak_band, "name": _SIT_BAND_NAMES[peak_band],
+                      "bearing": (round(cbrg) if cbrg is not None else None),
+                      "dist_km": (round(cdist, 1) if cdist is not None else None)},
+        "locus": loc, "here": here, "approaching": approach,
+    }
+
+
 def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
               wind_from, wind_kmh, gauges, flood_active=False, feed_stale=False,
               now=None, sample_fn=None, net_sample_fn=fetch_om_precip,
-              track_sample_fn=None, landsea_fn=fetch_landsea, forward_precip=None):
+              track_sample_fn=None, landsea_fn=fetch_landsea, forward_precip=None,
+              cadence_mult=1.0, sampling_mult=1.0, pressure_change_3h=None):
     """Evaluate everything for one cycle. Read-only: mutates only `state`.
     Returns a diagnostic dict incl. `would_speak` (transitions this cycle) and
     `virtual_gauges` (marked, modelled). Nothing here plays a tone."""
@@ -971,23 +1818,125 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
 
     # update rolling histories
     if rain_mm_h is not None: state.rain_hist.append((now, rain_mm_h))
-    if pressure_hpa is not None: state.press_hist.append((now, pressure_hpa))
     if visibility_m is not None: state.vis_hist.append((now, visibility_m))
     state.rain_hist = _trim(state.rain_hist, now, TREND_WINDOW_S)
-    state.press_hist = _trim(state.press_hist, now, 3 * 3600)
     state.vis_hist = _trim(state.vis_hist, now, VIS_WINDOW_S)
 
     band = classify_intensity(rain_mm_h)
     trend, trend_d = compute_trend(state.rain_hist, now)
-    prate, pcls = pressure_tendency(state.press_hist, now)
-    warm = _span(state.press_hist) < MIN_PRESS_SPAN_S
+    # pressure tendency comes from the panel's authoritative persisted 3h figure
+    # (single source of truth) rather than a second in-memory slope.
+    prate, pcls = pcls_from_change3h(pressure_change_3h)
+    warm = pressure_change_3h is None
     vis = visibility_state(state.vis_hist, now, visibility_m)
     appr = gauge_approach(gauges, home, wind_from, wind_kmh)
     land = land_front(state, gauges, home, wind_from, wind_kmh, now)
     sea, vgauges = arc_update(state, home, now, net_sample_fn=net_sample_fn,
                               track_sample_fn=track_sample_fn, landsea_fn=landsea_fn,
-                              wind_kmh=wind_kmh, sample_fn=sample_fn)
+                              wind_kmh=wind_kmh, sample_fn=sample_fn, net_ttl_mult=sampling_mult)
     forward = compute_forward(forward_precip, now, band)
+
+    # ---- situational engine (read-only diagnostic, WEATHER_ALERT_DESIGN.md phase A/B) --
+    _sit_pts = []
+    for _g in (gauges or []):
+        if _g.get("lat") is None or _g.get("lon") is None:
+            continue
+        _k = "g:" + str(_g.get("ref") or _g.get("label") or id(_g))
+        _mm = _g.get("mm_h"); _mm = _mm if _mm is not None else _g.get("mm")
+        _push_ghist(state.gauge_hist, _k, _iso_ts(_g.get("dt")) or now, _mm)
+        _sit_pts.append({"bearing": bearing_deg(home[0], home[1], _g["lat"], _g["lon"]),
+                         "dist_km": _g.get("dist_km") or haversine_km(home[0], home[1], _g["lat"], _g["lon"]),
+                         "char": gauge_character(state.gauge_hist.get(_k), now),
+                         "snow": False, "kind": "phys",
+                         "name": (_g.get("label") or _g.get("ref") or "gauge"),
+                         "mm": _mm, "last_ts": _iso_ts(_g.get("dt"))})
+    for _vg in vgauges:
+        if _vg.get("kind") not in ("sentinel", "picket"):
+            continue
+        _k = f"n:{_vg['bearing']:.0f}:{_vg['dist_km']}"
+        _push_ghist(state.gauge_hist, _k, now, _vg.get("mm"))
+        _sit_pts.append({"bearing": _vg["bearing"], "dist_km": _vg["dist_km"],
+                         "char": gauge_character(state.gauge_hist.get(_k), now),
+                         "snow": bool(_vg.get("snow")), "kind": "net",
+                         "name": _vg.get("name"), "mm": _vg.get("mm"), "last_ts": now})
+    situational = build_situational(_sit_pts, home, wind_from, land, sea, now)
+    if situational["base_state"] != state.sit_state:
+        state.sit_state = situational["base_state"]; state.sit_state_since = now
+    situational["stable_s"] = int(now - (state.sit_state_since or now))
+    # per-gauge points for the engine debug view (bearing, distance, character)
+    situational["points"] = [{"b": round(p["bearing"]), "d": round(p["dist_km"], 1),
+                              "kind": p["kind"], "label": p["char"]["label"],
+                              "band": p["char"]["peak_band"], "cur": p["char"]["cur_band"],
+                              "wet": bool(p["char"]["wet"]), "snow": bool(p.get("snow")),
+                              "name": p.get("name"), "trans": p["char"]["n_transitions"],
+                              "mm": (round(p["mm"], 2) if p.get("mm") is not None else None),
+                              "age_s": (int(now - p["last_ts"]) if p.get("last_ts") else None)}
+                             for p in _sit_pts]
+    # at-home reading that drives the nowcast "at your location" voice (model/nearest
+    # sensor rain rate) — surfaced so the view can SHOW what caused an at-home alert.
+    situational["home"] = {"mm": (round(rain_mm_h, 2) if rain_mm_h is not None else None),
+                           "band": (_sit_band(rain_mm_h) if rain_mm_h is not None else 0),
+                           "name": (classify_intensity(rain_mm_h) or "dry")}
+    situational["ts"] = now
+    situational["net_feed"] = sea.get("net_feed")
+    situational["net_feed_reason"] = sea.get("net_feed_reason")
+    situational["net_sampled_age_s"] = sea.get("net_sampled_age_s")
+    # active offshore mobile trackers (spawn only on sea detections) — so they appear
+    # on the plan view the moment they are deployed.
+    situational["mobiles"] = [{"b": round(m["bearing"]), "d": m["dist_km"], "mm": m.get("mm"),
+                               "snow": bool(m.get("snow")), "confirmed": bool(m.get("confirmed")),
+                               "speed_mph": m.get("speed_mph"), "state": m.get("state")}
+                              for m in vgauges if m.get("kind") == "mobile"]
+    # phase (d): cluster continuity — track systems across sectors; if home is dry but
+    # a tracked cluster is closing, surface it as ONE approaching system (dir + ETA).
+    _tracks = update_tracks(_sit_pts, state, now, wind_from)
+    situational["tracks"] = _tracks
+    _appr = [t for t in _tracks if t.get("approaching")]
+    _appr_tr = min(_appr, key=lambda t: t["dist_km"]) if _appr else None
+    situational["approach_track"] = _appr_tr
+    # promote to "approaching" while the tracked cluster's CENTRE is still beyond
+    # NEAR (smooth: uses the track distance, not the flappy nearest-wet gauge) and
+    # nothing is right at home.
+    if _appr_tr and not situational["here"] and _appr_tr["dist_km"] > SIT_NEAR_KM:
+        situational["base_state"] = "approaching"
+        situational["snow"] = bool(_appr_tr["snow"])
+        situational["state"] = "approaching" + ("_snow" if _appr_tr["snow"] else "")
+        pb = max(situational["intensity"]["peak_band"], _appr_tr["peak_band"])
+        situational["intensity"]["peak_band"] = pb
+        situational["intensity"]["name"] = _SIT_BAND_NAMES[pb]
+        situational["locus"] = {"here": False, "bearing": _appr_tr["bearing"],
+                                "dist_km": _appr_tr["dist_km"],
+                                "approach_dir": compass(_appr_tr["bearing"], spoken=True),
+                                "eta_text": _appr_tr["eta_text"]}
+        if situational["base_state"] != state.sit_state:
+            state.sit_state = situational["base_state"]; state.sit_state_since = now
+    # frugal land-probe corroboration: hold showers through gauge gaps while the model
+    # shows the airmass is live, and gate the all-clear on a fresh model confirmation.
+    _probe = run_land_probes(state, situational, home, wind_from, now, net_sample_fn,
+                             cadence_mult=sampling_mult, seaset=_sea_set(state))
+    situational["probe"] = {"active": _probe["active"], "fresh_clear": _probe["fresh_clear"],
+                            "n": len(_probe["probes"])}
+    situational["probe_points"] = _probe["probes"]
+    if situational["base_state"] == "clear" and (now - (state.sit_last_showery_ts or 0)) <= SIT_PROBE_EPISODE_S:
+        if _probe["active"]:
+            _pw = [pr for pr in _probe["probes"] if (pr["mm"] or 0) >= SIT_PROBE_WET_MMH]
+            _snow = bool(_pw) and sum(1 for pr in _pw if pr["snow"]) >= max(1, len(_pw) // 2)
+            situational["base_state"] = "isolated_showers"; situational["snow"] = _snow
+            situational["state"] = "isolated_showers" + ("_snow" if _snow else "")
+            if _pw:
+                _near = min(_pw, key=lambda x: x["dist_km"])
+                _pb = max(_sit_band(pr["mm"]) for pr in _pw)
+                situational["intensity"]["peak_band"] = max(situational["intensity"]["peak_band"], _pb)
+                situational["intensity"]["name"] = _SIT_BAND_NAMES[situational["intensity"]["peak_band"]]
+                situational["intensity"]["bearing"] = _near["bearing"]
+                situational["intensity"]["dist_km"] = _near["dist_km"]
+        elif not _probe["fresh_clear"]:
+            # gauges dry but no fresh model confirmation yet -> HOLD, don't clear
+            situational["base_state"] = "isolated_showers"
+            situational["state"] = "isolated_showers" + ("_snow" if situational["snow"] else "")
+        if situational["base_state"] != state.sit_state:
+            state.sit_state = situational["base_state"]; state.sit_state_since = now
+    situational_speak = schedule_situational(situational, state, now, mult=cadence_mult)
 
     confirmed = bool(appr and appr.get("confirmed_at_home"))
     raining = band not in (None, "dry")
@@ -1027,10 +1976,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         state.land_last_dir = land["dir"]
 
     # All-clear: a ONE-SHOT, spoken only on the transition from an active
-    # situation to calm — never on a calm-from-start day, never repeated. A
+    # RAIN situation to calm — never on a calm-from-start day, never repeated. A
     # land-fade this cycle already IS the all-clear for that front, so settled
     # only speaks when nothing else did.
-    if now_keys:
+    #
+    # Only genuine rain signals (present rain at home, or a front/onset arriving)
+    # arm the all-clear. Benign dry-weather chatter — pressure rising or falling
+    # under a dry sky, or a fog/visibility note — must NOT arm it, or a pressure
+    # blip flickering across a threshold on a dry day fires a bogus "no rain
+    # expected in the near term" every time it falls away.
+    rain_active = any(k in RAIN_ACTIVE_KEYS for k in now_keys)
+    if rain_active:
         state.was_active = True
     elif state.was_active:
         if not would:
@@ -1054,9 +2010,12 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
               if land and land.get("active") else "")
            + (f" fwd_onset={forward['onset_eta_min']}min" if forward and forward.get("onset_eta_min") is not None else "")
            + (" fwd_heavier" if forward and forward.get("intensify") else "")
-           + (" | WOULD SPEAK: " + " || ".join(w["phrase"] for w in would) if would else ""))
+           + (" | WOULD SPEAK: " + " || ".join(w["phrase"] for w in would) if would else "")
+           + f" | SIT {situational['state']} cov={situational['coverage']} n_wet={situational['n_wet']}"
+             f" shc={situational['shower_confidence']} peak={situational['intensity']['name']}")
 
-    return {"ts": now, "situation": situation, "would_speak": would,
+    return {"ts": now, "situation": situation, "situational": situational,
+            "situational_speak": situational_speak, "would_speak": would,
             "virtual_gauges": vgauges, "log": log,
             "signals": {"band": band, "trend": trend, "trend_delta": round(trend_d, 2),
                         "press_rate": round(prate, 2), "press_cls": pcls,

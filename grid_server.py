@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260827.10  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260904.10  (version = YYMMDD.N in UT; bump on every change to this file)
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -38,7 +38,7 @@ Sources (all free, no API key):
       - national carbon intensity + generation mix percentages
 
 Run:
-    python3 grid_server.py            # serves dashboard + /api/grid on :8000
+    python3 grid_server.py            # serves dashboard + /api/grid on :8412
     python3 grid_server.py --once     # write snapshot.json once and exit
     python3 grid_server.py --port 9000
 
@@ -94,7 +94,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260904.9"
+SERVER_BUILD = "260904.10"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -5558,7 +5558,7 @@ def build_alerts(snap):
         elif lvl == "red":
             alerts.append(_a("critical", "Elevated system risk",
                 f"Composite grid risk high (CGRI {cgri}); {hz:.3f} Hz with low system inertia "
-                f"({sr.get('inertia_gws')} GW·s, notional post-fault RoCoF {sr.get('notional_rocof')} Hz/s). "
+                f"({sr.get('inertia_gws')} GVA·s, notional post-fault RoCoF {sr.get('notional_rocof')} Hz/s). "
                 "A large trip now would pull frequency down fast.", tag="RISK"))
         elif lvl == "amber":
             reason = "system inertia reduced" if sr.get("inertia_band") in ("amber", "red") \
