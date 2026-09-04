@@ -41,6 +41,10 @@ Once running, the server writes these into the same folder as needed:
 - `bmu_locations.json`, `bmu_registry.json` — power station / unit reference data.
 - `margin_history.json` — a rolling log of the capacity margin so it can be graphed over time.
 - `alert_history.json` — a log of alerts, kept for up to 30 days.
+- A `logs/` folder — the interleaved 15-second data log (`grid_log-YYYY-MM-DD.jsonl`, frequency points and generation-mix rows, pruned after 30 days) and, under `logs/archive/`, the permanent weekly generation files that never expire.
+- `forecast_window.json` — your active-forecast-window setting (see *Alert system*).
+- `api_usage.json` and an API-call log — the per-UTC-day tally of upstream weather calls by source and purpose.
+- A `captures/` folder — PNG images you save from the frequency-history viewer's **⭳ save** button.
 
 After you enter an OpenWeather API key:
 - `openweather_key.json`, `openweather_budget.json`, `wind_budget.json`, `weather_last_good.json`.
@@ -72,11 +76,14 @@ Press **Esc** to close any of the full-screen pages (generators, gas, EA, My Hom
 ## National grid data panels
 
 - **System Status** — "System Nominal", or alerts/alarms when relevant.
-- **System Frequency** — the current grid frequency, usually 1–2 minutes old. If the reading goes stale, the trace dims and a note explains why, rather than showing a misleading value.
+- **System Frequency** — the current grid frequency, usually 1–2 minutes old, with a recent trace. The trace is drawn with min/max-envelope downsampling, so a brief dip below 49.8 Hz (or a spike) still shows on the graph rather than being stepped over. If the reading goes stale, the trace dims and a note explains why, rather than showing a misleading value. The panel is **tinted by the frequency's own state** — green in the normal band (49.8–50.2 Hz), amber outside it, red beyond the statutory limits (49.5/50.5 Hz), for both under- and over-frequency. The background follows the live reading; the border holds the highest level reached for 10 minutes after it clears, so a brief excursion stays visible.
+  - **⤢ history button** — opens a full-window, scrollable **frequency history** built from the logged 15-second data (up to the ~30-day log retention). Drag to scroll, or use the week / zoom buttons and arrow keys; a **● live** toggle keeps the latest data in view at the 15-second rate without changing the zoom. Hover to read the value at any point, and **click to lock** the readout in place (it's drawn on the plot, so a saved image includes it). **⭳ save** writes a PNG of the current view to a `captures/` folder next to the server. The line is recoloured amber/red exactly where it crosses the operational/statutory limits, and each day is marked at 00:00 on the axis, in UT.
+  - **System Risk** (sub-panel, top-right of the frequency panel) — a composite read of how resilient the grid is *right now*: a **system inertia** in GVA·s (stored kinetic energy from synchronous plant only — wind, solar and interconnectors contribute none), a notional **RoCoF** ("if largest trips") estimating how fast frequency would fall if the biggest infeed tripped, and a **CGRI** (Composite Grid Risk Index) rolling frequency deviation, inertia and RoCoF into one figure. A level badge (green/amber/red) uses fast-attack / slow-release hysteresis so it doesn't flap, and the sub-panel is tinted by that level (with the same 10-minute border hold) — separately from the frequency panel, because the risk index is a *notification* about resilience, not a frequency alarm. Each figure has a tooltip. The inertia estimate is **calibrated against NESO's published GB Outturn Inertia** (least-squares fit over April–July 2026, R² 0.90, mean error ~8 GVA·s), so a typical mix reads green and amber appears only in genuinely low-inertia conditions matching NESO's real ~110 GVA·s summer floor. This is still a derived, educational indicator — not an official system-operator signal.
 - **National Demand** — current demand, plus an *estimated* national consumption figure (labelled "est").
 - **Carbon Intensity** — grams of CO₂ per kWh, with the current index band (e.g. low/moderate/high) and the trend versus an hour ago.
-- **Generation and Imports by Source** — a bar chart sorted from biggest contributor down (very small ones are omitted). Each source shows a trend arrow versus an hour ago, and estimated figures carry an "est" tag. A legend shows the renewable and low-carbon percentages.
+- **Generation and Imports by Source** — a bar chart sorted from biggest contributor down (very small ones are omitted). Each source shows a trend arrow versus an hour ago, and estimated figures carry an "est" tag. A legend shows the renewable and low-carbon percentages. The interconnectors are drawn in a graded blue family so each one is distinguishable when stacked.
   - **generators button** — opens a full-screen "tree-map" style view of all the major generating units currently feeding the grid.
+  - **7-day button** — opens a generation-history pop-up. Two live plots cover the last seven days — output (MW) and share (%), stacked by fuel — above an **archive panel** that shows any one week, Sunday→Saturday, all in UTC. The archive steps by whole weeks (◀ ▶ or the year/month/day pickers, back to 2017), toggles between MW and %-share, and always shows the full seven days even where data is missing (gaps read as zero; the current week fills left to right). Each week's data is rolled into a permanent weekly file automatically. Any week with missing periods — including the **current, in-progress week** — can have just those gaps filled on demand with **fill from BMRS** / **fill gaps** (Elexon FUELINST for the metered fuels plus Sheffield PVLive for embedded solar, both modelled/external and labelled as such). Only the already-elapsed gaps are added and self-logged readings are always kept, so a week that mixes both is shown as "gaps filled (BMRS)"; the not-yet-elapsed part of the current week is left untouched. A week that is entirely a prior BMRS pull instead offers **re-pull** to refresh it. Self-logged data is never overwritten by a fill.
 - **Resource Conditions** — weather at 12 renewable-energy sites (needs an OpenWeather key — see below).
 - **Insight** — a short plain-language read on current conditions, including a cross-check of forecast wind against metered wind where available.
 - **Capacity Margin** — how much generation could be called up at medium notice, shown as a radial gauge plus a −24h/+24h trend graph.
@@ -93,6 +100,15 @@ The Resource Conditions panel needs a **free** API key from **openweathermap.org
 2. Click the **key** (⚙) button on the weather panel and paste it in.
 
 The key is stored by the local server in `openweather_key.json` (in the project folder) and is used only to fetch weather — it's never shown in the page again and never sent anywhere except OpenWeather. Calls are spread through the day and capped at 200, keeping you well under the free 1,000/day limit. A counter shows how many calls you've used (it resets at 00:00 UTC).
+
+### A note on weather API limits (shared IPs / VPNs)
+The two weather services this app uses have free-tier limits that reset daily at 00:00 UTC: OpenWeather is tied to your API **key**, while Open-Meteo (the free, keyless model used for the offshore rain watch, embedded solar and cloud cover) is limited **per IP address**.
+
+Because Open-Meteo's limit is per IP and has no key, that daily allowance is **shared by everyone using the same public IP**. If you are behind a **VPN**, a corporate/university network, mobile data, or an ISP that uses carrier-grade NAT (CGNAT), you may share one public IP with many other people — and their Open-Meteo usage counts against the same pool. In that case you can see Open-Meteo return "Daily API request limit exceeded — try again tomorrow" **much sooner than your own usage would suggest**, or even continuously, regardless of how few calls this app has made.
+
+**This is not a fault of the application.** The app reports Open-Meteo's own response faithfully, falls back to the OpenWeather nowcast (OC4) so the offshore watch keeps working, and re-checks Open-Meteo every 15 minutes — so it recovers on its own once the shared pool frees up, at the 00:00 UTC reset, or if your connection moves to a fresh IP (no restart needed). To confirm it's the shared-IP limit rather than the app, open this in a browser: `https://api.open-meteo.com/v1/forecast?latitude=50.37&longitude=-4.14&current=precipitation` — if you get an `error … Daily API request limit exceeded` response, the limit is being enforced on your IP by Open-Meteo, not by grid-monitor.
+
+To sidestep it entirely, run your own Open-Meteo (it is free and open-source; a Docker image is provided by the project) and point the app at it by setting the `OPEN_METEO_BASE` environment variable before starting `grid_server.py`, e.g. `OPEN_METEO_BASE=http://localhost:8080/v1`. Unset, the app uses the public Open-Meteo host as normal.
 
 ---
 
@@ -211,6 +227,18 @@ Audible and spoken alarms can be armed from the alarm panel, with per-category t
 
 To avoid a flood of alerts when a whole region is affected, these name up to three locations by distance ("less than 5 miles", or rounded miles); if more than three are active, the nearest three are named followed by "and N other locations near you". Nearest (within 5 miles) is treated as more urgent. The repeat tone sounds at most once per hour, with a spoken situation summary every three hours. A **Clear river / rain alarms** button resets these, and they also clear automatically when you change location.
 
+### Frequency and system-risk alarms (kept separate)
+These are two distinct alarm categories, because a frequency limit breach is a real alarm while the risk index is a notification:
+
+- **Frequency limits** — the escalating **tones** fire only when the frequency *itself* leaves the band, in either direction: tier 1 at 49.8 / 50.2 Hz, tier 2 at 49.7 / 50.3 Hz, tier 3 at 49.5 / 50.5 Hz (each with a small deadband so it doesn't chatter). Each burst also speaks the reading ("grid frequency high/low …"). To avoid alarm fatigue on a persistent excursion the sound is **capped and spaced**, not continuous: tier 1 up to 10 s every 2 min, tier 2 up to 15 s every 2 min, tier 3 up to 15 s every minute, and after 4 minutes it winds down to up to 5 s every 15 min. A worsening excursion restarts the cadence; if it stays out and isn't recovering, a one-shot spoken warning is given (possible power cuts when low, generation tripping when high). The alarm reads the full-resolution 15-second data, so it catches brief excursions the on-screen trace might smooth over.
+- **System risk index** — when the composite risk level rises (low inertia / high CGRI) or a **sudden infeed loss** is detected, the app plays a single short **pip** and shows the on-screen banner (the alert card and the panel tint) — deliberately **not** the escalating tones. It's an "elevated resilience risk" notification, not a frequency alarm.
+- **Sustained statutory breach** — separate from the instantaneous crossing above, a distinct critical alert is raised once frequency has stayed beyond a statutory limit (49.5 / 50.5 Hz) continuously for more than a minute (e.g. "Grid frequency has stayed below 49.5 Hz for 1m 35s …"). It updates as the breach persists and is recorded as a single episode, with its total duration, in the alert history.
+
+In the alert list the two are tagged separately (**FREQ** for frequency-limit breaches, **RISK** for the composite risk and infeed-loss items), and each has its own on/off toggle in the alarm panel.
+
+### Active forecast window
+In the alarm panel you can set a start and end time (local) to **concentrate the paid API budget** in the hours that matter to you. Inside the window the offshore rain model, land probes and wind reading sample at full cadence; outside it, that sampling is stretched by a "quiet" factor (you choose it) so the daily weather-API quota isn't spent overnight — the alarms themselves still run. The setting is remembered across restarts and may wrap past midnight. Separately, the offshore watch is metered honestly against the free weather tiers and, if a provider reports its daily limit reached, it backs off and leans on the fallback rather than hammering an empty quota.
+
 Click the **history** button (top right) to open the alert history and statistics view. Choose a window — **24 h, 7 d, 30 d, or all** — to see how often each type of alert has fired and how long they typically lasted. History is kept for up to 30 days.
 
 ---
@@ -238,4 +266,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 260827.2*
+*README build 260904.3*
