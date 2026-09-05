@@ -22,6 +22,4 @@ Last reviewed: 260905.
 
 ## Notes
 
-- The header text on the gas margin card correctly frames the derived signal as
-  a proxy, not an official Margins Notice or Gas Balancing Notification.
 - Resolved issues are not kept here; see `CHANGELOG.md`.
