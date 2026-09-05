@@ -266,4 +266,9 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
+## NEXT MAJOR UPDATE
+
+The next major goal is to add a "Supply Disconnections" (aka power cuts) panel. 
+---
+
 *README build 260904.3*
