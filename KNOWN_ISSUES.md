@@ -8,17 +8,15 @@ plausibility**. Estimated, derived, stale, or basis-mismatched data must be
 labelled as such; a display that is individually accurate but invites a
 misleading reading is treated as a bug.
 
-Last reviewed: 260825.
+Last reviewed: 260905.
 
 ---
 
 ## Open
 
-_None currently open._
-
-The solar-resource-verdict elevation issue (the "solar strong" badge reading
-strong near dawn/dusk while actual output was ~1%) was resolved in 260825 by
-gating `_rate_solar` on computed sun elevation — see `CHANGELOG.md`.
+- Ongoing potential issue with Open Meteo API quotas being prematurely exhausted.
+  Message appears on EA page "offshore feed degraded — OC4 fallback". 
+  Numerous fixes already tried. Investigations continue.
 
 ---
 
