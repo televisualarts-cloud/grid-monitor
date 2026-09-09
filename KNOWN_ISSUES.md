@@ -14,9 +14,11 @@ Last reviewed: 260905.
 
 ## Open
 
-- Ongoing potential issue with Open Meteo API quotas being prematurely exhausted.
+- Open Meteo API quotas being prematurely exhausted on shared IPs.
   Message appears on EA page "offshore feed degraded — OC4 fallback". 
-  Numerous fixes already tried. Investigations continue.
+  
+  If you encounter this problem consider asking your ISP for a static IP 
+  and avoid using a VPN.
 
 ---
 
