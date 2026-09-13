@@ -14,11 +14,11 @@ Last reviewed: 260905.
 
 ## Open
 
-- Open Meteo API quotas being prematurely exhausted on shared IPs.
-  Message appears on EA page "offshore feed degraded — OC4 fallback". 
+- Weather and EA rain gauge API feeds are flakey. EA endpoints regularly error 503 
+  OM and OWM APIs appear to timeout. 
   
-  If you encounter this problem consider asking your ISP for a static IP 
-  and avoid using a VPN.
+  Using a fixed IP and avoiding a VPN doesn't seem to help. 
+  Investigations ongoing.
 
 ---
 
