@@ -14,11 +14,9 @@ Last reviewed: 260913.
 
 ## Open
 
-_None currently open._
-
-The solar-resource-verdict elevation issue (the "solar strong" badge reading
-strong near dawn/dusk while actual output was ~1%) was resolved in 260825 by
-gating `_rate_solar` on computed sun elevation — see `CHANGELOG.md`.
+- Weather and EA rain gauge API feeds are flakey. EA endpoints regularly error 503;
+  OM and OWM APIs appear to time out. Using a fixed IP and avoiding a VPN doesn't
+  seem to help. Investigations ongoing (see the candidate issues below).
 
 ---
 
@@ -82,6 +80,4 @@ claim it is noted; honesty over plausibility applies to this list too.
 
 ## Notes
 
-- The header text on the gas margin card correctly frames the derived signal as
-  a proxy, not an official Margins Notice or Gas Balancing Notification.
 - Resolved issues are not kept here; see `CHANGELOG.md`.
