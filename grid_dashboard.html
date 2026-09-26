@@ -2134,6 +2134,10 @@ async function refreshUtilData(){
   }catch(e){ /* leave gasSummary as-is */ }
   try{
     const f=await fetch("/api/ea-floods").then(r=>r.json());
+    // An EA failure with nothing held is "unknown", not "no floods": leave the chip and the
+    // alarm exactly as they were. A stale reply (last good counts held by the server) is
+    // shown, marked stale, but can't end or start a flood episode.
+    if(f.error && !f.stale) throw new Error(f.error);
     const c=f.counts||{}; const c1=+(c["1"]||0),c2=+(c["2"]||0),c3=+(c["3"]||0);
     floodSummary=null;
     if(c1||c2||c3){
@@ -2145,9 +2149,10 @@ async function refreshUtilData(){
       if(W && A) text=n+" flood warnings & alerts";
       else if(W) text=W+" "+(c2?"":"severe ")+"flood warning"+(W>1?"s":"");
       else text=A+" flood alert"+(A>1?"s":"");
-      floodSummary={sev, text};
+      floodSummary={sev, text, stale:!!f.stale, staleAge:f.stale_age_s};
     }
-    Alarm.evaluateFloods(c, (eaData&&eaData.local_floods)||[]);
+    Alarm.evaluateFloods(c, (eaData&&eaData.local_floods)||[],
+      {stale:!!f.stale, localStale:!!(eaData&&eaData.local_floods_stale), localKnown:!!eaData});
   }catch(e){ /* leave floodSummary as-is */ }
   // UK & Ireland power cuts — national customers-off + a planned/unplanned split
   // for the tooltip, computed from the incident list (the /powercuts page does the same).
@@ -2259,8 +2264,12 @@ function buildHeaderSummaries(){
   }
   // Flood — only when EA warnings are in force.
   if(floodSummary){
-    chips.push('<div class="hdr-sum sev'+floodSummary.sev+'" data-act="ea" title="Open Environment Agency page">'+
-      '<span class="ic">💧</span><span><b>'+floodSummary.text+'</b></span></div>');
+    const fst=floodSummary.stale;
+    chips.push('<div class="hdr-sum sev'+floodSummary.sev+'" data-act="ea" title="'+
+      (fst?('EA flood feed not responding — showing the last good count'+
+        (floodSummary.staleAge!=null?(' from '+Math.round(floodSummary.staleAge/60)+' min ago'):'')+'. '):'')+
+      'Open Environment Agency page">'+
+      '<span class="ic">💧</span><span><b>'+floodSummary.text+'</b>'+(fst?' <span style="opacity:.7">(stale)</span>':'')+'</span></div>');
   }
   // Rainfall — set by the armed rain alarm engine (only shows while armed).
   if(rainSummary){
@@ -7791,7 +7800,11 @@ const Alarm = (function(){
     if(s3>0) p.push(s3+" flood alert"+(s3>1?"s":""));
     return p.join(", ");
   }
-  function evaluateFloods(counts, localFloods){
+  // A flood episode only ends after this long of GOOD readings with none in force, so a
+  // brief dip (or a lifted-then-reissued alert within the window) doesn't re-announce it.
+  const FLOOD_EPISODE_END_MS=30*60*1000;
+  function evaluateFloods(counts, localFloods, opt){
+    opt=opt||{};
     // Disarmed or category off: release any severe crit-latch we hold and reset.
     if(!armed || !(CATS.flood && CATS.flood.on)){
       if(_floodCrit){ _floodCrit=false; critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
@@ -7805,20 +7818,26 @@ const Alarm = (function(){
     if(wantCrit && !_floodCrit){ _floodCrit=true; if(baselined){ critActiveCount++; startCritRepeat(); } }
     else if(!wantCrit && _floodCrit){ _floodCrit=false; critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
 
+    const now=Date.now();
     // National line — speak on the first flood of an episode, or on ESCALATION (a new
     // severe or warning). Alert-only changes update the stored count without speaking.
+    // Stale (held) counts can't change anything; zero ends the episode only after
+    // FLOOD_EPISODE_END_MS of good readings.
     const active=(s1+s2+s3)>0, p=_floodNat;
-    if(!active){
-      _floodNat=null;
+    if(opt.stale){
+      /* held counts from a failed EA call: no change */
+    } else if(!active){
+      if(p){ if(!p.zeroSince) p.zeroSince=now;
+             else if(now-p.zeroSince>=FLOOD_EPISODE_END_MS) _floodNat=null; }
     } else if(!p || s1>p.s1 || s2>p.s2){
       if(baselined){
         tone(s1>0?"crit":(s2>0?"warn":"notice"));
         say("Flooding. "+_floodPhrase(s1,s2,s3)+" active nationally.");
         flashBtn();
       }
-      _floodNat={s1,s2,s3};
+      _floodNat={s1,s2,s3,zeroSince:null};
     } else {
-      _floodNat={s1,s2,s3};
+      _floodNat={s1,s2,s3,zeroSince:null};
     }
 
     // Near-you second line — floods within the EA-page radius, its own count; speak on
@@ -7828,9 +7847,12 @@ const Alarm = (function(){
       .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
     let l1=0,l2=0,l3=0;
     locals.forEach(f=>{ const L=f.severity_level; if(L===1)l1++; else if(L===2)l2++; else if(L===3)l3++; });
-    const ln=locals.length, pl=_floodLoc;
-    if(ln===0){
-      _floodLoc=null;
+    const ln=locals.length, plo=_floodLoc, pl=plo?plo.n:null;
+    if(opt.localStale || !opt.localKnown){
+      /* local lookup failed (held list) or EA data not loaded yet: no change */
+    } else if(ln===0){
+      if(plo){ if(!plo.zeroSince) plo.zeroSince=now;
+               else if(now-plo.zeroSince>=FLOOD_EPISODE_END_MS) _floodLoc=null; }
     } else if(pl==null || ln>pl){
       if(baselined){
         const nn=locals[0], place=nn.name||nn.river_or_sea||"your area";
@@ -7839,9 +7861,9 @@ const Alarm = (function(){
         say("Near you: "+_floodPhrase(l1,l2,l3)+". Nearest at "+place+where+".");
         flashBtn();
       }
-      _floodLoc=ln;
+      _floodLoc={n:ln, zeroSince:null};
     } else {
-      _floodLoc=ln;
+      _floodLoc={n:ln, zeroSince:null};
     }
   }
 

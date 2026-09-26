@@ -4341,6 +4341,9 @@ _ea_rain_peak = {}        # measure @id -> [[reading_ts, mm_h], ...]: 2h peak-ho
 EA_PEAK_WINDOW_S = 2 * 3600
 _ea_rain_cache = {}       # rain-only overviews (background watcher) — same key
 _ea_floods_cache = {"data": None, "ts": 0}
+_ea_floods_good = {"data": None, "ts": 0}      # last SUCCESSFUL national floods reply
+EA_FLOODS_RETRY_S = 60                          # after a failed EA call, retry this soon
+_ea_local_floods_good = {}                      # (lat,lon,dist) -> (ts, list): last good local floods
 EA_FLOODS_TTL = 300
 # Wind (Open-Meteo) has its OWN cache + TTL, independent of the 5-min EA cache.
 # Open-Meteo's data only updates every ~15 min and each of the 9 ring points
@@ -4818,8 +4821,22 @@ def get_ea_floods():
                 out["counts"][str(lvl)] += 1
         # worst-first: severe (1) at the top
         out["warnings"].sort(key=lambda w: (w["severity_level"] or 9))
+        out["stale"] = False
+        _ea_floods_good["data"], _ea_floods_good["ts"] = out, time.time()
     except Exception as e:
-        out["error"] = f"{type(e).__name__}: {e}"
+        err = f"{type(e).__name__}: {e}"
+        g = _ea_floods_good
+        if g["data"] is not None:
+            # A failed EA call is "unknown", never "no floods": keep serving the last good
+            # counts, marked stale with their age, so a feed blip can't end a flood episode
+            # (the dashboard would otherwise re-announce the same alert when EA recovers).
+            out = dict(g["data"], stale=True, error=err, stale_age_s=int(time.time() - g["ts"]))
+        else:
+            out["error"] = err
+            out["stale"] = False
+        c["data"] = out
+        c["ts"] = time.time() - EA_FLOODS_TTL + EA_FLOODS_RETRY_S   # retry sooner than a good reply
+        return out
     c["data"] = out
     c["ts"] = time.time()
     return out
@@ -4831,12 +4848,13 @@ def _ea_local_floods(lat, lon, dist):
     the nearest local one in the spoken alert ("...including one locally at
     <place>, N km from you"). Two cached calls: the floods spatial query for what
     is in force locally, and the floodAreas spatial query for each area's centroid
-    and tidy label. Returns a list of dicts sorted nearest-first; never raises."""
+    and tidy label. Returns a list of dicts sorted nearest-first, or None when the EA
+    floods call failed (unknown — not the same as "none in force"); never raises."""
     try:
         furl = f"{EA_BASE}/id/floods?lat={lat}&long={lon}&dist={dist}"
         floods = fetch_json(furl, timeout=20).get("items") or []
     except Exception:
-        return []
+        return None
     inforce = {}
     for it in floods:
         fid = it.get("floodAreaID") or (it.get("floodArea") or {}).get("notation")
@@ -4932,7 +4950,17 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
         _ea_collect_rainfall(out, lat, lon, dist, latest)
         _ea_collect_wind(out, lat, lon, sampling_mult)  # TTL+budget-throttled; needed by the probe in both modes
         if not rain_only:
-            out["local_floods"] = _ea_local_floods(lat, lon, dist)
+            _lk = (round(lat, 3), round(lon, 3), dist)
+            _lf = _ea_local_floods(lat, lon, dist)
+            if _lf is None:
+                # EA call failed: keep the last good local list, marked stale, rather than
+                # reporting "no floods near you" (which would reset the near-you alert)
+                _g = _ea_local_floods_good.get(_lk)
+                out["local_floods"] = _g[1] if _g else []
+                out["local_floods_stale"] = True
+            else:
+                out["local_floods"] = _lf
+                _ea_local_floods_good[_lk] = (time.time(), _lf)
             out["local_flood_area_ids"] = [f["area_id"] for f in out["local_floods"]]
     except Exception as e:
         out["error"] = _ea_errstr(e)
