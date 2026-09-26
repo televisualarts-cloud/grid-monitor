@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260904.10  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -72,6 +73,78 @@ except Exception:            # never let a missing/broken probe stop the server
     _rain_probe = None
     _RAIN_PROBE_STATE = None
 
+# Live GB power-cuts aggregator (optional companion; server runs unchanged if absent).
+try:
+    import powercuts as _powercuts
+except Exception:
+    _powercuts = None
+
+# Wind vs power-cuts correlation tracker (optional; keyless METAR). Never blocks the server.
+try:
+    import windcuts as _windcuts
+except Exception:
+    _windcuts = None
+
+# Background sampler: fetch + log one history row every POWERCUTS_SAMPLE_S and cache the
+# latest snapshot, so the endpoint is instant and history rows land at the sample cadence
+# (not once per browser request). Aligned to the slowest DNO feed (~15 min); 300 s is safe.
+_powercuts_snap = {"data": None, "ts": 0}
+POWERCUTS_SAMPLE_S = 300
+
+def _powercuts_sampler():
+    import time as _t
+    while True:
+        try:
+            _snap = _powercuts.collect()
+            _powercuts.log_sample(_snap)
+            _powercuts_snap["data"] = _snap
+            _powercuts_snap["ts"] = _t.time()
+            if _windcuts is not None:
+                try:
+                    _windcuts.observe(_snap)     # join current wind, fold into the model
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        _t.sleep(POWERCUTS_SAMPLE_S)
+
+if _powercuts is not None:
+    import threading as _pc_th
+    _pc_th.Thread(target=_powercuts_sampler, daemon=True).start()
+
+# Gas supply/margin alarm probe (read-only diagnostic; logs what the alarm WOULD say —
+# no tone, no voice). Optional: if gas_probe.py isn't beside this file the server runs
+# unchanged. Design + verified National Gas publication IDs: GAS_ALARM_DESIGN.md.
+try:
+    import gas_probe as _gas_probe
+    _GAS_PROBE_STATE = _gas_probe.GasState()
+except Exception:            # never let a missing/broken probe stop the server
+    _gas_probe = None
+    _GAS_PROBE_STATE = None
+
+# Background sampler: poll the National Gas REST API once per GAS_PROBE_SAMPLE_S, run the
+# probe, log a calibration row and cache the latest diagnostic — so it accumulates
+# autonomously whether or not a page is open. PCLP updates hourly, so 3600 s fits; the
+# GasState is held in memory across cycles so the dwell + per-hour baseline build up.
+_gas_probe_snap = {"data": None, "ts": 0}
+GAS_PROBE_SAMPLE_S = 3600
+
+def _gas_probe_sampler():
+    import time as _t
+    while True:
+        try:
+            _diag = _gas_probe.run_probe(_GAS_PROBE_STATE)
+            _gas_probe.log_sample(_diag)
+            _gas_probe_snap["data"] = _diag
+            _gas_probe_snap["ts"] = _t.time()
+        except Exception:
+            pass
+        _t.sleep(GAS_PROBE_SAMPLE_S)
+
+if _gas_probe is not None:
+    import threading as _gp_th
+    _gp_th.Thread(target=_gas_probe_sampler, daemon=True).start()
+
 def _meter(api, tag, n=1, note=""):
     """Log n real upstream calls (api/tag) via rain_probe's meter. Never raises."""
     if _rain_probe is not None:
@@ -94,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260904.10"
+SERVER_BUILD = "260926.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -428,6 +501,29 @@ def _risk_level(hz, cgri, gen_loss):
     elif gen_loss and gen_loss.get("flagged"): lvl = max(lvl, 1)
     return lvl
 
+def _freq_extremes(freq):
+    """(hz_min, hz_max, hz_judge) for the latest publish burst. hz_judge is whichever
+    extreme sits further from nominal. Falls back to the newest sample when the
+    payload carries no burst extremes (older cache / fallback feed)."""
+    f = freq or {}
+    hz = f.get("hz")
+    lo = (f.get("burst_min") or {}).get("hz")
+    hi = (f.get("burst_max") or {}).get("hz")
+    if hz is not None:                       # the newest point is always in the burst
+        lo = hz if lo is None else min(lo, hz)
+        hi = hz if hi is None else max(hi, hz)
+    if lo is None or hi is None:
+        return None, None, None
+    judge = lo if abs(lo - NOMINAL_HZ) >= abs(hi - NOMINAL_HZ) else hi
+    return lo, hi, judge
+
+def _risk_level_ext(hz_min, hz_max, cgri, gen_loss):
+    """_risk_level judged on BOTH burst extremes: the frequency term takes the worse
+    of the low and high sides (an oscillating burst can breach either)."""
+    if hz_min is None or hz_max is None:
+        return _risk_level(None, cgri, gen_loss)
+    return max(_risk_level(hz_min, cgri, gen_loss), _risk_level(hz_max, cgri, gen_loss))
+
 # Level hysteresis so the DISPLAYED band doesn't flap when hz/CGRI hover on a boundary.
 # Fast attack, slow release: a serious escalation (red / statutory / severe loss) shows
 # at once; a rise to amber must persist a short dwell (drops single-cycle noise); a drop
@@ -472,21 +568,28 @@ def compute_system_risk(gen, freq, gen_loss=None):
     elif npf < ROCOF_RED:   inertia_band = "amber"
     else:                   inertia_band = "red"
     V = round(npf / ROCOF_VULN_REF, 2) if npf is not None else 0.0
-    hz = (freq or {}).get("hz")
+    hz = (freq or {}).get("hz")                    # newest sample ("now")
     rocof = (freq or {}).get("rocof_hz_s")
-    dev = round(abs(hz - NOMINAL_HZ), 3) if hz is not None else None
+    # Judge on the WORST point of the latest publish burst, not just the newest one
+    # (see get_frequency: a mid-burst dip that recovered by the last point is real).
+    hz_min, hz_max, hz_judge = _freq_extremes(freq)
+    dev = round(abs(hz_judge - NOMINAL_HZ), 3) if hz_judge is not None else None
     cgri = None
     if dev is not None:
         m_inertia = 1.0 + CGRI_ALPHA * max(0.0, V)
         m_rocof = 1.0 + CGRI_BETA * (abs(rocof) / ROCOF_OBS_REF if rocof else 0.0)
         cgri = round(dev * m_inertia * m_rocof, 3)
-    level = ["green", "amber", "red"][_risk_hysteresis(_risk_level(hz, cgri, gen_loss), time.time())]
+    raw = _risk_level_ext(hz_min, hz_max, cgri, gen_loss)
+    level = ["green", "amber", "red"][_risk_hysteresis(raw, time.time())]
     return {
         "inertia_gws": round(E_mws / 1000.0, 1), "sync_mw": round(sync_mw),
         "inertia_band": inertia_band, "notional_rocof": npf,
         "largest_loss_mw": LARGEST_INFEED_LOSS_MW, "rocof_obs": rocof,
         "vulnerability": V, "hz": hz, "dev": dev, "cgri": cgri,
-        "level": level, "level_raw": ["green", "amber", "red"][_risk_level(hz, cgri, gen_loss)],
+        # hz = newest sample; hz_judge = burst point furthest from nominal (what dev,
+        # CGRI and level are judged on); hz_min/hz_max = the burst's extremes.
+        "hz_judge": hz_judge, "hz_min": hz_min, "hz_max": hz_max,
+        "level": level, "level_raw": ["green", "amber", "red"][raw],
         "gen_loss": gen_loss,
         "params": {"op_lo": FREQ_OP_LO, "op_hi": FREQ_OP_HI, "stat_lo": FREQ_STAT_LO,
                    "stat_hi": FREQ_STAT_HI, "lfdd_hz": LFDD_HZ, "rocof_vuln_ref": ROCOF_VULN_REF,
@@ -623,7 +726,32 @@ def get_frequency():
     trace = [round(hz, 3) for _, hz in sampled]
     trace_points = [{"t": t, "hz": round(hz, 3)} for t, hz in sampled]
     log_freq_points(ordered)                       # interleaved 15s data log
+    # BURST EXTREMES. BMRS publishes ~8 x 15s points together every ~2 min, and the
+    # newest (latest_hz) is only the LAST of them — a dip at the 3rd point that has
+    # recovered by the 8th would be invisible to anything judging latest_hz alone.
+    # So also carry the lowest and highest point of the latest publish window
+    # (measurement time, relative to the newest sample). The alarm, system-risk level
+    # and alert cards judge on these; latest_hz stays the "now" value. Stateless, so
+    # the fast feed and the snapshot always agree. The window is exactly one burst
+    # (FREQ_BURST_WINDOW_S = 8 points) so no point is judged in two successive bursts —
+    # a wider window would re-voice the previous burst's extreme as "latest".
+    burst_min = burst_max = None
+    lt_dt = _parse_iso(latest_t)
+    if lt_dt is not None:
+        win = []
+        for t, hz in ordered[-40:]:
+            td = _parse_iso(t)
+            if td is not None and (lt_dt - td).total_seconds() < FREQ_BURST_WINDOW_S:
+                win.append((t, hz))
+        if win:
+            lo_t, lo_hz = min(win, key=lambda th: th[1])
+            hi_t, hi_hz = max(win, key=lambda th: th[1])
+            burst_min = {"t": lo_t, "hz": round(lo_hz, 3)}
+            burst_max = {"t": hi_t, "hz": round(hi_hz, 3)}
     return {"time": latest_t, "hz": latest_hz,
+            "burst_min": burst_min,          # lowest point of the latest publish window
+            "burst_max": burst_max,          # highest point of the latest publish window
+            "burst_window_s": FREQ_BURST_WINDOW_S,
             "rocof_hz_s": _freq_rocof(ordered),   # derived 15s slope (proxy)
             "trace": trace,                 # kept for the live-append path
             "trace_points": trace_points,   # timestamped, for axis labels
@@ -644,6 +772,7 @@ _freq_fast_cache = {"data": None, "ts": 0, "next_due": 0,
                     "period_s": None,        # learned burst period (~120s)
                     "newest_age_s": None}
 FREQ_BURST_PERIOD = 120.0     # observed ~2-min publish burst cadence
+FREQ_BURST_WINDOW_S = 120     # extremes window = one publish burst (8 x 15s points, ages 0-105s)
 FREQ_FAST_MIN = 10.0          # never refetch more often than this (rate guard)
 FREQ_FAST_MAX = 115.0         # normal wait between bursts (just under one period)
 FREQ_PHASE_LEAD = 6.0         # poll this many s after a burst is expected
@@ -1971,6 +2100,70 @@ def _rate_site(site, obs):
     return card
 
 
+def _type_summary(cards):
+    """Roll up a resource-type verdict from its site cards. Shared by get_weather and the
+    live-sun refresh so both always agree. 'none' = night-time solar; 'rated' counts only
+    cards carrying a live day-time verdict."""
+    n = len(cards)
+    good = sum(1 for s in cards if s["rating"] == "good")
+    fair = sum(1 for s in cards if s["rating"] == "fair")
+    poor = sum(1 for s in cards if s["rating"] == "poor")
+    none = sum(1 for s in cards if s["rating"] == "none")
+    rated = good + fair + poor
+    if n == 0:
+        verdict = None
+    elif rated == 0:
+        verdict = "none" if none else "unknown"
+    elif good == rated:
+        verdict = "strong"
+    elif poor == rated:
+        verdict = "weak"
+    elif good >= rated - good:
+        verdict = "fair-good"
+    elif poor > good + fair:
+        verdict = "poor-weak"
+    else:
+        verdict = "mixed"
+    return {"n": n, "good": good, "fair": fair, "poor": poor,
+            "none": none, "rated": rated, "verdict": verdict}
+
+
+def _apply_live_sun(data, now=None):
+    """Recompute solar sun-POSITION at serve time instead of letting it freeze inside the
+    weather snapshot. The weather TTL is ~2h (cloud changes slowly and the OWM budget is
+    tight), but the sun's elevation is pure astronomy — leaving it frozen makes a dusk
+    reading linger well after dark. So for each solar card we recompute elevation for `now`
+    and re-rate it against the card's (still-cached, still-labelled-stale) cloud value, so
+    it correctly flips to 'night — no solar output' after sunset. Returns a copy with fresh
+    solar cards and a rebuilt solar summary; never mutates the cache."""
+    if not data or not data.get("sites"):
+        return data
+    now = now or time.time()
+    changed = False
+    sites = []
+    for s in data["sites"]:
+        if s.get("type") == "solar" and s.get("lat") is not None and s.get("lon") is not None:
+            elev = _solar_elevation(s["lat"], s["lon"], now)
+            rating, head = _rate_solar(s.get("clouds_pct"), elev)
+            ns = dict(s)
+            ns["sun_elev_deg"] = round(elev, 1) if elev is not None else None
+            ns["is_day"] = (elev is not None and elev > 0)
+            ns["rating"], ns["headline"] = rating, head
+            sites.append(ns)
+            changed = True
+        else:
+            sites.append(s)
+    if not changed:
+        return data
+    out = dict(data)
+    out["sites"] = sites
+    if isinstance(out.get("summary"), dict):
+        sm = dict(out["summary"])
+        sm["solar"] = _type_summary([s for s in sites if s["type"] == "solar"])
+        out["summary"] = sm
+    return out
+
+
 def get_weather():
     """Per-location resource conditions from OpenWeather (Current Weather Data).
     Fetches each RESOURCE_SITE and rates it for its power type (wind/solar/hydro),
@@ -2130,33 +2323,9 @@ def get_weather():
     # "0/N good" (e.g. all-fair reads as "mixed", not "bad"). 'good' is retained
     # for backward compatibility with older frontends.
     def _summary(typ):
-        cards = [s for s in site_cards if s["type"] == typ]
-        n = len(cards)
-        good = sum(1 for s in cards if s["rating"] == "good")
-        fair = sum(1 for s in cards if s["rating"] == "fair")
-        poor = sum(1 for s in cards if s["rating"] == "poor")
-        # night-time solar cards are rated "none" — surfaced separately so the
-        # dashboard can say "in darkness" rather than implying a bad resource.
-        none = sum(1 for s in cards if s["rating"] == "none")
-        rated = good + fair + poor          # cards carrying a live day-time verdict
-        # Overall verdict for the resource type, from the distribution of the
-        # cards that actually have one. Deliberately conservative wording.
-        if n == 0:
-            verdict = None
-        elif rated == 0:
-            verdict = "none" if none else "unknown"
-        elif good == rated:
-            verdict = "strong"
-        elif poor == rated:
-            verdict = "weak"
-        elif good >= rated - good:          # good sites are at least half
-            verdict = "fair-good"           # -> "moderate-good"
-        elif poor > good + fair:            # poor dominates
-            verdict = "poor-weak"           # -> "mostly weak"
-        else:
-            verdict = "mixed"
-        return {"n": n, "good": good, "fair": fair, "poor": poor,
-                "none": none, "rated": rated, "verdict": verdict}
+        # night-time solar cards are rated "none"; verdict logic lives in the shared
+        # module-level _type_summary so get_weather and the live-sun refresh agree.
+        return _type_summary([s for s in site_cards if s["type"] == typ])
 
     result = {
         "provider": "OpenWeather",
@@ -5515,7 +5684,17 @@ def build_alerts(snap):
                 f"No fresh frequency reading for {int(age//60)} min (last {freq['hz']:.3f} Hz). "
                 "Frequency-based alerting is running blind until the feed recovers.", tag="DATA"))
     if sr and sr.get("hz") is not None:
-        hz = sr["hz"]; dev = sr.get("dev") or 0.0
+        # Judge on the burst's worst point (hz_judge), not just the newest sample, so a
+        # mid-burst excursion that recovered by the last 15s point still raises the card.
+        # hz_now is quoted alongside when it differs, so the text never overstates "now".
+        hz_now = sr["hz"]
+        hz = sr.get("hz_judge") if sr.get("hz_judge") is not None else hz_now
+        dev = sr.get("dev") or 0.0
+        if abs(hz - hz_now) >= 0.005:
+            verb = "dipped to" if hz < FREQ_NOMINAL else "peaked at"
+            hz_txt = f"{verb} {hz:.3f} Hz in the latest 2-min data, now {hz_now:.3f} Hz"
+        else:
+            hz_txt = f"{hz:.3f} Hz"
         lvl = sr.get("level") or "green"; rocof = sr.get("rocof_obs"); cgri = sr.get("cgri")
         p = sr.get("params") or {}
         lfdd = p.get("lfdd_hz", 48.8); stat_lo = p.get("stat_lo", 49.5); stat_hi = p.get("stat_hi", 50.5)
@@ -5535,7 +5714,7 @@ def build_alerts(snap):
                 tail = (f"Under-frequency, beyond the statutory {stat_lo:.1f}–{stat_hi:.1f} Hz limit; "
                         f"automatic demand disconnection would begin at {lfdd:.1f} Hz.")
             alerts.append(_a("critical", "Frequency outside statutory limit",
-                f"Grid frequency {hz:.3f} Hz ({dev:.3f} Hz off nominal). " + tail, tag="FREQ"))
+                f"Grid frequency {hz_txt} ({dev:.3f} Hz off nominal). " + tail, tag="FREQ"))
             # SUSTAINED statutory breach — distinct from the instantaneous crossing
             # above. Once frequency has stayed beyond a statutory limit continuously
             # for >= FREQ_DWELL_S (60 s), raise a persisting critical alert. The TITLE
@@ -5550,21 +5729,21 @@ def build_alerts(snap):
                 cons = ("nearing automatic low-frequency demand disconnection (from 48.8 Hz)."
                         if side == "low" else "with rising risk of over-frequency generation tripping.")
                 alerts.append(_a("critical", "Sustained statutory frequency breach",
-                    f"Grid frequency has stayed {edge} Hz for {dur} (now {hz:.3f} Hz) — {cons}", tag="FREQ"))
+                    f"Grid frequency has stayed {edge} Hz for {dur} (now {hz_now:.3f} Hz) — {cons}", tag="FREQ"))
         # (b) composite risk — the inertia-weighted CGRI level, so a small drift on a
         #     low-inertia grid escalates while noise on a stiff grid stays quiet. This is
         #     the SYSTEM-RISK alert (tag RISK), kept separate from the frequency-limit
         #     alert above — on the dashboard it pips + banners rather than sounding tones.
         elif lvl == "red":
             alerts.append(_a("critical", "Elevated system risk",
-                f"Composite grid risk high (CGRI {cgri}); {hz:.3f} Hz with low system inertia "
+                f"Composite grid risk high (CGRI {cgri}); frequency {hz_txt}, with low system inertia "
                 f"({sr.get('inertia_gws')} GVA·s, notional post-fault RoCoF {sr.get('notional_rocof')} Hz/s). "
                 "A large trip now would pull frequency down fast.", tag="RISK"))
         elif lvl == "amber":
             reason = "system inertia reduced" if sr.get("inertia_band") in ("amber", "red") \
                      else "outside the normal operational band"
             alerts.append(_a("warning", "System risk elevated",
-                f"Grid frequency {hz:.3f} Hz, {dev:.3f} Hz off nominal — {reason} (CGRI {cgri}).", tag="RISK"))
+                f"Grid frequency {hz_txt}, {dev:.3f} Hz off nominal — {reason} (CGRI {cgri}).", tag="RISK"))
         # (c) slew note — from the SAME rocof_obs the panel shows
         if rocof is not None and lvl != "red" and not (hz <= stat_lo or hz >= stat_hi):
             a_ro = abs(rocof); arrow = "falling" if rocof < 0 else "rising"
@@ -6546,6 +6725,12 @@ def build_snapshot():
     else:
         _last_good["weather"] = wx     # remember this good reading
 
+    # Sun position is pure astronomy — recompute it live so a cached/stale weather
+    # snapshot (TTL ~2h) can't leave solar showing a dusk sun after dark. Cloud stays
+    # as last fetched (labelled stale); only the sun elevation/day-night gate refreshes.
+    if snap.get("weather"):
+        snap["weather"] = _apply_live_sun(snap["weather"])
+
     # Inferred: does actual wind output match the wind resource?
     wx = snap.get("weather")
     if gen and wx and wx.get("avg_wind_100m_ms") is not None:
@@ -6651,7 +6836,7 @@ def build_snapshot():
 
 # ---- HTTP server ------------------------------------------------------------
 HTML_PATH = Path(__file__).with_name("grid_dashboard.html")
-ENGINE_PATH = Path(__file__).with_name("engine_view_live.html")
+FORECAST_PATH = Path(__file__).with_name("forecast_view.html")   # rain-engine plan view (/forecast)
 _cache = {"snap": None, "ts": 0}
 CACHE_TTL = 55  # seconds
 
@@ -6701,6 +6886,27 @@ class Handler(BaseHTTPRequestHandler):
                                        "fails": 0, "err": None})
                 _cache["ts"] = 0     # force a fresh snapshot too
                 self._send_json({"ok": True})
+            elif self.path.startswith("/api/powercut-keys"):
+                if _powercuts is None:
+                    self._send_json({"ok": False, "error": "powercuts module not installed"}, 503); return
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                keys = _powercuts.load_keys()
+                for op in ("ENWL", "SPEN", "SSEN", "NIE", "ESB"):
+                    if op in payload:
+                        v = (payload.get(op) or "").strip()
+                        if v:
+                            keys[op] = v
+                        else:
+                            keys.pop(op, None)
+                _powercuts.save_keys(keys)
+                _powercuts._cache.clear()          # force a refetch with the new key(s)
+                _powercuts_snap["ts"] = 0
+                self._send_json({"ok": True, "configured": sorted(keys.keys())})
             elif self.path.startswith("/api/octopus-config"):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(n) if n else b""
@@ -6809,6 +7015,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_units())
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "stations": []}, 500)
+        elif self.path.startswith("/api/gas-probe"):
+            # Read-only gas alarm diagnostic (what the alarm WOULD say — no tone).
+            # Served from the background sampler's cache, so the endpoint is instant.
+            # NB: must precede "/api/gas" — "/api/gas-probe".startswith("/api/gas") is True.
+            self._send_json(_gas_probe_snap["data"] or
+                            {"error": "gas probe warming up", "would_speak": []})
         elif self.path.startswith("/api/gas"):
             try:
                 self._send_json(get_gas())
@@ -6818,8 +7030,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/geocode"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                q = qs.get("q", [""])[0]
-                self._send_json(geocode(q))
+                if qs.get("lat") and qs.get("lon"):
+                    # reverse: the postcode at a point (used for "power cut near you"
+                    # matching of incidents that have postcodes but no coordinates)
+                    lat, lon = float(qs["lat"][0]), float(qs["lon"][0])
+                    self._send_json({"reverse": (reverse_geocode_bulk([(lat, lon)]) or [None])[0]})
+                else:
+                    q = qs.get("q", [""])[0]
+                    self._send_json(geocode(q))
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}",
                                  "matches": []}, 500)
@@ -6912,6 +7130,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"events": read_alert_history(limit=limit, level=level)})
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "events": []}, 500)
+        elif self.path.startswith("/api/powercuts"):
+            if _powercuts is None:
+                self._send_json({"error": "powercuts module not installed"}, 503); return
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            hrs = int((qs.get("hours", ["24"])[0]) or 24)
+            snap = _powercuts_snap["data"]
+            if snap is None:                      # sampler hasn't produced one yet
+                snap = _powercuts.collect(); _powercuts.log_sample(snap)
+                _powercuts_snap["data"] = snap; _powercuts_snap["ts"] = time.time()
+            out = dict(snap)
+            out["history"] = _powercuts.history_tail(hrs, now=snap["generated"])
+            # Stats panel: peaks/worst-incident/voltage over fixed 24h & 7d windows,
+            # computed server-side over the FULL history (independent of the plot window).
+            try:
+                out["stats"] = _powercuts.compute_stats(snap)
+            except Exception:
+                out["stats"] = None
+            out["cache_age_s"] = int(time.time() - _powercuts_snap["ts"])
+            self._send_json(out)
+        elif self.path.startswith("/api/windcuts"):
+            if _windcuts is None:
+                self._send_json({"error": "windcuts module not installed"}, 503); return
+            try:
+                self._send_json(_windcuts.snapshot())
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/grid"):
             now = time.time()
             if not _cache["snap"] or now - _cache["ts"] > CACHE_TTL:
@@ -6940,9 +7184,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             else:
                 self.send_error(404, "grid_dashboard.html not found next to server")
-        elif self.path in ("/engine", "/engine_view_live.html"):
-            if ENGINE_PATH.exists():
-                body = ENGINE_PATH.read_bytes()
+        elif self.path in ("/powercuts", "/powercuts.html"):
+            p = Path(__file__).with_name("powercuts_page.html")
+            try:
+                body = p.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except FileNotFoundError:
+                self.send_error(404, "powercuts_page.html not found next to server")
+        elif self.path.split("?", 1)[0] in ("/forecast", "/forecast_view.html"):
+            # Forecast view; "?view=radar" (radar plot only) is handled by the page itself
+            if FORECAST_PATH.exists():
+                body = FORECAST_PATH.read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -6950,7 +7206,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             else:
-                self.send_error(404, "engine_view_live.html not found next to server")
+                self.send_error(404, "forecast_view.html not found next to server")
         else:
             self.send_error(404)
 

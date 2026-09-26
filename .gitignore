@@ -5,7 +5,9 @@
 # ── Credentials / secrets (NEVER COMMIT) ──
 octopus_config.json
 openweather_key.json
+powercut_keys.json
 *_key.json
+*_keys.json
 *_config.json
 *.key
 *.pem
@@ -24,6 +26,8 @@ gas_history.json
 alert_history.json
 alert_history/
 octopus_history/
+rain_episodes-*.jsonl
+rain_threats-*.jsonl
 
 # ── Python ──
 __pycache__/

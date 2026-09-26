@@ -1,0 +1,434 @@
+<!doctype html>
+<!--
+  GB Energy Monitor — Forecast view
+  Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
+  /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
+  Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Change history: CHANGELOG.md
+  Copyright (c) 2026 Andy Smith, G7IZU
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+-->
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forecast view</title>
+<style>
+  :root{--bg:#0b1016;--panel:#131b24;--panel2:#0f1620;--line:#22303f;--line2:#2c3d4f;
+    --ink:#e6edf5;--ink-dim:#8595a8;--ink-faint:#566277;
+    --ok:#39d98a;--warn:#f5b942;--crit:#ff5c6c;--accent:#3fb6c9;--accent2:#5b8def;
+    --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);padding:18px}
+  .wrap{max-width:1040px;margin:0 auto}
+  .titlebar{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .titlebar .dot{width:9px;height:9px;border-radius:50%;background:var(--ink-faint)}
+  .titlebar .dot.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  h1{font-size:16px;margin:0;font-weight:650}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 14px;
+    font-family:var(--mono);font-size:11px}
+  .bar label{color:var(--ink-faint)}
+  .bar input{font-family:var(--mono);font-size:11px;background:var(--panel2);color:var(--ink);
+    border:1px solid var(--line);border-radius:6px;padding:4px 7px}
+  .bar input.url{width:190px} .bar input.n{width:64px}
+  .bar button{font-family:var(--mono);font-size:11px;color:#04222b;background:var(--accent);
+    border:0;border-radius:6px;padding:5px 12px;cursor:pointer}
+  .bar button.ghost{color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line)}
+  .status{margin-left:auto;color:var(--ink-faint)}
+  .status.err{color:var(--crit)}
+  .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  canvas{width:100%;height:auto;display:block}
+  .hud h3{margin:0 0 8px;font-family:var(--mono);font-size:13px;letter-spacing:.1em;color:#9aa8ba;text-transform:uppercase}
+  .state{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+  .state .badge{font-family:var(--mono);font-size:14px;padding:3px 10px;border-radius:7px;font-weight:600;color:#04222b;background:var(--ink-faint)}
+  .state .sub{margin:0;color:#c6d2e0;font-family:var(--mono);font-size:13.5px}
+  .feed{font-family:var(--mono);font-size:12.5px;border-radius:7px;padding:6px 9px;margin:2px 0 10px;line-height:1.4}
+  .feed.warn{background:rgba(245,185,66,.12);border:1px solid rgba(245,185,66,.5);color:#f5b942}
+  .feed.crit{background:rgba(255,92,108,.12);border:1px solid rgba(255,92,108,.55);color:#ff8892}
+  .feed.note{background:rgba(94,200,255,.10);border:1px solid rgba(94,200,255,.40);color:#8fd0ff}
+  .kv{display:grid;grid-template-columns:1fr 1fr;gap:7px 14px;font-family:var(--mono);font-size:13.5px;margin-bottom:10px}
+  .kv .k{color:#b3c0d0} .kv .v{color:#f2f6fb;text-align:right}
+  .tracks,.probes,.speak{font-family:var(--mono);font-size:13.5px;border-top:1px solid var(--line);padding-top:9px;margin-bottom:10px;color:#cdd8e6}
+  .trow{display:flex;align-items:center;gap:8px;padding:3px 0}
+  .trow .m{margin-left:auto;color:var(--ink-dim)} .trow.appr .m{color:var(--ok)}
+  .chip{font-size:11.5px;border:1px solid var(--line2);border-radius:4px;padding:1px 5px;color:#9aa8ba}
+  .chip.appr{color:#04222b;background:var(--ok);border-color:transparent}
+  .speak .q{color:var(--accent);margin:3px 0}
+  .speak .qold{color:#9fb0c4;margin:3px 0}
+  .speak .qnone{color:var(--ink-faint);margin:3px 0}
+  .speak .vlab{display:inline-block;min-width:62px;color:var(--ink-faint);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .speak .mago{color:var(--ink-faint);font-size:11px}
+  .legend{display:flex;flex-wrap:wrap;gap:9px 15px;font-family:var(--mono);font-size:12px;color:#b3c0d0;margin-top:12px}
+  .legend .it{display:flex;align-items:center;gap:5px}.sw{width:10px;height:10px;border-radius:50%}
+  .apiu{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);line-height:1.5}
+  .foot{color:var(--ink-faint);font-family:var(--mono);font-size:10.5px;margin-top:14px;line-height:1.6}
+  .foot b{color:var(--ink-dim)}
+  /* radar-only mode (?view=radar): just the plot, for embedding in the EA page */
+  html.embed body{padding:0;background:transparent;overflow:hidden}
+  html.embed .wrap{max-width:none}
+  html.embed .titlebar,html.embed .bar,html.embed .hud,html.embed .foot{display:none}
+  html.embed .grid{display:block}
+  html.embed .card{background:transparent;border:0;border-radius:0;padding:0}
+  html.embed canvas{width:auto;height:100vh;max-width:100%;margin:0 auto}
+</style></head>
+<body><div class="wrap">
+  <div class="titlebar"><span class="dot" id="live"></span><h1>Forecast view</h1></div>
+
+  <div class="bar">
+    <label>server</label><input class="url" id="base" value="" placeholder="blank = same origin">
+    <label>lat</label><input class="n" id="lat" value="">
+    <label>lon</label><input class="n" id="lon" value="">
+    <label>dist</label><input class="n" id="dist" value="40">
+    <label>every</label><input class="n" id="every" value="30"><label>s</label>
+    <button id="go">connect</button>
+    <button class="ghost" id="demo">demo</button>
+    <span class="status" id="status">idle</span>
+  </div>
+
+  <div class="grid">
+    <div class="card"><canvas id="rad" width="900" height="760"></canvas></div>
+    <div class="card hud">
+      <h3>Situation</h3>
+      <div class="state"><span class="badge" id="stateBadge">—</span><p class="sub" id="stateSub"></p></div>
+      <div class="feed" id="feed" style="display:none"></div>
+      <div class="kv" id="kv"></div>
+      <div class="tracks"><h3 style="margin-bottom:6px">Tracked cells</h3><div id="tracks"></div></div>
+      <div class="probes"><h3 style="margin-bottom:6px">Land probes</h3><div id="probes"></div></div>
+      <div class="speak"><h3 style="margin-bottom:4px">Would speak</h3><div id="speak"></div></div>
+      <div class="legend">
+        <span class="it"><span class="sw" style="background:#566277"></span>dry</span>
+        <span class="it"><span class="sw" style="background:#5b8def"></span>steady</span>
+        <span class="it"><span class="sw" style="background:#f5b942"></span>showery</span>
+        <span class="it"><span class="sw" style="background:#6fd3e0"></span>wet</span>
+        <span class="it"><span class="sw" style="border:1px solid #39d98a;background:transparent"></span>probe</span>
+        <span class="it"><span style="color:#3fb6c9;font-size:13px">▶</span>mobile</span>
+        <span class="it"><span class="sw" style="border:1px solid #6b7c92;background:transparent"></span>sea/model net</span>
+      </div>
+      <div class="apiu" id="apiu" style="display:none"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    A live plan of the rain picture around your location: rain gauges, modelled sea points, tracked rain
+    cells, and what the rain engine expects next — whether rain is approaching, from where, and when.<br>
+    Hover over any marker for details. It refreshes on its own and shows exactly what drives the rain alerts.
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const col={dry:'#566277',steady:'#5b8def',showery:'#f5b942',wet:'#6fd3e0',net:'#2c3d4f',lab:'#cdd8e6',
+  accent:'#3fb6c9',ok:'#39d98a',warn:'#f5b942',ink:'#e6edf5',faint:'#566277',line:'#22303f',crit:'#ff5c6c'};
+const BANDS=['dry','light','moderate','heavy','very heavy'];
+const bandCol=['#566277','#6fd3e0','#5b8def','#f5b942','#ff5c6c'];
+let timer=null, last=null;
+
+// Location: the URL (?lat=&lon=&dist=, as the EA page passes it) wins; else the EA page's
+// saved location; else this page's own saved settings. Nothing is hard-coded.
+const Q=new URLSearchParams(location.search);
+const EMBED=Q.get('view')==='radar';
+if(EMBED) document.documentElement.classList.add('embed');   // radar only; refresh once a minute
+try{ const s=JSON.parse(localStorage.getItem('forecastView')||'{}');
+  ['base','lat','lon','dist','every'].forEach(k=>{ if(s[k]!=null) $(k).value=s[k]; }); }catch(e){}
+try{ const ea=JSON.parse(localStorage.getItem('ukgrid.ea.location')||'null');
+  if(ea&&typeof ea.lat==='number'&&typeof ea.lon==='number'){ $('lat').value=ea.lat; $('lon').value=ea.lon; } }catch(e){}
+['lat','lon','dist'].forEach(k=>{ if(Q.get(k)!=null&&Q.get(k)!=='') $(k).value=Q.get(k); });
+if(EMBED){ $('base').value=''; $('every').value='60'; }
+function saveCfg(){ if(EMBED) return; try{ localStorage.setItem('forecastView', JSON.stringify(
+  {base:$('base').value,lat:$('lat').value,lon:$('lon').value,dist:$('dist').value,every:$('every').value})); }catch(e){} }
+function hasLoc(){ return $('lat').value!=='' && $('lon').value!=='' && isFinite(+$('lat').value) && isFinite(+$('lon').value); }
+
+async function pull(){
+  const base=$('base').value.replace(/\/$/,'');
+  const url=`${base}/api/ea?lat=${$('lat').value}&lon=${$('lon').value}&dist=${$('dist').value}`;
+  try{
+    const r=await fetch(url,{cache:'no-store'}); const ov=await r.json();
+    if(!ov.rain_probe || !ov.rain_probe.situational){ setStatus('no rain_probe.situational in response (is the probe running? needs wind)',true); return; }
+    last=Date.now(); APIU=ov.api_usage||null; render(ov.rain_probe.situational, ov.rain_probe.situational_speak||[], ov.rain_probe.would_speak||[]);
+    $('live').classList.add('live'); setStatus('updated just now');
+  }catch(e){ $('live').classList.remove('live'); setStatus('cannot reach '+base+' — '+e.message,true); }
+}
+function setStatus(t,err){ const s=$('status'); s.textContent=t; s.classList.toggle('err',!!err); }
+function start(){ saveCfg(); if(timer) clearInterval(timer); pull();
+  timer=setInterval(pull, Math.max(10,+$('every').value||30)*1000); }
+
+// ---- canvas ----
+const c=$('rad'), g=c.getContext('2d');
+let SIT=null, SPK=[], WS=[];
+let HIT=[];   // hover targets in canvas coords: {x,y,r,html}
+let APIU=null; // per-day API-call tally {date,counts,total}
+// last-said memory per channel: {phrase,tier,ts}
+const lastSaid={rain:null, now:null};
+const seen={rain:new Set(), now:new Set()};
+function xy(cx,cy,R,b,d,KM){const r=b*Math.PI/180,rr=R*Math.min(d,KM)/KM;return[cx+rr*Math.sin(r),cy-rr*Math.cos(r)];}
+function draw(){
+  const W=c.width,H=c.height,cx=W/2,cy=H/2,KM=40,R=Math.min(W,H)/2-70;
+  g.clearRect(0,0,W,H); HIT=[];
+  g.strokeStyle=col.line;g.lineWidth=1;g.font='16px monospace';g.fillStyle=col.lab;g.textAlign='left';
+  [5,20,40].forEach(km=>{g.beginPath();g.arc(cx,cy,R*km/KM,0,7);g.stroke();g.fillText(km+' km',cx+2,cy-R*km/KM-3);});
+  g.strokeStyle='rgba(90,110,140,.14)';
+  for(let a=0;a<360;a+=45){const[x,y]=xy(cx,cy,R,a,KM,KM);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke();}
+  if(!SIT){ g.font='17px monospace';g.fillStyle=col.ink;g.textAlign='center';g.fillText('waiting for data…',cx,cy-20); drawHome(cx,cy,R); return; }
+  // intensity centroid heading
+  const it=SIT.intensity||{};
+  if(it.bearing!=null){ g.setLineDash([5,4]);g.strokeStyle='rgba(63,182,201,.55)';g.lineWidth=1.5;
+    const[x,y]=xy(cx,cy,R,it.bearing,Math.min(it.dist_km||30,38),KM);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke();g.setLineDash([]); }
+  // tracks
+  (SIT.tracks||[]).forEach(t=>{
+    const[bx,by]=xy(cx,cy,R,t.bearing,t.dist_km,KM); const appr=t.approaching;
+    const cc=appr?col.ok:col.warn, rad=Math.max(22,Math.min(46,18+(t.n||1)*7));
+    g.fillStyle=(appr?'rgba(57,217,138,.12)':'rgba(245,185,66,.10)');g.beginPath();g.arc(bx,by,rad,0,7);g.fill();
+    g.strokeStyle=cc;g.lineWidth=1.4;g.beginPath();g.arc(bx,by,rad,0,7);g.stroke();
+    if(appr){ // arrow radially inward toward home
+      const ux=(cx-bx),uy=(cy-by),L=Math.hypot(ux,uy)||1,step=Math.min(L*0.5,60);
+      const ax=bx+ux/L*step,ay=by+uy/L*step,an=Math.atan2(ay-by,ax-bx);
+      g.strokeStyle=cc;g.lineWidth=2.3;g.beginPath();g.moveTo(bx,by);g.lineTo(ax,ay);g.stroke();
+      g.beginPath();g.moveTo(ax,ay);g.lineTo(ax-11*Math.cos(an-0.4),ay-11*Math.sin(an-0.4));
+      g.lineTo(ax-11*Math.cos(an+0.4),ay-11*Math.sin(an+0.4));g.closePath();g.fillStyle=cc;g.fill(); }
+    g.fillStyle=cc;g.font='17px monospace';g.textAlign='center';
+    g.fillText('#'+t.id+(t.snow?' ❄':''), bx, by-rad-21);
+    let tag;
+    if(appr){ const _p=[]; const _e=etaLbl(t); if(_e)_p.push(_e); if(t.speed_kmh)_p.push(mph(t.speed_kmh)+'mph'); tag=_p.join(' · '); }
+    else if(t.stale){ tag='stale'; }
+    else if(t.move_deg!=null){ tag='→ '+abbr(t.move_deg)+(t.move_kmh?(' · '+mph(t.move_kmh)+'mph'):'')+(t.move_trusted?'':' · speed unverified'); }
+    else { tag='drifting'; }
+    if(tag){ g.font='15px monospace';g.fillStyle=col.lab;g.fillText(tag,bx,by-rad-6); }
+    if(!appr && t.move_deg!=null && t.move_kmh){ const mr=t.move_deg*Math.PI/180, ml=Math.min(rad+26,46);
+      const mxp=bx+ml*Math.sin(mr), myp=by-ml*Math.cos(mr), an=Math.atan2(myp-by,mxp-bx);
+      g.strokeStyle=cc;g.lineWidth=1.6;g.setLineDash([4,3]);g.beginPath();g.moveTo(bx,by);g.lineTo(mxp,myp);g.stroke();g.setLineDash([]);
+      g.beginPath();g.moveTo(mxp,myp);g.lineTo(mxp-9*Math.cos(an-0.4),myp-9*Math.sin(an-0.4));
+      g.lineTo(mxp-9*Math.cos(an+0.4),myp-9*Math.sin(an+0.4));g.closePath();g.fillStyle=cc;g.fill(); }
+    HIT.push({x:bx,y:by,r:rad,html:`<b>#${t.id}${t.snow?' ❄':''}</b> ${BANDS[t.peak_band]}<br>${fromHome(t.bearing,t.dist_km)} · ${t.n} gauge${t.n>1?'s':''}<br>`+
+      (appr?('approaching · '+(liveEta(t)||'')+(t.speed_kmh?(' · '+mph(t.speed_kmh)+' mph'):''))
+           :(t.stale?'stale — no active gauges this cycle'
+             :(t.move_deg!=null?('moving '+abbr(t.move_deg)+(t.move_kmh?(' at '+mph(t.move_kmh)+' mph'):'')+(t.move_trusted?'':' (speed unverified)')):'drifting')))
+      +(t.speed_note&&!t.speed_verified?('<br><span style="color:#8595a8">'+t.speed_note+'</span>'):'')});
+  });
+  // probes
+  (SIT.probe_points||[]).forEach(p=>{ const[x,y]=xy(cx,cy,R,p.bearing,p.dist_km,KM),s=6;
+    g.beginPath();g.moveTo(x,y-s);g.lineTo(x+s,y);g.lineTo(x,y+s);g.lineTo(x-s,y);g.closePath();
+    if((p.mm||0)>=0.3){g.fillStyle='rgba(245,185,66,.7)';g.fill();}
+    g.strokeStyle=col.ok;g.lineWidth=1.3;g.stroke();
+    HIT.push({x,y,r:9,html:`<b>land probe</b><br>${fromHome(p.bearing,p.dist_km)}<br>${(p.mm||0).toFixed(2)} mm/h`}); });
+  // gauges
+  (SIT.points||[]).forEach(p=>{ const[x,y]=xy(cx,cy,R,p.b,p.d,KM);
+    if(p.kind!=='phys'){ const wet=(p.band||0)>0; const rr=wet?(3.5+(p.band||0)*1.3):3.5;
+      g.beginPath();g.arc(x,y,rr,0,7);
+      g.strokeStyle=wet?(p.snow?'#ff7ed6':(col[p.label]||col.steady)):'#6b7c92';g.lineWidth=wet?1.8:1.2;g.stroke();
+      HIT.push({x,y,r:Math.max(rr,8),html:tipGauge(p,'model net')}); return; }
+    const rr=3+(p.band||0)*1.4; g.beginPath();g.arc(x,y,rr,0,7);
+    g.fillStyle=p.snow?'#ff7ed6':(col[p.label]||col.dry); g.globalAlpha=p.label==='dry'?.7:1; g.fill(); g.globalAlpha=1;
+    if(p.label!=='dry'){g.strokeStyle='rgba(255,255,255,.22)';g.lineWidth=1;g.stroke();}
+    if(p.flag){ // stationary / suspect gauge: dashed ring, excluded from approach tracking
+      g.setLineDash([3,3]);g.strokeStyle=p.flag==='suspect'?col.crit:col.warn;g.lineWidth=1.5;
+      g.beginPath();g.arc(x,y,rr+6,0,7);g.stroke();g.setLineDash([]); }
+    HIT.push({x,y,r:Math.max(rr,8),html:tipGauge(p,'gauge')}); });
+  // mobiles — offshore trackers moving inward (only present when deployed on a sea detection)
+  (SIT.mobiles||[]).forEach(m=>{ const[x,y]=xy(cx,cy,R,m.b,m.d,KM);
+    const wet=(m.mm||0)>=0.3, cc=wet?(m.snow?'#ff7ed6':col.wet):col.accent;
+    const ang=Math.atan2(cy-y,cx-x), s=8;   // chevron points inward toward home
+    g.fillStyle=cc;g.strokeStyle=cc;g.lineWidth=1.6;
+    g.beginPath();
+    g.moveTo(x+Math.cos(ang)*s, y+Math.sin(ang)*s);
+    g.lineTo(x+Math.cos(ang+2.5)*s, y+Math.sin(ang+2.5)*s);
+    g.lineTo(x+Math.cos(ang-2.5)*s, y+Math.sin(ang-2.5)*s);
+    g.closePath(); wet?g.fill():g.stroke();
+    g.fillStyle=cc;g.font='12px monospace';g.textAlign='center';g.fillText('M'+(m.confirmed?'✓':''),x,y-11);
+    HIT.push({x,y,r:12,html:`<b>mobile tracker</b> ${m.confirmed?'· OC4 confirmed':'· model'}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+Math.round(m.speed_mph)+' mph inbound'):''}`}); });
+  drawHome(cx,cy,R);
+}
+function drawHome(cx,cy){
+  const hm=(SIT&&SIT.home)||{};
+  if((hm.band||0)>0){ g.strokeStyle=hm.snow?'#ff7ed6':(bandCol[hm.band]||col.wet);
+    g.lineWidth=2.6;g.beginPath();g.arc(cx,cy,15,0,7);g.stroke(); }
+  g.beginPath();g.arc(cx,cy,5,0,7);g.fillStyle=col.ink;g.fill();
+  g.strokeStyle=col.accent;g.lineWidth=1.5;g.beginPath();g.arc(cx,cy,9,0,7);g.stroke();
+  g.fillStyle=col.lab;g.font='16px monospace';g.textAlign='center';g.fillText('home',cx,cy+26);
+  HIT.push({x:cx,y:cy,r:15,html:`<b>home</b><br>at-home reading: ${(hm.mm!=null?hm.mm+' mm/h':'—')} · ${(hm.name&&hm.name!=='dry')?hm.name:'dry'}<br><span style="color:#8595a8">drives the “at your location” voice</span>`}); }
+
+function render(sit, spk, ws){
+  SIT=sit; SPK=spk||[]; WS=ws||[]; draw();
+  const st=(sit.state||'clear'); const appr=sit.approaching;
+  const bcol=st.startsWith('approaching')?col.accent2||'#5b8def':(st.startsWith('continuous')?col.accent:(st.indexOf('shower')>=0?col.warn:(st==='here'?col.crit:col.faint)));
+  const badge=$('stateBadge'); badge.textContent=st.replace('_',' ').toUpperCase(); badge.style.background=bcol;
+  const loc=sit.locus||{}; const dir=loc.approach_dir||(sit.intensity&&sit.intensity.bearing!=null?bearingWord(sit.intensity.bearing):'');
+  $('stateSub').textContent=[sit.intensity&&sit.intensity.name!=='dry'?sit.intensity.name:'', dir?('· '+dir):''].filter(Boolean).join(' ');
+  $('kv').innerHTML=[['coverage',fmt(sit.coverage)],['shower conf.',fmt(sit.shower_confidence)],
+    ['nearest wet',sit.nearest_wet_km!=null?sit.nearest_wet_km+' km':'—'],['active gauges',sit.n_active],
+    ['wet now',sit.n_wet],['stable',Math.round((sit.stable_s||0)/60)+' min'],
+    ['at home',(sit.home&&sit.home.band>0)?((sit.home.mm!=null?sit.home.mm+' mm/h ':'')+sit.home.name):'dry'],
+    ['EA gauges', sit.ea_gauges||'—'],
+    ['local backup', sit.backup||(sit.ea_gauges==='present'?'EA gauges (live)':'—')],
+    ['steering wind', sit.steering?('from '+bearingWord(sit.steering.from_deg)+' '+mph(sit.steering.kmh)+' mph · '
+        +(sit.steering.src==='850hPa'?('850 hPa'+(sit.steering.stale?' (old)':'')):'surface est.')):'—'],
+    ['flagged gauges', (sit.gauge_flags||[]).length||'none']]
+    .map(r=>`<span class="k">${r[0]}</span><span class="v">${r[1]}</span>`).join('');
+  $('tracks').innerHTML=tracksHUD();
+  const nf=sit.net_feed||'ok', fb=$('feed');
+  if(nf==='ok'||!nf){ fb.style.display='none'; }
+  else { fb.style.display='block';
+    const exh=(nf==='exhausted'||nf==='down');
+    // 'degraded' = the sea net is WORKING on the OC4 backup: informational, not a warning.
+    fb.className='feed '+(exh?'crit':'note');
+    const lbl=nf==='degraded'?'Offshore sea net on OpenWeather backup — reduced coverage (Open-Meteo down)':
+              nf==='exhausted'?'Offshore feed exhausted — Open-Meteo daily limit; sea points are blind':
+              'Offshore feed down — Open-Meteo unavailable; sea points are blind';
+    const age=(sit.net_sampled_age_s!=null)?(' · sampled '+agefmt(sit.net_sampled_age_s)+' ago'):'';
+    const why=sit.net_feed_reason?(' — '+sit.net_feed_reason):'';
+    fb.textContent=(exh?'⚠ ':'● ')+lbl+why+age; }
+  const pr=sit.probe||{}; $('probes').innerHTML=pr.n?`<div class="trow">${pr.n} deployed · airmass <span style="color:${pr.active?'var(--warn)':'var(--ok)'}">${pr.active?'ACTIVE':'quiet'}</span>${pr.fresh_clear?' · clear confirmed':''}</div>`:'<div class="trow" style="color:var(--ink-faint)">not deployed</div>';
+  ingest('rain', SPK); ingest('now', WS); renderSpeak(); renderApiUsage();
+}
+function renderApiUsage(){
+  const el=$('apiu'); if(!el) return;
+  const c=APIU&&APIU.counts; const tot=APIU&&(APIU.total||0);
+  if(!c||!tot){ el.style.display='none'; return; }
+  const lbl={'OM/offshore_net':'net','OM/land_probe':'probes','OM/net_fallback':'OM-fallback',
+    'OWM/wind':'wind','OWM/oc4_sea':'oc4-sea','OWM/resource':'conditions','OWM/demand':'demand'};
+  const om=Object.keys(c).filter(k=>k.indexOf('OM/')===0).reduce((a,k)=>a+c[k],0);
+  const owm=Object.keys(c).filter(k=>k.indexOf('OWM/')===0).reduce((a,k)=>a+c[k],0);
+  const parts=Object.keys(c).sort((a,b)=>c[b]-c[a]).map(k=>(lbl[k]||k)+' '+c[k]);
+  el.style.display='block';
+  el.textContent='API today: '+tot+'  (OM '+om+' / OWM '+owm+')  \u2014  '+parts.join(' \u00b7 ');
+}
+
+// stamp newly-appeared phrases (not present last cycle) so we know when each was voiced
+function ingest(ch, list){
+  const cur=new Set((list||[]).map(w=>(w.key||'')+'|'+(w.phrase||'')));
+  (list||[]).forEach(w=>{ const sig=(w.key||'')+'|'+(w.phrase||''); if(!seen[ch].has(sig)){ lastSaid[ch]={phrase:w.phrase,tier:w.tier||'notice',ts:Date.now()}; } });
+  seen[ch]=cur;
+}
+function ago(ts){ const s=Math.round((Date.now()-ts)/1000); return s<60?s+'s ago':(s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'); }
+function speakRow(label, live, mem){
+  if(live && live.length) return `<div class="q"><span class="vlab">${label}</span> ${live.map(w=>'“'+w.phrase+'”').join(' ')}</div>`;
+  if(mem) return `<div class="qold"><span class="vlab">${label}</span> “${mem.phrase}” <span class="mago">${ago(mem.ts)}</span></div>`;
+  return `<div class="qnone"><span class="vlab">${label}</span> — none —</div>`;
+}
+function renderSpeak(){ $('speak').innerHTML = speakRow('situation', SPK, lastSaid.rain) + speakRow('nowcast', WS, lastSaid.now); }
+function fmt(x){return x==null?'—':(''+x);}
+function bearingWord(b){ if(b==null)return''; const d=['north','north-east','east','south-east','south','south-west','west','north-west'];
+  return d[Math.round((b%360)/45)%8]; }
+function mph(kmh){ return Math.round(kmh/1.609); }
+const ABBR=['N','NE','E','SE','S','SW','W','NW'];
+function abbr(b){ return b==null?'':ABBR[Math.round((b%360)/45)%8]; }
+function agefmt(s){ if(s==null)return'—'; return s<90?s+'s':(s<5400?Math.round(s/60)+'m':Math.round(s/3600)+'h'); }
+// Live arrival estimate: count the server's minute-range window down from the moment
+// the estimate was COMPUTED (probe ts), so it keeps ticking between pulls and doesn't
+// reset when the browser re-polls the same cached estimate.
+function liveEta(t){
+  if(t.eta_lo==null||t.eta_hi==null) return t.eta_text?t.eta_text.replace('in ',''):'';
+  const base=(SIT&&SIT.ts)?SIT.ts*1000:(last||Date.now());
+  const lo=Math.round((base+t.eta_lo*60000-Date.now())/60000);
+  const hi=Math.round((base+t.eta_hi*60000-Date.now())/60000);
+  if(hi<=0) return 'arriving now';
+  if(lo<=0) return 'under '+hi+' min';
+  return lo+'\u2013'+hi+' min';
+}
+function etaLbl(t){ const e=liveEta(t); return e?(/\d/.test(e)?('ETA '+e):e):''; }
+function tracksHUD(){
+  const ts=((SIT&&SIT.tracks)||[]);
+  if(!ts.length) return '<div class="trow" style="color:var(--ink-faint)">none</div>';
+  return ts.map(t=>{
+    const dirw=bearingWord(t.bearing), appr=t.approaching, el=appr?etaLbl(t):'';
+    const m=appr?('\u2193 '+(t.speed_kmh?mph(t.speed_kmh)+' mph':'closing')+(el?(' \u00b7 '+el):''))
+      :(t.stale?'stale':(t.move_deg!=null?('\u2192 '+abbr(t.move_deg)+(t.move_kmh?' '+mph(t.move_kmh)+' mph':'')+(t.move_trusted?'':' \u00b7 speed unverified')):'drifting'));
+    return `<div class="trow ${appr?'appr':''}"><span>#${t.id}</span> ${dirw} \u00b7 ${t.dist_km} km ${appr?'<span class="chip appr">approaching</span>':'<span class="chip">'+BANDS[t.peak_band]+'</span>'}<span class="m">${m}</span></div>`;
+  }).join('');
+}
+function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+// "16 km north-east of home"
+function fromHome(b,d){ return (d==null||b==null)?'':(Math.round(d*10)/10)+' km '+bearingWord(b)+' of home'; }
+function tipGauge(p,kind){
+  const cur=BANDS[p.cur!=null?p.cur:p.band]||'dry', pk=BANDS[p.band]||'dry';
+  const mm=p.mm!=null?p.mm.toFixed(2)+' mm/h':'—';
+  let title, ids;
+  if(p.kind==='phys'){                       // EA gauge: place, else grid reference
+    title=p.place||p.grid||p.name||'rain gauge';
+    ids=[p.place?p.grid:null, p.ref?('EA '+p.ref):null].filter(Boolean).join(' · ');
+  } else {                                   // modelled sea / backup point
+    title=p.name||kind;
+    ids=(p.src==='OC4'?'OpenWeather reading':(p.src==='OM'?'Open-Meteo model':'model'));
+  }
+  return `<b>${esc(title)}</b> <span style="color:#8595a8">${kind}</span><br>`+
+    (ids?`<span style="color:#8595a8">${esc(ids)}</span><br>`:'')+
+    `${fromHome(p.b,p.d)}<br>`+
+    `${mm} · now ${cur}<br>peak ${pk} · ${p.label||'dry'}${p.trans?(' · '+p.trans+' flips'):''}`+
+    (p.age_s!=null?('<br>last reading '+agefmt(p.age_s)+' ago'+(p.stale?' (stale)':'')):'')+flagLine(p);
+}
+function flagLine(p){
+  if(!p.flag) return '';
+  const f=((SIT&&SIT.gauge_flags)||[]).find(x=>x.id===p.id)||{};
+  const why=p.flag==='suspect'?'wet for hours but the model is dry — possible fault'
+    :(f.verified?'wet for hours; the model agrees (static drizzle)':'wet for hours in one place (not model-checked)');
+  return `<br><span style="color:${p.flag==='suspect'?'#ff5c6c':'#f5b942'}">${p.flag} — ${why}; ignored for approach tracking</span>`;
+}
+
+// tick "updated Ns ago"
+setInterval(()=>{ if(last){ const s=Math.round((Date.now()-last)/1000); if(!$('status').classList.contains('err')) setStatus('updated '+(s<60?s+'s':Math.round(s/60)+'m')+' ago'); }
+  renderSpeak();
+  if(SIT && (SIT.tracks||[]).some(t=>t.approaching && t.eta_lo!=null)){ draw(); $('tracks').innerHTML=tracksHUD(); }
+}, 1000);
+
+$('go').onclick=()=>{ if(!hasLoc()){ setStatus('set lat / lon first (or open this from the EA page)',true); return; } start(); };
+$('demo').onclick=()=>{ if(timer)clearInterval(timer); $('live').classList.remove('live'); setStatus('demo data');
+  render(DEMO.situational, DEMO.speak, DEMO.would); };
+addEventListener('resize',()=>{ if(SIT)draw(); });
+
+// hover tooltips over any marker
+const tip=document.createElement('div'); tip.id='tip';
+tip.style.cssText='position:fixed;z-index:50;pointer-events:none;display:none;max-width:240px;background:#0d141d;border:1px solid #2c3d4f;border-radius:7px;padding:7px 9px;font:12px/1.55 monospace;color:#e6edf5;box-shadow:0 4px 14px rgba(0,0,0,.5)';
+document.body.appendChild(tip);
+function hitAt(mx,my){ let best=null,bk=1e9;
+  for(const h of HIT){ if(Math.hypot(mx-h.x,my-h.y)<=h.r && h.r<bk){ bk=h.r; best=h; } }
+  if(best) return best;
+  let nb=null,nd=13; for(const h of HIT){ if(h.r>16)continue; const d=Math.hypot(mx-h.x,my-h.y); if(d<nd){nd=d;nb=h;} } return nb; }
+c.addEventListener('mousemove',e=>{ const rect=c.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(c.width/rect.width), my=(e.clientY-rect.top)*(c.height/rect.height);
+  const h=hitAt(mx,my);
+  if(h){ tip.innerHTML=h.html; tip.style.display='block'; tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; c.style.cursor='pointer'; }
+  else { tip.style.display='none'; c.style.cursor='default'; } });
+c.addEventListener('mouseleave',()=>{ tip.style.display='none'; c.style.cursor='default'; });
+
+// demo scene
+const DEMO={situational:{state:'approaching',base_state:'approaching',approaching:true,coverage:0.18,
+  shower_confidence:2.4,n_active:5,n_wet:2,nearest_wet_km:16,stable_s:1500,
+  intensity:{peak_band:4,name:'very heavy',bearing:317,dist_km:23},
+  locus:{approach_dir:'north-west'},
+  points:[{b:20,d:32,kind:'phys',label:'dry',band:0},{b:62,d:25,kind:'phys',label:'dry',band:0},
+    {b:135,d:30,kind:'phys',label:'dry',band:0},{b:205,d:22,kind:'phys',label:'dry',band:0},
+    {b:270,d:14,kind:'phys',label:'dry',band:0},{b:160,d:12,kind:'phys',label:'steady',band:2,place:'Wembury',grid:'SX520490',ref:'00001'},
+    {b:90,d:16,kind:'phys',label:'showery',band:3},{b:102,d:20,kind:'phys',label:'showery',band:2},
+    {b:300,d:26,kind:'phys',label:'showery',band:4},{b:315,d:24,kind:'phys',label:'wet',band:4,grid:'SX340640',ref:'00002'},
+    {b:330,d:20,kind:'phys',label:'showery',band:3},
+    {b:200,d:40,kind:'net',label:'dry',band:0},{b:220,d:40,kind:'net',label:'dry',band:0},{b:180,d:40,kind:'net',label:'dry',band:0}],
+  tracks:[{id:1,bearing:317,dist_km:23,peak_band:4,snow:false,n:3,approaching:true,speed_kmh:39,eta_text:'in 35 to 50 minutes',eta_lo:35,eta_hi:50,age_s:1800},
+    {id:2,bearing:95,dist_km:18,peak_band:3,snow:false,n:2,approaching:false,speed_kmh:null,eta_text:null,age_s:1200,move_deg:60,move_kmh:14,move_trusted:true}],
+  probe_points:[{bearing:326,dist_km:15,mm:6,snow:false},{bearing:311,dist_km:16,mm:0,snow:false},{bearing:332,dist_km:11,mm:0,snow:false}],
+  probe:{active:true,fresh_clear:false,n:3},
+  home:{mm:0.0,band:0,name:'dry'}, net_feed:'degraded', net_sampled_age_s:240, ts:Math.floor(Date.now()/1000),
+  mobiles:[{b:150,d:38,mm:2.1,snow:false,confirmed:true,speed_mph:18,state:'tracking'},
+    {b:200,d:34,mm:0,snow:false,confirmed:false,speed_mph:null,state:'scanning'}]},
+  speak:[{tier:'notice',key:'sit_approach',phrase:'Very heavy rain is approaching from the north-west, in 35 to 50 minutes.'}],
+  would:[{tier:'notice',key:'press_falling',phrase:'Pressure is falling steadily. A change in the weather is likely over the next few hours.'}]};
+draw(); renderSpeak();
+if(hasLoc() && (EMBED || !$('base').value)) start();
+else setStatus(hasLoc()?'idle — click connect (or demo)':'set a location on the EA page, or enter lat / lon — or try demo');
+</script>
+</body></html>

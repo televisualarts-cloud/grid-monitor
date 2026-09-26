@@ -3,7 +3,8 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260904.9  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -26,7 +27,7 @@
 -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GB Energy Monitor</title>
+<title>UK & Ireland Energy Monitor</title>
 <style>
   :root{
     --bg:#0a0e14; --bg2:#0e141d; --panel:#111925; --panel2:#0c121b;
@@ -63,8 +64,11 @@
   .ea-body>*, .octo-body>*{ max-width:1180px; margin-left:auto; margin-right:auto; }
 
   /* ---- Header ---- */
-  header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  header{display:flex;flex-direction:column;gap:12px;
     padding-bottom:18px;border-bottom:1px solid var(--line)}
+  /* Row 1: title (left) + right-side nav badges (pinned top, one line). Row 2: the
+     status badges (grid/cuts/gas/…) sit permanently below the title. */
+  .hdr-top{display:flex;align-items:flex-start;gap:18px;flex-wrap:wrap}
   .brand{display:flex;flex-direction:column;gap:2px}
   .brand h1{font-size:20px;font-weight:600;margin:0;letter-spacing:.02em;
     display:flex;align-items:center;gap:11px}
@@ -77,9 +81,19 @@
      already says "Grid nominal", so the pill text would be a duplicate). */
   .status-pill.dot-only{padding:8px;gap:0}
   .status-pill.dot-only #statusText{display:none}
-  /* header summary chips (elec / gas / flood) — sit centre, wrap under on narrow */
-  .hdr-summaries{display:flex;flex-wrap:wrap;gap:8px;margin-left:8px}
+  /* header summary chips (grid / cuts / gas / flood) — a full-width row below the title */
+  .hdr-summaries{display:flex;flex-wrap:wrap;gap:8px;margin-left:0;align-items:flex-start}
   .hdr-summaries:empty{display:none}
+  /* power-cuts chip is a 2-line badge: the total on top, and the unplanned/planned
+     toggle integrated as its second line, so the toggle never detaches from the badge. */
+  .hdr-sum.pc-chip{padding:5px 11px}
+  .hdr-sum.pc-chip .pc-chip-body{display:flex;flex-direction:column;line-height:1.2}
+  .hdr-sum.pc-chip .pc-chip-top{white-space:nowrap}
+  .hdr-sum.pc-chip .pc-mode{font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-faint);cursor:pointer;white-space:nowrap;align-self:flex-start;
+    margin-top:1px;padding-top:1px;border-top:1px solid rgba(255,255,255,.08)}
+  .hdr-sum.pc-chip .pc-mode:hover{color:var(--ink)}
+  .hdr-sum.pc-chip.incl .pc-mode{color:var(--accent2)}
   .hdr-sum{display:flex;align-items:center;gap:7px;cursor:pointer;
     font-family:var(--mono);font-size:11px;padding:6px 11px;border-radius:999px;
     border:1px solid var(--line2);background:var(--panel);color:var(--ink-dim);letter-spacing:.04em}
@@ -95,10 +109,9 @@
   .hdr-sum.critical,.hdr-sum.sev1{color:var(--crit);border-color:rgba(255,92,108,.5);background:rgba(255,92,108,.10)}
   .hdr-sum .drv{font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;
     color:var(--ink-faint);border:1px solid var(--line2);border-radius:4px;padding:0 4px}
-  .hdr-right{margin-left:auto;display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
-  /* Action buttons form a compact two-row cluster to the right of the pill:
-     capped width so 5 buttons wrap to 3-over-2 rather than one long line. */
-  .hdr-btns{display:flex;flex-wrap:wrap;gap:6px;max-width:250px;justify-content:flex-end}
+  .hdr-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:nowrap;flex:0 0 auto}
+  /* Right-side badges stay pinned to the top line on a single row (no wrap). */
+  .hdr-btns{display:flex;flex-wrap:nowrap;gap:6px;justify-content:flex-end}
   .hdr-btns .keybtn,.hdr-btns .alert-hist-btn{margin:0}
   /* alarm button: dim when muted, accented when armed */
   #alarmBtn.armed{color:var(--ok);border-color:rgba(57,217,138,.5);background:rgba(57,217,138,.08)}
@@ -275,6 +288,30 @@
   .freq-metric .metric{gap:6px}
   .freq-dial-wrap{display:flex;align-items:center;gap:8px;flex:none}
   #freqDial{flex:none;width:140px;height:auto}
+  /* Excursion arrow in the dial's centre: three chevrons lighting in sequence in the
+     direction of travel (down = under-frequency, up = over-frequency), in the dial's
+     zone colours with a soft glow. Hidden unless .on. */
+  .freq-dial-box{position:relative;flex:none;line-height:0}
+  .freq-arrow{position:absolute;left:50%;top:50%;width:26px;height:32px;margin:-17px 0 0 -13px;
+    color:var(--warn);opacity:0;visibility:hidden;pointer-events:none;
+    transition:opacity .45s ease,visibility 0s linear .45s;
+    filter:drop-shadow(0 0 3px currentColor) drop-shadow(0 0 7px rgba(0,0,0,.6))}
+  .freq-arrow.on{opacity:1;visibility:visible;transition:opacity .45s ease,visibility 0s}
+  .freq-arrow.crit{color:var(--crit)}
+  .freq-arrow.up svg{transform:rotate(180deg)}
+  .freq-arrow svg{display:block;overflow:visible}
+  .freq-arrow .fa-c{opacity:.28}
+  .freq-arrow.on .fa-c{animation:faChase 1.2s ease-in-out infinite}
+  .freq-arrow.on .fa-c2{animation-delay:.2s}
+  .freq-arrow.on .fa-c3{animation-delay:.4s}
+  .freq-arrow.crit.on .fa-c{animation-duration:.8s}
+  .freq-arrow.crit.on .fa-c2{animation-delay:.13s}
+  .freq-arrow.crit.on .fa-c3{animation-delay:.27s}
+  @keyframes faChase{0%,100%{opacity:.28}30%{opacity:1}60%{opacity:.28}}
+  @media (prefers-reduced-motion:reduce){
+    .freq-arrow.on .fa-c{animation:none}
+    .freq-arrow.on .fa-c{opacity:1}
+  }
   .freq-dial-read{display:flex;flex-direction:column;gap:1px}
   .freq-dial-read .fdr-val{font-size:24px;font-weight:600;line-height:1;
     font-variant-numeric:tabular-nums}
@@ -496,14 +533,17 @@
   .modal-btn.ghost:hover{color:var(--ink)}
   .modal-note{font-size:11px;color:var(--ink-faint);line-height:1.5;margin:14px 0 0}
 
-  /* Alarm settings modal */
-  .alarm-modal{max-width:480px}
+  /* Alarm settings modal — cap to the viewport and scroll the category list so the
+     whole panel is reachable on short screens (header, arm row and footer stay put). */
+  .alarm-modal{max-width:480px;display:flex;flex-direction:column;max-height:calc(100vh - 40px)}
+  .alarm-modal > *:not(.alarm-cats){flex:none}
   .alarm-arm-row{display:flex;align-items:center;gap:12px;margin-bottom:16px}
   .alarm-arm-state{font-family:var(--mono);font-size:11px;letter-spacing:.06em;
     color:var(--ink-faint);text-transform:uppercase}
   .alarm-arm-state.armed{color:var(--ok)}
   .alarm-cats{display:flex;flex-direction:column;gap:2px;
-    border-top:1px solid var(--line);padding-top:6px}
+    border-top:1px solid var(--line);padding-top:6px;
+    flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
   .alarm-cat{display:flex;align-items:center;gap:10px;padding:9px 2px;
     border-bottom:1px solid var(--line)}
   .alarm-cat .ac-main{flex:1 1 auto;min-width:0}
@@ -798,6 +838,15 @@
   /* National Gas overlay (shares .ea-bar/.ea-body/.ea-attrib) */
   .gas-overlay{position:fixed;inset:0;background:var(--bg);z-index:200;display:none;flex-direction:column}
   .gas-overlay.open{display:flex}
+  /* UK & Ireland power-cuts overlay: hosts the standalone /powercuts page in a
+     full-window iframe (single source of truth) with a floating corner close. */
+  .pc-overlay{position:fixed;inset:0;background:var(--bg);z-index:210;display:none}
+  .pc-overlay.open{display:block}
+  .pc-overlay iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+  .pc-close{position:absolute;top:12px;right:14px;z-index:5;font-family:var(--mono);font-size:16px;
+    color:var(--ink-dim);background:rgba(10,14,20,.82);border:1px solid var(--line2);border-radius:8px;
+    width:34px;height:32px;cursor:pointer;line-height:1}
+  .pc-close:hover{color:var(--ink);border-color:var(--crit)}
   .gas-head{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}
   .gas-margin-banner{border:1px solid rgba(245,185,66,.45);background:rgba(245,185,66,.08);
     border-left:3px solid var(--warn);border-radius:10px;padding:12px 15px;margin-bottom:20px}
@@ -1066,10 +1115,19 @@
   .rn-vt{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
     border:1px solid var(--line);border-radius:5px;padding:2px 7px;cursor:pointer}
   .rn-vt.on{color:var(--ink);border-color:var(--accent);background:var(--panel)}
-  .ea-swapbtn{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
+  .ea-radarbtn{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel2);
     border:1px solid var(--line);border-radius:5px;padding:3px 9px;cursor:pointer}
-  .ea-swapbtn:hover{color:var(--ink);border-color:var(--accent)}
-  .ea-swapbtn.pinned{position:absolute;top:10px;right:10px;z-index:2}
+  .ea-radarbtn:hover{color:var(--ink);border-color:var(--accent)}
+  .ea-radarbtn.on{color:#05221f;background:var(--accent);border-color:var(--accent);font-weight:600}
+  .ea-radarbtn.pinned{position:absolute;top:10px;right:10px;z-index:2}
+  /* gauge radar: the Forecast view's radar plot in the plot area. The frame lives in a
+     layer outside the re-rendered EA body (so a refresh doesn't reload it) and is laid
+     over this reserved slot. */
+  .ea-radar-slot{margin-top:38px;height:min(560px,62vh);border:1px solid var(--line);
+    border-radius:13px;background:var(--panel2)}
+  .ea-radar-layer{position:fixed;z-index:4;display:none;border-radius:13px;overflow:hidden}
+  .ea-radar-layer iframe{width:100%;height:100%;border:0;display:block;background:transparent}
+  .ea-hood{margin-left:0}
   .ea-rainmap .rmnote{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin:2px 0 8px}
   .ea-rainmap{overflow-x:auto}
   .rmgrid{display:grid;grid-template-columns:repeat(5,minmax(132px,1fr));gap:7px}
@@ -1168,29 +1226,32 @@
 <body>
 <div class="wrap">
   <header>
-    <div class="brand">
-      <h1>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="var(--accent)"/>
-        </svg>
-        GB Energy Monitor
-      </h1>
-      <span class="sub">GB electricity system · live</span>
+    <div class="hdr-top">
+      <div class="brand">
+        <h1>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="var(--accent)"/>
+          </svg>
+          UK &amp; Ireland Energy Monitor
+        </h1>
+        <span class="sub">UK &amp; Ireland energy system · live</span>
+      </div>
+      <div class="hdr-right">
+        <div class="status-pill" id="statusPill">
+          <span class="beacon" id="beacon"></span>
+          <span id="statusText">connecting…</span>
+        </div>
+        <div class="hdr-btns">
+          <button class="keybtn" id="pcMapBtn" title="Live UK &amp; Ireland power cuts map (same as the power-cuts badge)">🔦 live powercuts map</button>
+          <button class="keybtn" id="alarmBtn" title="Audible &amp; spoken alarms (click to arm)">🔇 alarms</button>
+          <button class="keybtn" id="gasOpenBtn" title="GB gas system · National Gas">🔥 gas</button>
+          <button class="keybtn" id="eaOpenBtn" title="Rivers, rainfall &amp; flood warnings (Environment Agency)">💧 ea</button>
+          <button class="keybtn" id="octoOpenBtn" title="Your home energy usage &amp; cost">⚡ my home</button>
+          <button class="alert-hist-btn" id="alertStatsBtn" title="Alert history &amp; statistics">▤ history</button>
+        </div>
+      </div>
     </div>
     <div class="hdr-summaries" id="hdrSummaries"></div>
-    <div class="hdr-right">
-      <div class="status-pill" id="statusPill">
-        <span class="beacon" id="beacon"></span>
-        <span id="statusText">connecting…</span>
-      </div>
-      <div class="hdr-btns">
-        <button class="alert-hist-btn" id="alertStatsBtn" title="Alert history &amp; statistics">▤ history</button>
-        <button class="keybtn" id="alarmBtn" title="Audible &amp; spoken alarms (click to arm)">🔇 alarms</button>
-        <button class="keybtn" id="gasOpenBtn" title="GB gas system · National Gas">🔥 gas</button>
-        <button class="keybtn" id="eaOpenBtn" title="Rivers, rainfall &amp; flood warnings (Environment Agency)">💧 ea</button>
-        <button class="keybtn" id="octoOpenBtn" title="Your home energy usage &amp; cost">⚡ my home</button>
-      </div>
-    </div>
   </header>
 
   <div class="backend-warn" id="backendWarn" style="display:none"></div>
@@ -1208,7 +1269,21 @@
               <span class="delta" id="freqDelta"></span></div>
           </div>
           <div class="freq-dial-wrap">
-            <canvas id="freqDial" width="160" height="132"></canvas>
+            <div class="freq-dial-box">
+              <canvas id="freqDial" width="160" height="132"></canvas>
+              <!-- Excursion arrow: shown from a frequency-band alarm's first alert for at
+                   least FA_MIN_MS, and for as long as the excursion lasts. -->
+              <div class="freq-arrow" id="freqArrow" aria-hidden="true">
+                <svg viewBox="0 0 24 30" width="26" height="32">
+                  <g fill="none" stroke="currentColor" stroke-width="3.2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <polyline class="fa-c fa-c1" points="4,4 12,10 20,4"/>
+                    <polyline class="fa-c fa-c2" points="4,12 12,18 20,12"/>
+                    <polyline class="fa-c fa-c3" points="4,20 12,26 20,20"/>
+                  </g>
+                </svg>
+              </div>
+            </div>
             <div class="freq-dial-read">
               <span class="fdr-val" id="freqDialVal">—</span>
               <span class="fdr-lbl">Hz from 50.000</span>
@@ -1389,7 +1464,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260904.9 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260926.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1616,6 +1691,12 @@
   <div class="ea-attrib" id="gasAttrib"></div>
 </div>
 
+<!-- UK & Ireland power cuts pop-out: the standalone /powercuts page in an iframe -->
+<div class="pc-overlay" id="pcOverlay">
+  <iframe id="pcFrame" title="UK &amp; Ireland power cuts" src="about:blank" loading="lazy"></iframe>
+  <button class="pc-close" id="pcClose" title="Close (Esc)">✕</button>
+</div>
+
 <!-- Environment Agency pop-out: rivers, rainfall & flood warnings -->
 <div class="ea-overlay" id="eaOverlay">
   <div class="ea-bar">
@@ -1625,6 +1706,7 @@
     <span class="ea-dist" id="eaDist">
       <button data-d="20">20 km</button><button data-d="40" class="on">40 km</button><button data-d="80">80 km</button>
     </span>
+    <button class="ea-loc ea-hood" id="eaHoodBtn" title="Open the Forecast view — the rain engine's live plan and reasoning — in a new tab">⚙ under the hood</button>
     <button class="gen-close" id="eaClose" title="Close (Esc)">✕</button>
   </div>
   <!-- first-run / change-location prompt -->
@@ -1870,7 +1952,8 @@ async function pollFrequencyFast(){
   try{
     const r=await fetch("/api/frequency",{cache:"no-store"});
     if(r.ok){ const fq=await r.json(); if(fq && !fq.error){ freqMerge(fq);
-        if(Alarm && Alarm.evaluateSystemRisk && fq.hz!=null) Alarm.evaluateSystemRisk({hz:fq.hz, stale:!!fq.stale}, LAST_RISK); } }
+        if(Alarm && Alarm.evaluateSystemRisk && fq.hz!=null) Alarm.evaluateSystemRisk({hz:fq.hz, stale:!!fq.stale,
+          time:fq.time, burst_min:fq.burst_min, burst_max:fq.burst_max}, LAST_RISK); } }
   }catch(e){ /* transient; next tick retries */ }
   freqPollTimer=setTimeout(pollFrequencyFast, 2000);
 }
@@ -1919,6 +2002,122 @@ let elecSummary={level:"ok",count:0,title:null};
 let gasSummary=null;      // {level,text} or null when clear/unknown
 let floodSummary=null;    // {sev,text} or null when clear
 let rainSummary=null;     // {cls,text,badge,flash} or null — set by the rain alarm engine
+let pcSummary=null;       // {off,unOff,unInc,plOff,plInc,…} or null — UK & Ireland power cuts
+// Power-cut totals/alerts mode: false = unplanned only (default), true = include planned.
+// Persisted; toggled by the top-bar switch. Drives the badge value, flash and alarm.
+let pcInclPlanned=false;
+try{ pcInclPlanned = localStorage.getItem("pcInclPlanned")==="1"; }catch(e){}
+
+// Power-cuts badge level. Green below the amber warning level, then the warning
+// colours (amber → red → hot-pink), matching the /powercuts page's own bands. Returns
+// the CSS colour used for the border + text, and its RGB triple for the flashing
+// background. Amber starts at 25k (the page's first warning band) and runs to 100k.
+function pcLevel(v){
+  v=v||0;
+  if(v>=500000) return {css:"rgb(255,62,165)", rgb:"255,62,165"};   // hot-pink 500k+
+  if(v>=100000) return {css:"var(--crit)",     rgb:"255,92,108"};   // red 100k–500k
+  if(v>=25000)  return {css:"rgb(255,214,0)",  rgb:"255,214,0"};    // amber warning 25k–100k
+  return {css:"var(--ok)", rgb:"57,217,138"};                       // green — below warning
+}
+
+// Operator code → human location, for naming WHERE cuts are concentrated in spoken alerts.
+const PC_OP_REGION={NGED:"the Midlands, South West and South Wales",
+  UKPN:"London, the South East and East of England", NPg:"North East England and Yorkshire",
+  ENWL:"North West England", SPEN:"southern Scotland and North Wales",
+  SSEN:"northern Scotland and southern England", NIE:"Northern Ireland", ESB:"the Republic of Ireland"};
+function pcTopRegions(map, n){
+  return Object.keys(map||{}).filter(k=>map[k]>0).sort((a,b)=>map[b]-map[a]).slice(0,n).map(k=>PC_OP_REGION[k]||k);
+}
+// Operator display names, and the pattern that marks an operator's own incident CATEGORY as a
+// declared MAJOR incident (each feed publishes this classification — the structured signal we
+// poll). Conservative, so ordinary "Unplanned"/fault-type categories never trip it.
+const PC_OP_NAME={NGED:"National Grid",UKPN:"UK Power Networks",NPg:"Northern Powergrid",
+  ENWL:"Electricity North West",SPEN:"SP Energy Networks",SSEN:"SSEN",NIE:"NIE Networks",ESB:"ESB Networks"};
+const PC_MAJOR_RE=/high[- ]?volume|major incident|major fault|severe weather|widespread|\bhvi\b|\bmsi\b/i;
+// Manually-muted power-cut providers — shared, same-origin localStorage, set from the
+// power-cuts page's By-Operator panel when a provider warns its data may be unreliable.
+// Muted providers are excluded from the badge total, the flash and the alarm (and greyed
+// on the map). Kept as a live read so a mute set on the /powercuts page applies here too.
+function pcMutedSet(){ try{ return new Set(JSON.parse(localStorage.getItem("pcMutedOps")||"[]")); }catch(e){ return new Set(); } }
+
+// "Near you" line for the power-cuts chip tooltip.
+function pcNearTip(n){
+  if(!n) return "";
+  if(!n.home) return "\nNear you: set your location on the EA page";
+  const L=n.list||[];
+  if(!L.length) return "\nNear you ("+n.km+" km): none";
+  const f=L[0], nf=v=>Number(v||0).toLocaleString("en-GB");
+  const where=f.d!=null ? (f.d<1?"<1":f.d.toFixed(1))+" km "+pcCompass(f.b) : "in "+f.district;
+  return "\nNear you ("+n.km+" km): "+L.length+" — nearest "+where+", "+(f.planned?"planned":"unplanned")+
+         (f.off?(", "+nf(f.off)+" off"):"");
+}
+// ---- power cuts near you ----
+// Home is the location saved on the EA page (same-origin localStorage, shared with the
+// /powercuts page); the radius is chosen in the alarm settings (5 / 10 / 20 km, default 10).
+const PC_NEAR_OPTIONS=[5,10,20];
+function pcNearKm(){ try{ const v=+localStorage.getItem("pcNearKm"); return PC_NEAR_OPTIONS.includes(v)?v:10; }catch(e){ return 10; } }
+function pcHome(){
+  try{ const o=JSON.parse(localStorage.getItem("ukgrid.ea.location")||"null");
+    if(o && typeof o.lat==="number" && typeof o.lon==="number") return o; }catch(e){}
+  return null;
+}
+function pcKm(la1,lo1,la2,lo2){
+  const r=Math.PI/180, dla=(la2-la1)*r, dlo=(lo2-lo1)*r;
+  const a=Math.sin(dla/2)**2+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dlo/2)**2;
+  return 2*6371*Math.asin(Math.sqrt(a));
+}
+function pcBearing(la1,lo1,la2,lo2){
+  const r=Math.PI/180, p1=la1*r, p2=la2*r, dl=(lo2-lo1)*r;
+  const y=Math.sin(dl)*Math.cos(p2), x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y,x)/r+360)%360;
+}
+function pcCompass(b){ return ["north","north-east","east","south-east","south","south-west","west","north-west"][Math.round((b%360)/45)%8]; }
+// Home's postcode district (e.g. "PL6"), for incidents that carry postcodes but no
+// coordinates. Looked up once per home location through the server and cached.
+let _pcHomePC={key:null, district:null, pending:false};
+function pcHomeDistrict(h){
+  const key=h.lat.toFixed(3)+","+h.lon.toFixed(3);
+  if(_pcHomePC.key===key) return _pcHomePC.district;
+  try{ const c=JSON.parse(localStorage.getItem("pcHomePC")||"null");
+    if(c && c.key===key){ _pcHomePC={key, district:c.district, pending:false}; return c.district; } }catch(e){}
+  if(!_pcHomePC.pending){
+    _pcHomePC.pending=true;
+    fetch("/api/geocode?lat="+h.lat+"&lon="+h.lon).then(r=>r.json()).then(d=>{
+      const pc=d && d.reverse && d.reverse.postcode;
+      const district=pc ? String(pc).trim().split(/\s+/)[0].toUpperCase() : null;
+      _pcHomePC={key, district, pending:false};
+      try{ localStorage.setItem("pcHomePC", JSON.stringify({key, district})); }catch(e){}
+    }).catch(()=>{ _pcHomePC.pending=false; });
+  }
+  return null;
+}
+function pcDistricts(pcs){
+  const out=new Set();
+  String(pcs||"").split(/[;,]/).forEach(p=>{ const t=p.trim().split(/\s+/)[0]; if(t) out.add(t.toUpperCase()); });
+  return out;
+}
+const PC_DONE_RE=/restor|clos|complet|resolv|cancel|finish/i;
+// Current incidents within the radius of home (or in home's postcode district when an
+// incident has no coordinates), nearest first. Muted providers and finished incidents are
+// left out. Planned works are included (they are announced as a quieter notice).
+function pcNearby(p, home, km, muted){
+  if(!home || !p) return [];
+  const district=pcHomeDistrict(home), out=[];
+  (p.incidents||[]).forEach(i=>{
+    if(muted.has(i.dno) || PC_DONE_RE.test(i.status||"")) return;
+    let d=null, b=null, how="coords";
+    if(i.lat!=null && i.lon!=null){
+      d=pcKm(home.lat, home.lon, i.lat, i.lon); if(d>km) return;
+      b=pcBearing(home.lat, home.lon, i.lat, i.lon);
+    } else if(district && pcDistricts(i.postcodes).has(district)){ how="postcode"; }
+    else return;
+    out.push({id:i.dno+":"+i.id, dno:i.dno, planned:!!i.planned, off:i.customers_off||0,
+              pred:i.customers_predicted||0, etr:i.etr||null, start:i.start_ts||null,
+              d, b, how, district, cat:i.category||""});
+  });
+  out.sort((a,b)=>(a.d==null?1e9:a.d)-(b.d==null?1e9:b.d));
+  return out;
+}
 
 async function refreshUtilData(){
   // gas (derived margin) + flood (EA) — fetched here; elec is set by render
@@ -1950,6 +2149,64 @@ async function refreshUtilData(){
     }
     Alarm.evaluateFloods(c, (eaData&&eaData.local_floods)||[]);
   }catch(e){ /* leave floodSummary as-is */ }
+  // UK & Ireland power cuts — national customers-off + a planned/unplanned split
+  // for the tooltip, computed from the incident list (the /powercuts page does the same).
+  try{
+    const p=await fetch("/api/powercuts?hours=2").then(r=>r.json());
+    if(p && !p.error && p.national && p.national.customers_off!=null){
+      const muted=pcMutedSet(), anyMuted=muted.size>0;
+      // STOCK now, from the incidents, EXCLUDING muted providers
+      let unOff=0,unInc=0,plOff=0,plInc=0;
+      (p.incidents||[]).forEach(i=>{ if(muted.has(i.dno)) return; const off=i.customers_off||0;
+        if(i.planned){ plOff+=off; plInc++; } else { unOff+=off; unInc++; } });
+      // RATES / RESTORATION from the history log, EXCLUDING muted. Per-operator new/off make
+      // muting clean; the UNPLANNED national split (un_new/un_off) is used only when nothing is
+      // muted, since it can't be broken down per operator.
+      let unCutsHr=0, restoredUn=0, prevUn=null, hasUn=false;          // unplanned national (no-mute path)
+      let newExMuted=0, restoredExMuted=0, prevOffX=null;             // per-op combined, excl muted
+      const opNew={};                                                 // per-operator new cuts (where climbing)
+      const cutoff=(p.generated||Date.now()/1000)-3600;
+      (p.history||[]).filter(r=>(r.ts||0)>=cutoff).sort((a,b)=>(a.ts||0)-(b.ts||0)).forEach(r=>{
+        const nat=r.national||{}, ops=r.operators||{};
+        if(nat.un_new!=null){ hasUn=true; unCutsHr += nat.un_new; }
+        const un=(nat.un_off!=null?nat.un_off:nat.off);
+        if(prevUn!=null && un!=null && un<prevUn) restoredUn += (prevUn-un);
+        if(un!=null) prevUn=un;
+        let rowNew=0, rowOff=0;
+        Object.keys(ops).forEach(dno=>{ if(muted.has(dno)) return; const o=ops[dno]||{};
+          rowNew+=o.new||0; rowOff+=o.off||0; opNew[dno]=(opNew[dno]||0)+(o.new||0); });
+        newExMuted += rowNew;
+        if(prevOffX!=null && rowOff<prevOffX) restoredExMuted += (prevOffX-rowOff);
+        prevOffX=rowOff;
+      });
+      const cutsHr=newExMuted;                                        // combined new cuts/hr, excl muted
+      const flashRate = (!anyMuted && hasUn) ? unCutsHr : cutsHr;     // unplanned when clean, else excl-muted combined
+      const restoredHr = (!anyMuted) ? restoredUn : restoredExMuted;
+      // per-operator UNPLANNED off now (worst affected) + operator-declared major incidents,
+      // both EXCLUDING muted providers.
+      const opOff={}, majorMap={};
+      (p.incidents||[]).forEach(i=>{ if(i.planned || muted.has(i.dno)) return;
+        opOff[i.dno]=(opOff[i.dno]||0)+(i.customers_off||0);
+        const c=i.category||""; if(PC_MAJOR_RE.test(c) && !majorMap[i.dno]) majorMap[i.dno]=c; });
+      const majorOps=Object.keys(majorMap).map(dno=>({name:PC_OP_NAME[dno]||dno, cat:majorMap[dno]}));
+      const home=pcHome(), nearKm=pcNearKm();
+      const liveOps=new Set((p.operators||[]).filter(o=>o.status==="ok"||o.status==="stale").map(o=>o.dno));
+      // every still-active incident id (any distance, muted or not): an announced one only
+      // counts as restored when it has left the feed, not when it drops out of "near"
+      const activeIds=(p.incidents||[]).filter(i=>!PC_DONE_RE.test(i.status||"")).map(i=>i.dno+":"+i.id);
+      const near={home, km:nearKm, list:pcNearby(p, home, nearKm, muted), liveOps:[...liveOps], activeIds};
+      pcSummary={off:unOff+plOff, unOff, unInc, plOff, plInc, near,
+                 cutsHr, unCutsHr, restoredHr, restoredHrAll:restoredExMuted, flashRate, hasUn,
+                 climbRegions: pcTopRegions(opNew, 1), worstRegions: pcTopRegions(opOff, 1),
+                 majorOps, mutedNames:[...muted].map(d=>PC_OP_NAME[d]||d)};
+    } else pcSummary=null;
+  }catch(e){ /* leave pcSummary as-is */ }
+  // Storm & power-cuts alarm: pull per-region METAR gusts (for cause attribution) and
+  // evaluate against the cuts totals + the grid's own infeed-loss signal (LAST_RISK).
+  let pcWind=null;
+  try{ const wc=await fetch("/api/windcuts").then(r=>r.json()); if(wc && !wc.error) pcWind=wc.wind||null; }catch(e){ /* wind optional */ }
+  try{ if(Alarm && Alarm.evaluatePowerCuts) Alarm.evaluatePowerCuts(pcSummary, pcWind, LAST_RISK, pcInclPlanned); }catch(e){}
+  try{ if(Alarm && Alarm.evaluatePowerCutsNear && pcSummary) Alarm.evaluatePowerCutsNear(pcSummary.near); }catch(e){}
   buildHeaderSummaries();
 }
 
@@ -1965,6 +2222,34 @@ function buildHeaderSummaries(){
     const cls=el.level==="critical"?"critical":"warning";
     chips.push('<div class="hdr-sum '+cls+'" data-act="elec" title="'+(el.title||"")+'">'+
       '<span class="ic">⚡</span><span>Grid: <b>'+el.count+' '+el.level+(el.count>1?"s":"")+'</b></span></div>');
+  }
+  // UK & Ireland power cuts — shown whenever the feed is up. Defaults to UNPLANNED cuts;
+  // the top-bar switch (pcInclPlanned) includes planned works. The active total is bold and
+  // colour-banded like the /powercuts page. Click opens that page full-screen.
+  if(pcSummary){
+    const nf=v=>Number(v||0).toLocaleString("en-GB");
+    const off=(pcInclPlanned?pcSummary.off:pcSummary.unOff)||0, lv=pcLevel(off);
+    const rate=pcInclPlanned?pcSummary.cutsHr:(pcSummary.hasUn?pcSummary.unCutsHr:pcSummary.cutsHr);
+    const restored=pcInclPlanned?pcSummary.restoredHrAll:pcSummary.restoredHr;
+    const tip=(pcInclPlanned?"Showing: all cuts (incl. planned)":"Showing: unplanned only")+
+      "\nUnplanned: "+nf(pcSummary.unOff)+" off · "+pcSummary.unInc+" incident"+(pcSummary.unInc===1?"":"s")+
+      "\nPlanned: "+nf(pcSummary.plOff)+" off · "+pcSummary.plInc+" incident"+(pcSummary.plInc===1?"":"s")+
+      "\nNew "+(pcInclPlanned?"":"unplanned ")+"cuts: "+nf(rate)+"/hr (last hour) — drives the flash"+
+      (restored>=1000?("\nRestored: ~"+nf(restored)+"/hr (last hour)"):"")+
+      ((pcSummary.majorOps&&pcSummary.majorOps.length)?("\nMajor incident: "+pcSummary.majorOps.map(m=>m.name+(m.cat?(" ("+m.cat+")"):"")).join("; ")):"")+
+      ((pcSummary.mutedNames&&pcSummary.mutedNames.length)?("\nMuted (excluded): "+pcSummary.mutedNames.join(", ")):"")+
+      pcNearTip(pcSummary.near)+
+      "\nClick to open the UK & Ireland power-cuts map";
+    // text takes the level colour; the border is the same colour dimmed to 0.35 alpha to
+    // match the other header badges; the background is pulsed by pcFlashTick().
+    const modeTxt = pcInclPlanned ? "incl. planned" : "unplanned";
+    chips.push('<div class="hdr-sum pc-chip'+(pcInclPlanned?' incl':'')+'" id="pcChip" data-act="powercuts" title="'+tip.replace(/"/g,"&quot;")+
+      '" style="color:'+lv.css+';border-color:rgba('+lv.rgb+',0.35)">'+
+      '<span class="ic">🔌</span>'+
+      '<span class="pc-chip-body">'+
+        '<span class="pc-chip-top">UK &amp; IRL cuts <b style="color:inherit">'+nf(off)+'</b></span>'+
+        '<span class="pc-mode" data-act="pcmode" title="Toggle power-cut totals: unplanned only / include planned works">'+modeTxt+'</span>'+
+      '</span></div>');
   }
   // Gas — only when the derived signal fires.
   if(gasSummary){
@@ -1987,6 +2272,33 @@ function buildHeaderSummaries(){
   const eaSlot=$("#eaRainChip");
   if(eaSlot) eaSlot.innerHTML = rainSummary ? rainChipHtml().replace(' data-act="ea"','') : "";
 }
+
+// Power-cuts badge flash: driven by the RATE of new UNPLANNED cuts/hr (pcSummary.flashRate),
+// NOT the standing customers-off total. Once that exceeds 1000/hr the badge background
+// breathes between 0 and 20% alpha of its level colour, at a rate scaling linearly as
+// rate/10000 Hz — 0.1 Hz at 1k/hr, 1 Hz at 10k/hr — capped at 2 Hz from 20k/hr up. The
+// flash colour still tracks the standing severity (pcLevel of customers-off). Phase is
+// advanced by real elapsed time so the sine stays smooth as the rate changes; below 1k/hr, no flash.
+let _pcPhase=0, _pcLastT=0;
+function pcFlashTick(ts){
+  const el=$("#pcChip");
+  if(el){
+    const off=(pcSummary&&(pcInclPlanned?pcSummary.off:pcSummary.unOff))||0;
+    const rate=(pcSummary&&(pcInclPlanned?pcSummary.cutsHr:pcSummary.flashRate))||0;   // new cuts/hr (the flow)
+    if(rate>1000){
+      const f=Math.min(2, rate/10000);                             // Hz
+      if(_pcLastT) _pcPhase += 2*Math.PI*f*(ts-_pcLastT)/1000;      // advance by elapsed time
+      const a=0.10*(1-Math.cos(_pcPhase));                          // 0 … 0.2
+      el.style.backgroundColor="rgba("+pcLevel(off).rgb+","+a.toFixed(3)+")";
+    } else {
+      el.style.backgroundColor=""; _pcPhase=0;                      // panel default, steady
+    }
+  }
+  _pcLastT=ts;
+  requestAnimationFrame(pcFlashTick);
+}
+requestAnimationFrame(pcFlashTick);
+
 // Rain chip markup, shared by the main header strip and the EA-bar copy.
 function rainChipHtml(){
   if(!rainSummary) return "";
@@ -2001,10 +2313,22 @@ function wireUtilIndicators(){
   const host=$("#hdrSummaries"); if(!host || host._wired) return;
   host._wired=true;
   host.addEventListener("click", e=>{
+    // The unplanned/planned toggle is now the 2nd line of the cuts chip — catch it
+    // first and stop it from also opening the power-cuts page behind it.
+    const modeEl=e.target.closest('[data-act="pcmode"]');
+    if(modeEl){
+      e.stopPropagation();
+      pcInclPlanned=!pcInclPlanned;
+      try{ localStorage.setItem("pcInclPlanned", pcInclPlanned?"1":"0"); }catch(_){}
+      buildHeaderSummaries();                                   // repaint the badge in the new mode
+      if(Alarm && Alarm.rebaselinePowerCuts) Alarm.rebaselinePowerCuts();  // don't fire on a mode flip
+      return;
+    }
     const chip=e.target.closest(".hdr-sum"); if(!chip) return;
     const act=chip.dataset.act;
     if(act==="ea") eaOpenFn();
     else if(act==="gas") gasOpenFn();
+    else if(act==="powercuts") pcOpenFn();
     else if(act==="elec"){
       // scroll the detailed alert bar into view (it carries the full detail)
       const bar=$("#alertbar"); if(bar) bar.scrollIntoView({behavior:"smooth",block:"center"});
@@ -2046,14 +2370,18 @@ function sevApply(el, live, hold){
 // Frequency's OWN severity from the reading vs the operational/statutory bands —
 // independent of the composite risk index. green in-band, amber outside operational,
 // red outside statutory.
+// Judged on the latest publish burst's extremes (hz_min / hz_max from the server), so
+// a mid-burst excursion colours the panel even if the burst's last point recovered.
 function freqSevLevel(sr){
   const hz=(sr && sr.hz!=null)?sr.hz:null;
   if(hz==null) return null;
+  const lo=(sr.hz_min!=null)?Math.min(sr.hz_min,hz):hz;
+  const hi=(sr.hz_max!=null)?Math.max(sr.hz_max,hz):hz;
   const p=sr.params||{};
   const opLo=p.op_lo!=null?p.op_lo:49.8, opHi=p.op_hi!=null?p.op_hi:50.2;
   const stLo=p.stat_lo!=null?p.stat_lo:49.5, stHi=p.stat_hi!=null?p.stat_hi:50.5;
-  if(hz<=stLo || hz>=stHi) return "red";
-  if(hz<=opLo || hz>=opHi) return "amber";
+  if(lo<=stLo || hi>=stHi) return "red";
+  if(lo<=opLo || hi>=opHi) return "amber";
   return "green";
 }
 function renderSystemRisk(sr){
@@ -4634,6 +4962,18 @@ function gasCloseFn(){ $("#gasOverlay").classList.remove("open"); gasOpen=false;
   if(gasPoll){ clearInterval(gasPoll); gasPoll=null; }
   cancelAnimationFrame(gasFlowRAF); }
 
+// UK & Ireland power cuts: open the standalone /powercuts page in the overlay iframe.
+// Lazy-loaded on first open (its own timers keep it fresh thereafter); the direct
+// /powercuts URL still works independently of the dashboard.
+let pcOpen=false;
+function pcOpenFn(){
+  const fr=$("#pcFrame");
+  if(fr && (!fr.src || fr.src==="about:blank" || /about:blank$/.test(fr.src))) fr.src="/powercuts";
+  $("#pcOverlay").classList.add("open"); pcOpen=true;
+}
+function pcCloseFn(){ $("#pcOverlay").classList.remove("open"); pcOpen=false; }
+{ const pb=$("#pcMapBtn"); if(pb) pb.onclick=pcOpenFn; }   // header "live powercuts map" = the badge
+
 // Animated system flow diagram: sources -> NTS spine -> demand & exports.
 // Live-only (reads the gas snapshot g). Straight ribbons carry a travelling
 // brightness sine (no wobble); spine carries a vertical brightness sine going
@@ -5336,6 +5676,8 @@ function gasRender(g){
   const ob=$("#gasOpenBtn"); if(ob) ob.onclick=gasOpenFn;
   const cb=$("#gasClose"); if(cb) cb.onclick=gasCloseFn;
   addEventListener("keydown",e=>{ if(e.key==="Escape"&&gasOpen) gasCloseFn(); });
+  const pcb=$("#pcClose"); if(pcb) pcb.onclick=pcCloseFn;
+  addEventListener("keydown",e=>{ if(e.key==="Escape"&&pcOpen) pcCloseFn(); });
 })();
 
 /* ---------- Environment Agency pop-out ---------- */
@@ -5414,7 +5756,8 @@ function eaOpenFn(){
   if(eaPoll) clearInterval(eaPoll); eaPoll=setInterval(()=>{ if(!$("#eaLocModal").classList.contains("show")) eaFetch(); }, 300000);
 }
 function eaCloseFn(){ $("#eaOverlay").classList.remove("open"); eaOpen=false;
-  if(eaPoll){ clearInterval(eaPoll); eaPoll=null; } }
+  if(eaPoll){ clearInterval(eaPoll); eaPoll=null; }
+  eaRadarSync(); }                        // unload the radar frame while the page is closed
 
 /* ---------- Background rainfall watcher ----------
    The rain alarm must be available whether or not the EA panel is open. Once
@@ -5609,9 +5952,44 @@ function eaRainBand(mm){
 
 // Rainfall view: "list" (nearest-first grid) or "map" (rough directional grid).
 let eaRainView = (function(){ try{ return localStorage.getItem("eaRainView")||"list"; }catch(e){ return "list"; } })();
-// order of the two lower-right panels: "weather" (default) puts local weather
-// above the rainfall grid; "rain" swaps them. Plot panel stays pinned at top.
-let eaLowerOrder = (function(){ try{ return localStorage.getItem("eaLowerOrder")||"weather"; }catch(e){ return "weather"; } })();
+// "gauge radar": when on, the plot area shows the Forecast view's radar (radar-only mode)
+// instead of a gauge trace. Toggled by the button pinned top-right of the plot area.
+let eaRadarOn=false;
+function eaForecastUrl(radar){
+  return "/forecast?"+(radar?"view=radar&":"")+"lat="+encodeURIComponent(eaLoc.lat)+
+         "&lon="+encodeURIComponent(eaLoc.lon)+"&dist="+encodeURIComponent(eaDist);
+}
+function eaRadarLayer(){
+  let L=$("#eaRadarLayer");
+  if(!L){
+    L=document.createElement("div"); L.id="eaRadarLayer"; L.className="ea-radar-layer";
+    L.innerHTML='<iframe id="eaRadarFrame" title="Gauge radar" src="about:blank"></iframe>';
+    $("#eaOverlay").appendChild(L);
+  }
+  return L;
+}
+// place the layer exactly over the reserved slot (called after render, on scroll/resize)
+function eaRadarPos(){
+  const L=$("#eaRadarLayer"), slot=$("#eaRadarSlot");
+  if(!L) return;
+  if(!eaRadarOn || !eaOpen || !slot){ L.style.display="none"; return; }
+  const r=slot.getBoundingClientRect(), bb=$("#eaBody").getBoundingClientRect();
+  // same size as the slot; the part scrolled outside the EA body is clipped, not squeezed
+  const ct=Math.max(0, bb.top-r.top), cb=Math.max(0, r.bottom-bb.bottom);
+  if(r.height-ct-cb<20 || r.width<40){ L.style.display="none"; return; }
+  L.style.left=r.left+"px"; L.style.width=r.width+"px";
+  L.style.top=r.top+"px"; L.style.height=r.height+"px";
+  L.style.clipPath="inset("+ct+"px 0 "+cb+"px 0 round 13px)";
+  L.style.display="block";
+}
+// load / unload the frame to match the toggle (unloaded while off, so it doesn't poll)
+function eaRadarSync(){
+  const want=(eaRadarOn && eaOpen) ? eaForecastUrl(true) : "about:blank";
+  const L=eaRadarLayer(), f=L.querySelector("iframe");
+  if(f.getAttribute("src")!==want) f.setAttribute("src", want);
+  eaRadarPos();
+}
+function eaRadarOff(){ if(eaRadarOn){ eaRadarOn=false; eaRadarSync(); } }
 
 // Build one rainfall card's HTML (shared by list and map views). `near` adds a
 // subtle highlight for gauges essentially at "here" (<5 km).
@@ -5620,14 +5998,14 @@ function eaRainCardModel(r){
   // points (chip MODEL, dashed muted) and the MOBILE trackers chasing a cell (chip
   // TRACK, or RADAR when the read is OC4-confirmed; solid/accent). Snow overrides
   // the colour to pink either way.
-  const loc = (r.bearing!=null ? Math.round(r.bearing)+'\u00b0 sea' : (r.name||'sea'));
+  const loc = (r.kind==='ring' ? (r.name || (Math.round(r.bearing)+'\u00b0')) : (r.bearing!=null ? Math.round(r.bearing)+'\u00b0 sea' : (r.name||'sea')));
   const dist = (r.dist_km!=null ? '~'+r.dist_km+' km' : '');
   const rate = (r.mm!=null ? r.mm.toFixed(1) : '\u2014');
   const snow = !!r.snow;
   const mobile = (r.kind==='mobile');
   const chip = mobile ? (r.confirmed?'RADAR':'TRACK') : 'MODEL';
   const chipCls = mobile ? (r.confirmed?'rn-chip radar':'rn-chip track') : 'rn-chip';
-  const kindLbl = mobile ? ('tracker'+(r.state?' ('+r.state+')':'')) : (r.kind==='picket'?'inner picket':'sentinel');
+  const kindLbl = mobile ? ('tracker'+(r.state?' ('+r.state+')':'')) : (r.kind==='ring'?'home-ring backup':(r.kind==='picket'?'inner picket':'sentinel'));
   const ageT = agePlain(r.model_ts);
   const cardTitle = (kindLbl+(ageT?' · sampled '+ageT:'')).replace(/"/g,'&quot;');
   const hdr = '<div class="rn-hdr"><span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+
@@ -6110,9 +6488,17 @@ function eaRenderRainMap(rainfall){
   // points are placed by direction but never anchor home or take the outline.
   const physGs=gs.filter(g=>!(g.r&&g.r.modelled));
   if(gs.length){
-    const centre = physGs.length? physGs[0] : gs[0];
-    placed.set(key(0,2), centre);
-    gs.filter(g=>g!==centre).forEach(place);
+    if(physGs.length){
+      const centre = physGs[0];
+      placed.set(key(0,2), centre);
+      gs.filter(g=>g!==centre).forEach(place);
+    } else {
+      // Backup mode: only modelled gauges (e.g. the OC4 home ring). Put a virtual
+      // HOME at the centre and fan the modelled points out around it in a compass
+      // star by direction and distance, rather than promoting one of them to "here".
+      placed.set(key(0,2), {r:{__home:true}, b:0, ew:0, ns:0, d:0});
+      gs.forEach(place);
+    }
   }
 
   // Dotted "near here" outline: nearest physical gauge plus any physical within
@@ -6141,6 +6527,12 @@ function eaRenderRainMap(rainfall){
     for(const cc of cols){
       const cell=placed.get(key(rr,cc));
       if(!cell){ out+='<div class="rmcell rm-empty"></div>'; continue; }
+      if(cell.r && cell.r.__home){
+        const _hm=((eaData.rain_probe&&eaData.rain_probe.situational)||{}).home||{};
+        const _hmm=(_hm.mm!=null? _hm.mm.toFixed(1)+' mm/h' : 'your location');
+        out+='<div class="rmcell"><div class="rn rn-home" title="your location" style="border-style:solid;border-color:rgba(120,180,255,.7)"><div class="rn-hdr"><span class="rn-nm">home</span></div><span class="rn-val"><span class="rn-mm">'+_hmm+'</span></span></div></div>';
+        continue;
+      }
       out+='<div class="rmcell">'+eaRainCard(cell.r, nearSet.has(cell))+'</div>';
     }
   }
@@ -6307,21 +6699,20 @@ function eaRender(){
   html+='</div>';  // ea-left
 
   // right column: drill-down + rainfall
-  const swapBtnPinned=(eaData.rainfall && eaData.rainfall.length)
-    ? '<button class="ea-swapbtn pinned" data-act="swaplower" '+
-      'title="Swap the rainfall and local-weather panels">⇅ swap panels</button>'
-    : '';
-  html+='<div class="ea-detail">'+swapBtnPinned+
+  const radarBtn='<button class="ea-radarbtn pinned'+(eaRadarOn?' on':'')+'" data-act="radar" '+
+      'title="'+(eaRadarOn?'Close the gauge radar':'Show the gauge radar — the rain engine\'s live plan of gauges, sea points and tracked rain — here')+'">◎ gauge radar</button>';
+  html+='<div class="ea-detail">'+radarBtn+
     '<div id="eaDetail">'+
-    '<div class="ea-detail-empty">Select a gauge to see its recent trace.</div></div>';
-  // --- build the rainfall grid block and the local-weather block separately so
-  // they can be shown in either order (plot panel above stays pinned) ---
+    (eaRadarOn ? '<div class="ea-radar-slot" id="eaRadarSlot"></div>'
+               : '<div class="ea-detail-empty">Select a gauge to see its recent trace.</div>')+'</div>';
+  // --- the local-weather block, then the rainfall grid (plot panel above stays pinned) ---
   let rainBlock='';
-  if(eaData.rainfall && eaData.rainfall.length){
-    const rained=eaData.rainfall.filter(r=>r.mm>0);
-    const eaRainModel=(eaData.rainfall_model||[]);
-    const eaRainShown=eaData.rainfall.concat(eaRainModel);
-    const ps=eaData.rainfall[0].period_s;
+  const eaRainModel=(eaData.rainfall_model||[]);
+  if((eaData.rainfall && eaData.rainfall.length) || eaRainModel.length){
+    const phys=(eaData.rainfall||[]);
+    const rained=phys.filter(r=>r.mm>0);
+    const eaRainShown=phys.concat(eaRainModel);
+    const ps=(phys[0]||{}).period_s;
     const periodLbl = ps==900?"15-minute rainfall" : ps==3600?"Hourly rainfall"
       : ps==86400?"Daily rainfall" : ps?(Math.round(ps/60)+"-minute rainfall") : "Rainfall";
     let pulled='';
@@ -6330,12 +6721,17 @@ function eaRender(){
     // sea reads as "feed down", never as a falsely-calm sea.
     const _nf=((eaData.rain_probe&&eaData.rain_probe.situational)||{}).net_feed;
     const feedNote=(_nf&&_nf!=='ok')
-      ? ' · <span style="color:var(--warn)">offshore feed '+(_nf==='degraded'?'degraded — OC4 fallback':(_nf==='exhausted'?'exhausted — daily limit':'down'))+'</span>'
+      ? ' · <span style="color:'+(_nf==='degraded'?'#8a99ad':'var(--warn)')+'">offshore '+(_nf==='degraded'?'net on OpenWeather backup':(_nf==='exhausted'?'feed exhausted — daily limit':'feed down'))+'</span>'
       : '';
+    // EA physical gauges may be empty (their API down) while modelled / OC4 backup
+    // cards still exist — show those rather than hiding the whole panel.
+    const gaugesLbl = phys.length
+      ? (phys.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':''))
+      : (eaRainModel.length+' modelled backup gauges'+((eaData.diag||{}).rainfall?' · EA gauges unavailable':''));
     rainBlock+='<div class="ea-sec-title" style="margin-top:22px">'+periodLbl+' '+
-      '<span class="note">'+eaData.rainfall.length+' gauges'+(eaRainModel.length?' · '+eaRainModel.length+' modelled offshore':'')+feedNote+' · '+
+      '<span class="note">'+gaugesLbl+feedNote+' · '+
       (eaRainView==="map"?"roughly by direction":"nearest first")+
-      (rained.length?'':' · all dry')+pulled+'</span>'+
+      (phys.length&&!rained.length?' · all dry':'')+pulled+'</span>'+
       '<span class="rn-viewtoggle">'+
         '<button class="rn-vt'+(eaRainView==="list"?" on":"")+'" data-rainview="list">list</button>'+
         '<button class="rn-vt'+(eaRainView==="map"?" on":"")+'" data-rainview="map">map</button>'+
@@ -6346,6 +6742,10 @@ function eaRender(){
       eaRainShown.forEach(r=>{ rainBlock+=eaRainCard(r); });
       rainBlock+='</div>';
     }
+    if(!phys.length && (eaData.diag||{}).rainfall){
+      rainBlock+='<div class="ea-softerr">EA rainfall gauges did not return: '+
+        String(eaData.diag.rainfall).replace(/</g,"&lt;")+' — retrying automatically. Showing modelled backup gauges only.</div>';
+    }
   } else if((eaData.diag||{}).rainfall){
     rainBlock+='<div class="ea-sec-title" style="margin-top:22px">Rainfall'+
       '<span class="note">gauges unavailable this cycle</span></div>'+
@@ -6353,11 +6753,7 @@ function eaRender(){
       String(eaData.diag.rainfall).replace(/</g,"&lt;")+' — retrying automatically.</div>';
   }
   const weatherBlock=eaRenderWindDials();
-  if(eaLowerOrder==="rain"){
-    html+=rainBlock+weatherBlock;
-  } else {
-    html+=weatherBlock+rainBlock;
-  }
+  html+=weatherBlock+rainBlock;
   html+='</div></div>';  // ea-detail, ea-layout
 
   b.innerHTML=html;
@@ -6366,6 +6762,7 @@ function eaRender(){
   // wire station clicks
   b.querySelectorAll(".ea-st").forEach(el=>el.onclick=()=>{
     eaSelRef=el.dataset.ref; eaSelKind="station"; eaSelLoc=null;
+    if(eaRadarOn){ eaRadarOn=false; eaRender(); return; }   // render reloads the picked trace
     b.querySelectorAll(".ea-st").forEach(x=>x.classList.toggle("sel",x.dataset.ref===eaSelRef));
     b.querySelectorAll(".ea-rain .rn").forEach(x=>x.classList.remove("sel"));
     eaLoadStation(eaSelRef);
@@ -6389,10 +6786,9 @@ function eaRender(){
     eaRainView=v; try{ localStorage.setItem("eaRainView", v); }catch(e){}
     eaRender();
   });
-  // swap the rainfall grid <-> local weather panel order
-  b.querySelectorAll('[data-act="swaplower"]').forEach(btn=>btn.onclick=()=>{
-    eaLowerOrder = (eaLowerOrder==="weather") ? "rain" : "weather";
-    try{ localStorage.setItem("eaLowerOrder", eaLowerOrder); }catch(e){}
+  // gauge radar toggle: on shows the radar in the plot area; clicking again closes it
+  b.querySelectorAll('[data-act="radar"]').forEach(btn=>btn.onclick=()=>{
+    eaRadarOn=!eaRadarOn;
     eaRender();
   });
   // wire rainfall gauge clicks -> plot 15-min history in the detail area.
@@ -6400,12 +6796,14 @@ function eaRender(){
   b.querySelectorAll(".ea-rain .rn, .ea-rainmap .rn").forEach(el=>el.onclick=()=>{
     const ref=el.dataset.rainref; if(!ref) return;
     eaSelRef=ref; eaSelKind="rain"; eaSelLoc=el.dataset.rainloc||ref;
+    if(eaRadarOn){ eaRadarOn=false; eaRender(); return; }   // render reloads the picked trace
     b.querySelectorAll(".rn").forEach(x=>x.classList.toggle("sel",x.dataset.rainref===eaSelRef));
     b.querySelectorAll(".ea-st").forEach(x=>x.classList.remove("sel"));
     eaLoadRain(ref, eaSelLoc);
   });
-  // if a station was selected, keep its detail loaded
-  if(eaSelRef){ if(eaSelKind==="rain") eaLoadRain(eaSelRef, eaSelLoc||eaSelRef); else eaLoadStation(eaSelRef); }
+  // if a station was selected, keep its detail loaded (not while the radar has the plot area)
+  if(eaSelRef && !eaRadarOn){ if(eaSelKind==="rain") eaLoadRain(eaSelRef, eaSelLoc||eaSelRef); else eaLoadStation(eaSelRef); }
+  eaRadarSync();
 }
 
 // Clear the current gauge/rain selection and return the detail panel to its
@@ -6619,6 +7017,9 @@ function eaDrawRain(series){
 (function wireEa(){
   const ob=$("#eaOpenBtn"); if(ob) ob.onclick=eaOpenFn;
   const cb=$("#eaClose"); if(cb) cb.onclick=eaCloseFn;
+  const hb=$("#eaHoodBtn"); if(hb) hb.onclick=()=>window.open(eaForecastUrl(false), "_blank", "noopener");
+  { const eb=$("#eaBody"); if(eb) eb.addEventListener("scroll", eaRadarPos, {passive:true}); }
+  addEventListener("resize", eaRadarPos);
   addEventListener("keydown",e=>{ if(e.key==="Escape"&&eaOpen&&!cgOpen){
     if($("#eaLocModal").classList.contains("show")) eaHideLocModal(); else eaCloseFn(); } });
   document.querySelectorAll("#eaDist button").forEach(b=>b.onclick=()=>{
@@ -6688,6 +7089,10 @@ const Alarm = (function(){
             desc:"Escalating tones when frequency ITSELF leaves the band — below 49.8 / 49.7 / 49.5 Hz or above 50.2 / 50.3 / 50.5 Hz; statutory limits always fire; warns of possible power cuts (or generation tripping) if it stays out. Fresh data only."},
     risk:  {name:"System risk index", tier:"warn", on:true,
             desc:"A short pip plus the on-screen banner when the composite grid-risk level rises (low inertia / high CGRI) or a sudden infeed loss is detected. Pips and banner only — no escalating tones."},
+    powercuts:{name:"Storm & power cuts", tier:"crit", on:false,
+            desc:"Escalating tones + speech for UNPLANNED UK & Ireland power cuts. Combines, in one alert: a 'climbing' warning when new cuts/hr crosses the flash threshold, milestone alerts as customers off pass 20k / 50k / 100k / 500k / 1M (then every 500k, highest reached), where the cuts are concentrated (operator regions), and the cause when known (a storm from correlated METAR gusts, or a supply-side grid infeed loss). Hysteresis, and it keeps monitoring — re-voicing while elevated. Announces an operator's declared major incident (from its feed's own category). Also announces big restorations. Planned works excluded by default — the top-bar switch includes them."},
+    pcnear:{name:"Power cut near you", tier:"warn", on:false,
+            desc:"Speaks when a power cut starts within your chosen radius of your location (set on the EA page) — an unplanned fault as a warning, planned works as a quieter notice — naming how far away, which direction, customers off and the estimated restoration, and again when it's back on. Muted providers are skipped. Set the radius below."},
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
@@ -6822,6 +7227,10 @@ const Alarm = (function(){
   // never double-announce (or contradict) the same event. Nowcast keeps its UNIQUE
   // signals: minute-ahead onset (forward/nowcast), visibility, pressure and compound.
   const NOWCAST_OVERLAP={band:1, confirm:1, modelonly:1, trend:1, approach:1, sea:1, land_fade:1, settled:1};
+  // Approach-episode lines (alert / confirm / fizzle) are voiced by the RAIN category via
+  // situational_speak; the nowcast channel only speaks them when RAIN is not armed, so the
+  // sequence is never heard twice.
+  const APPR_EPISODE_KEYS={appr_alert:1, appr_confirm:1, appr_fizzle:1};
   function evaluateNowcast(rp){
     if(!armed || !(CATS.nowcast && CATS.nowcast.on)) return;
     const ws=(rp && rp.would_speak) || [];
@@ -6833,6 +7242,7 @@ const Alarm = (function(){
       const sig=(w.key||"")+"|"+(w.phrase||"");
       if(nowcastSaid.has(sig)) return;
       if(sitActive && NOWCAST_OVERLAP[w.key]) return;   // situational owns this line
+      if(APPR_EPISODE_KEYS[w.key] && CATS.rain && CATS.rain.on) return;   // RAIN voices the approach episode
       tone(w.tier||"notice");
       if(w.phrase) say(w.phrase);
       flashBtn();
@@ -6863,8 +7273,11 @@ const Alarm = (function(){
   }
 
   // ---- integrated frequency + system-risk alarm (escalating) --------------
+  // peakHz = the burst's worst point on the alarmed side (what is judged + spoken);
+  // nowHz = its newest point; lastPeak = the previous evaluation's peak (worsening fallback).
   const SR={tier:0, level:"green", since:0, lastVoice:0, powerCutSaid:false,
-            running:false, lastHz:null, worsening:false, high:false, freqTier:0, lastRiskSev:0};
+            running:false, lastHz:null, peakHz:null, nowHz:null, lastPeak:null, burstKey:null, peakSide:null,
+            worsening:false, high:false, freqTier:0, lastRiskSev:0};
   const SR_TIER_HZ=[49.8,49.7,49.5];        // under-frequency tier floors
   const SR_HI_TIER_HZ=[50.2,50.3,50.5];     // over-frequency tier ceilings (mirror)
   const SR_DEADBAND=0.03;
@@ -6949,9 +7362,9 @@ const Alarm = (function(){
   // One burst of the tier's pattern, its SOUND capped at maxS seconds, then it speaks once.
   //  T1: 1s 600Hz tone every 3s.  T2: 0.5s 720Hz tone every 1.5s.  T3: low-high siren.
   function srBurst(maxS){
-    if(SR.tier>=3){ const d=srSiren(maxS); srAt(Math.min(d,maxS)*1000, ()=>srVoice(SR.lastHz)); }
-    else if(SR.tier===2){ for(let t=0; t+0.5<=maxS; t+=1.5) srBeepTone(SR_F2,0.5,0.30,t); srVoice(SR.lastHz); }
-    else { for(let t=0; t+1<=maxS; t+=3) srBeepTone(SR_F1,1.0,0.28,t); srVoice(SR.lastHz); }
+    if(SR.tier>=3){ const d=srSiren(maxS); srAt(Math.min(d,maxS)*1000, ()=>srVoice()); }
+    else if(SR.tier===2){ for(let t=0; t+0.5<=maxS; t+=1.5) srBeepTone(SR_F2,0.5,0.30,t); srVoice(); }
+    else { for(let t=0; t+1<=maxS; t+=3) srBeepTone(SR_F1,1.0,0.28,t); srVoice(); }
   }
   function srCycle(){
     srClear();
@@ -6963,45 +7376,107 @@ const Alarm = (function(){
   function srStartCycle(){ SR.running=true; srCycle(); }
   function srStopCycle(){ SR.running=false; srClear(); }
   // The tones speak ONLY for a real frequency-band excursion, so this is frequency-only.
-  function srVoice(hz){
+  // Speaks the burst's WORST point on the alarmed side (not merely its newest point),
+  // plus "now" when the newest point has moved noticeably back from it.
+  function srVoice(){
     SR.lastVoice=Date.now();
-    if(hz==null) return;
-    let msg=(SR.tier>=3?"Critical":"Warning")+". Grid frequency "+(SR.high?"high":"low")+", "+hz.toFixed(2)+" hertz.";
+    const pk=SR.peakHz, nw=SR.nowHz;
+    if(pk==null) return;
+    let msg=(SR.tier>=3?"Critical":"Warning")+". Grid frequency "+(SR.high?"high":"low");
+    if(nw!=null && Math.abs(pk-nw)>=0.005)
+      msg+=", "+(SR.high?"peaked at ":"dipped to ")+pk.toFixed(2)+" hertz, now "+nw.toFixed(2)+".";
+    else msg+=", "+pk.toFixed(2)+" hertz.";
     if(SR.level==="red") msg+=" System inertia is low, limited reserve.";
     else if(SR.level==="amber") msg+=" System inertia reduced.";
     if(SR.worsening && SR.tier>=2) msg+=(SR.high?" Still rising.":" Still falling.");
     say(msg);
   }
+  // ---- dial excursion arrow ------------------------------------------------------
+  // Visual companion to the frequency-band alarm (independent of whether the alarm is
+  // armed — it is a display, not a sound). Appears on the first alert of an excursion,
+  // stays for AT LEAST FA_MIN_MS from that moment, and for as long as the excursion
+  // (tier >= 1, after the alarm's own hysteresis) continues. Down = low, up = high;
+  // amber at tier 1, red at tier 2+. Direction/colour follow the live state.
+  const FA_MIN_MS=120000;
+  const FA={on:false, since:0, high:false, crit:false, timer:null};
+  function freqArrowPaint(){
+    const el=document.getElementById("freqArrow"); if(!el) return;
+    el.classList.toggle("on", FA.on);
+    el.classList.toggle("up", FA.high);
+    el.classList.toggle("crit", FA.crit);
+    const card=document.getElementById("freqDial");
+    if(card) card.title = FA.on ? ("Frequency "+(FA.high?"high":"low")+" — band alarm active") : "";
+  }
+  function freqArrowUpdate(tier, high){
+    const now=Date.now();
+    if(FA.timer){ clearTimeout(FA.timer); FA.timer=null; }
+    if(tier>=1){
+      if(!FA.on){ FA.on=true; FA.since=now; }
+      FA.high=!!high; FA.crit=tier>=2;
+    } else if(FA.on){
+      const left=FA_MIN_MS-(now-FA.since);
+      if(left<=0) FA.on=false;
+      else FA.timer=setTimeout(()=>{ FA.timer=null; freqArrowUpdate(0, FA.high); }, left+50);
+    }
+    freqArrowPaint();
+  }
+
   function evaluateSystemRisk(freq, risk){
     if(risk) SR.level=risk.level||"green";
     const hz=(freq && freq.hz!=null)?freq.hz:null;
     const stale=!freq || freq.stale || hz==null;
+    // BURST EXTREMES. The feed publishes ~8 x 15s points at once; hz is only the newest.
+    // Judge on the burst's lowest AND highest point (server burst_min / burst_max), so a
+    // mid-burst excursion that recovered by the last point still alarms, and the voice
+    // quotes the real extreme. Falls back to hz alone if the fields are missing.
+    let lo=hz, hi=hz;
+    if(!stale){
+      const bm=freq.burst_min && freq.burst_min.hz, bx=freq.burst_max && freq.burst_max.hz;
+      if(bm!=null) lo=Math.min(lo, bm);
+      if(bx!=null) hi=Math.max(hi, bx);
+    }
     // TONES escalate ONLY on an actual frequency-band excursion (symmetric under-/over-
     // frequency). The composite risk level never adds a tone — it pips instead.
     let freqTier=0, high=false;
     if(!stale){
-      const ti=srTierOf(hz); freqTier=ti.tier; high=ti.high;
-      // Frequency-band hysteresis: hold the previous band tier until recovered inside
-      // the boundary + deadband (direction-aware), so a band excursion doesn't chatter.
+      // Worse of the two sides; on a tie, the side further from nominal.
+      const tl=srTierOf(lo), th=srTierOf(hi);
+      const pickHi = th.tier>tl.tier || (th.tier===tl.tier && Math.abs(hi-50)>Math.abs(lo-50));
+      const ti=pickHi?th:tl; freqTier=ti.tier; high=ti.high;
+      // Frequency-band hysteresis: hold the previous band tier until the burst's extreme
+      // ON THAT SIDE has recovered inside the boundary + deadband, so one good point at
+      // the end of a bad burst can't clear it, and a band excursion doesn't chatter.
       if(freqTier < SR.freqTier && SR.freqTier>=1){
         const bnd=(SR.high?SR_HI_TIER_HZ:SR_TIER_HZ)[Math.min(2,SR.freqTier-1)];
-        const recovered = SR.high ? (hz < bnd-SR_DEADBAND) : (hz > bnd+SR_DEADBAND);
+        const recovered = SR.high ? (hi < bnd-SR_DEADBAND) : (lo > bnd+SR_DEADBAND);
         if(!recovered){ freqTier=SR.freqTier; high=SR.high; }
       }
     }
+    freqArrowUpdate(stale?0:freqTier, high);
     // SYSTEM RISK (level + infeed loss) is a SEPARATE alert: pip + banner only, never
     // the tones — and suppressed while a frequency-band tone is already sounding.
     riskPip(risk, freqTier>=1);
     if(stale){
-      SR.tier=0; SR.freqTier=0; srStopCycle(); SR.since=0; SR.powerCutSaid=false; SR.lastHz=null; return;
+      SR.tier=0; SR.freqTier=0; srStopCycle(); SR.since=0; SR.powerCutSaid=false;
+      SR.lastHz=null; SR.peakHz=null; SR.nowHz=null; SR.lastPeak=null; SR.burstKey=null; SR.peakSide=null; return;
     }
     let eff=freqTier;
+    const peak = high ? hi : lo;                // the burst's worst point on the alarmed side
     const rocof=(risk && risk.rocof_obs!=null)?risk.rocof_obs:null;
     // "worsening" = moving further from nominal: falling when low, rising when high.
-    SR.worsening = high
-      ? (rocof!=null ? rocof>=0.02 : (SR.lastHz!=null && hz>SR.lastHz+0.005))
-      : (rocof!=null ? rocof<=-0.02 : (SR.lastHz!=null && hz<SR.lastHz-0.005));
-    SR.lastHz=hz;
+    // Fallback (no RoCoF) compares this burst's extreme with the PREVIOUS burst's — only
+    // re-judged when a new burst lands (keyed on its newest timestamp), since the 2s poll
+    // re-delivers the same burst many times and would otherwise flicker the flag.
+    const bkey=(freq && freq.time) || null;
+    if(rocof!=null) SR.worsening = high ? rocof>=0.02 : rocof<=-0.02;
+    else if(bkey==null || bkey!==SR.burstKey){
+      if(SR.peakSide!==high) SR.lastPeak=null;   // side flipped: no like-for-like comparison
+      SR.peakSide=high;
+      SR.worsening = high ? (SR.lastPeak!=null && peak>SR.lastPeak+0.005)
+                          : (SR.lastPeak!=null && peak<SR.lastPeak-0.005);
+      SR.lastPeak=peak; SR.burstKey=bkey;
+    }
+    SR.lastHz=hz; SR.nowHz=hz; SR.peakHz=peak;
     const now=Date.now();
     if(!armed || !(CATS.freq&&CATS.freq.on)){ SR.tier=eff; SR.high=high; SR.freqTier=freqTier; srStopCycle(); return; }
     const entered=eff>=1 && SR.tier<1, rose=eff>SR.tier;
@@ -7021,6 +7496,240 @@ const Alarm = (function(){
           : "Grid frequency remains critically low and is not recovering. Power cuts may be imminent.");
       }
     } else { srStopCycle(); SR.since=0; SR.powerCutSaid=false; }
+  }
+
+  // ---- storm & power-cuts alarm: unplanned-only, count-threshold ladder -----
+  // UNPLANNED customers off drives a threshold ladder (20k / 50k / 100k / 500k / 1M, then
+  // every 500k above). Crossing UP announces the HIGHEST level reached (a jump skips the
+  // ones below). Hysteresis stops boundary chatter; while it stays above 50k the current
+  // level is re-announced every few hours. Each announcement adds a CAUSE comment when one
+  // is known (a storm from correlated METAR gusts, or a supply-side grid infeed loss).
+  // Separately, a big RESTORATION (customers back on in the last hour) is announced — the
+  // first two per rolling six hours. Escalating tones + speech; ≥100k off speaks critical.
+  const PC_LADDER=[20000,50000,100000,500000,1000000];  // base thresholds
+  const PC_LADDER_STEP=500000;                           // …then every 500k above 1M
+  const PC_LADDER_HYST=0.9;                              // fall below level×0.9 to re-arm it
+  const PC_LADDER_REPEAT_MS=3*60*60*1000;                // re-announce every 3 h while >50k
+  const PC_CRIT_LEVEL=100000;                            // ≥100k off → critical, else warning
+  const PC_RESTORE_MIN=50000;                            // "high" restoration = ≥50k in last hour
+  const PC_RESTORE_WINDOW_MS=6*60*60*1000;               // first 2 restoration notices per 6 h
+  const PC_RESTORE_REARM=0.7;                            // restore edge re-arms below 0.7×min
+  const PC_RATE_MIN=1000;                                // new cuts/hr (the flash threshold) → speak "climbing"
+  const PC_RATE_REARM=0.7;                               // rate edge re-arms below 0.7×min
+  const PC_RATE_REPEAT_MS=30*60*1000;                    // re-announce a sustained fast rise every 30 min
+  const PC_GALE_KT=34, PC_STORM_KT=48;                   // gale / storm gust thresholds (kt)
+  let _pcLadLevel=0, _pcLadRepeatT=0, _pcInCrit=false, _pcBaselined=false;
+  let _pcRestoreArmed=false, _pcRestoreT=[];
+  let _pcRateArmed=false, _pcRateT=0;
+  let _pcMajorSeen=new Set();   // operators already in a declared major-incident state
+  function pcRegionLabel(k){ return String(k||"").replace(/^country:/,"").replace(/^area:/,""); }
+  function pcLadderLevel(off){
+    if(off<PC_LADDER[0]) return 0;
+    let hi=0; PC_LADDER.forEach(b=>{ if(off>=b) hi=b; });
+    if(off>=1000000) hi=1000000+Math.floor((off-1000000)/PC_LADDER_STEP)*PC_LADDER_STEP;
+    return hi;
+  }
+  function pcCritFor(level){ return level>=PC_CRIT_LEVEL; }
+  // Cause of the cuts, if determinable: a storm (windiest gale+ region) takes priority; else
+  // a grid infeed loss; else null (unknown — no comment is added).
+  function pcCause(wind, risk){
+    let wr=null, wg=-1;
+    Object.keys(wind||{}).forEach(k=>{ if(k==="ALL") return; const g=wind[k]&&wind[k].gust_kt;
+      if(g!=null && g>wg){ wg=g; wr=k; } });
+    const gl=(risk&&risk.gen_loss)||{};
+    if(wg>=PC_GALE_KT) return {kind:"storm", gust:wg, region:pcRegionLabel(wr)};
+    if(gl.flagged||gl.severe) return {kind:"grid", mw:gl.d_infeed_mw||null};
+    return null;
+  }
+  function pcCausePhrase(c){
+    if(!c) return "";
+    const nf=v=>Number(v||0).toLocaleString("en-GB");
+    if(c.kind==="storm"){ const sev=c.gust>=PC_STORM_KT?"Storm-force":"Gale-force";
+      return " "+sev+" gusts of "+Math.round(c.gust)+" knots in "+c.region+" suggest a weather cause."; }
+    if(c.kind==="grid"){ return " A grid infeed loss"+(c.mw?(" of "+nf(c.mw)+" megawatts"):"")+" suggests a supply-side cause."; }
+    return "";
+  }
+  function pcJoin(a){ a=a||[]; return a.length<=1 ? (a[0]||"") : a.slice(0,-1).join(", ")+" and "+a[a.length-1]; }
+  // One combined utterance covering, as they apply this poll: a count milestone (crossed, or
+  // a periodic re-state while monitoring), whether cuts are still CLIMBING (rate), WHERE they
+  // are concentrated (worst-affected / fastest-climbing operator regions), and WHY (if known).
+  function pcCombinedSpeech(milestone, climbing, off, rate, cause, climbRegions, worstRegions){
+    const nf=v=>Number(v||0).toLocaleString("en-GB");
+    const pre=(milestone && pcCritFor(milestone.level)) ? "Critical. " : "Warning. ";
+    let s;
+    if(milestone && !milestone.repeat) s="Unplanned power cuts have passed "+nf(milestone.level)+" customers off across the UK and Ireland";
+    else if(milestone && milestone.repeat) s="Unplanned power cuts remain elevated at "+nf(off)+" customers off across the UK and Ireland";
+    else s="Unplanned power cuts are climbing across the UK and Ireland";
+    if(climbing){
+      s += (milestone ? " and are still climbing" : "") + ", around "+nf(rate)+" new cuts in the last hour";
+      if(climbRegions && climbRegions.length) s += ", fastest in "+pcJoin(climbRegions);
+      s += ".";
+    } else {
+      if(worstRegions && worstRegions.length) s += ", worst affected in "+pcJoin(worstRegions);
+      s += ".";
+    }
+    return pre + s + pcCausePhrase(cause);
+  }
+  function rebaselinePowerCuts(){ _pcBaselined=false; }   // adopt current state silently (mode toggle)
+  function evaluatePowerCuts(pc, wind, risk, inclPlanned){
+    const cat=CATS.powercuts;
+    if(!armed || !(cat && cat.on)){
+      if(_pcInCrit){ critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); _pcInCrit=false; }
+      _pcLadLevel=0; _pcLadRepeatT=0; _pcRestoreArmed=false; _pcRestoreT=[];
+      _pcRateArmed=false; _pcRateT=0; _pcMajorSeen=new Set(); _pcBaselined=false; return;
+    }
+    // default UNPLANNED; the top-bar switch can include planned works
+    const off=(pc&&(inclPlanned?pc.off:pc.unOff))||0;                       // customers off (the stock)
+    const restoredHr=(pc&&(inclPlanned?pc.restoredHrAll:pc.restoredHr))||0;  // customers restored in last hour
+    const rate=(pc&&(inclPlanned?pc.cutsHr:pc.flashRate))||0;                // new cuts/hr (matches the flash)
+    const climbRegions=(pc&&pc.climbRegions)||[], worstRegions=(pc&&pc.worstRegions)||[];
+    const majorOps=(pc&&pc.majorOps)||[];                                    // operator-declared major incidents
+    const now=Date.now();
+    const cur=pcLadderLevel(off);
+    const cause=pcCause(wind, risk);
+    if(!_pcBaselined){ _pcBaselined=true; _pcLadLevel=cur; _pcLadRepeatT=now;
+      _pcRestoreArmed=restoredHr>=PC_RESTORE_MIN; _pcRateArmed=rate>=PC_RATE_MIN; _pcRateT=now;
+      _pcMajorSeen=new Set(majorOps.map(m=>m.name)); return; }  // adopt silently
+
+    // ---- gather this poll's events, then COMBINE them into one spoken alert ----
+    // count milestone: a fresh upward crossing (highest reached), else a periodic re-state
+    // while it stays elevated (monitoring for further climbs).
+    let milestone=null;
+    if(cur>_pcLadLevel){ milestone={level:cur, repeat:false}; _pcLadLevel=cur; _pcLadRepeatT=now; }
+    else if(cur<_pcLadLevel){
+      if(off < _pcLadLevel*PC_LADDER_HYST) _pcLadLevel=cur;   // step down past the hysteresis band (silent)
+    }
+    if(!milestone && _pcLadLevel>=50000 && (now-_pcLadRepeatT)>=PC_LADDER_REPEAT_MS){
+      milestone={level:_pcLadLevel, repeat:true}; _pcLadRepeatT=now;
+    }
+    // still climbing: new cuts/hr over the flash threshold — edge-triggered, then re-checked
+    // every 30 min so an ongoing fast rise keeps being monitored and re-voiced.
+    let climbing=false;
+    if(rate>=PC_RATE_MIN){
+      if(!_pcRateArmed || (now-_pcRateT)>=PC_RATE_REPEAT_MS){ climbing=true; _pcRateT=now; }
+      _pcRateArmed=true;
+    } else if(rate < PC_RATE_MIN*PC_RATE_REARM){ _pcRateArmed=false; }
+    // operator-declared major incidents (from each feed's own category). A newly-appeared one
+    // is itself alert-worthy; a phrase naming all current ones rides along on any alert.
+    const curMajor=new Set(majorOps.map(m=>m.name));
+    const newMajor=majorOps.filter(m=>!_pcMajorSeen.has(m.name));
+    _pcMajorSeen=curMajor;
+    const majorPhrase = majorOps.length
+      ? " Major incident"+(majorOps.length>1?"s":"")+" reported by "+
+        pcJoin(majorOps.map(m=>m.name+(m.cat?(" ("+m.cat+")"):"")))+"."
+      : "";
+    // critical repeat tracks whether the current count level is critical (≥100k off)
+    const wantCrit=_pcLadLevel>=PC_CRIT_LEVEL;
+    if(wantCrit && !_pcInCrit){ _pcInCrit=true; critActiveCount++; startCritRepeat(); }
+    else if(!wantCrit && _pcInCrit){ _pcInCrit=false; critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
+    // one combined utterance for whatever fired this poll: a count milestone and/or a fast
+    // climb (with WHERE + WHY), and/or a newly-declared operator major incident.
+    if(milestone || climbing){
+      const tier=(milestone && pcCritFor(milestone.level)) ? "crit" : "warn";
+      fire(tier, pcCombinedSpeech(milestone, climbing, off, rate, cause, climbRegions, worstRegions)+majorPhrase);
+    } else if(newMajor.length){
+      fire("warn", "Warning."+
+        " Major incident"+(newMajor.length>1?"s":"")+" reported by "+
+        pcJoin(newMajor.map(m=>m.name+(m.cat?(" ("+m.cat+")"):"")))+" across the UK and Ireland."+
+        pcCausePhrase(cause));
+    }
+    // big restoration: edge-triggered when restored/hr crosses the threshold up; the first
+    // two per rolling six hours are announced (a soft blip that speaks — good news).
+    if(restoredHr>=PC_RESTORE_MIN){
+      if(!_pcRestoreArmed){
+        _pcRestoreT=_pcRestoreT.filter(t=>now-t<PC_RESTORE_WINDOW_MS);
+        if(_pcRestoreT.length<2){
+          const nf=v=>Number(v||0).toLocaleString("en-GB");
+          tone("notice");
+          say("Power being restored: around "+nf(restoredHr)+" customers back on in the last hour across the UK and Ireland"+
+              (off>=20000?", "+nf(off)+" still off.":"."));
+          flashBtn();
+          _pcRestoreT.push(now);
+        }
+        _pcRestoreArmed=true;
+      }
+    } else if(restoredHr < PC_RESTORE_MIN*PC_RESTORE_REARM){
+      _pcRestoreArmed=false;
+    }
+  }
+
+  // ---- power cuts near you ----
+  // Each nearby incident is announced once (remembered across reloads for 48 h); when an
+  // announced one is gone — and its operator's feed is live, so a feed outage can't pass
+  // for a restoration — it is announced as restored. Several new ones become one message.
+  const PC_NEAR_SEEN_KEY="pcNearSeen", PC_NEAR_KEEP_MS=48*3600*1000;
+  function pcNearSeenLoad(){ try{ return JSON.parse(localStorage.getItem(PC_NEAR_SEEN_KEY)||"{}")||{}; }catch(e){ return {}; } }
+  function pcNearSeenSave(o){ try{ localStorage.setItem(PC_NEAR_SEEN_KEY, JSON.stringify(o)); }catch(e){} }
+  function pcDistSpoken(d){
+    if(d==null) return null;
+    if(d<1) return "less than a kilometre";
+    return (d<10 ? (Math.round(d*10)/10) : Math.round(d))+" kilometres";
+  }
+  function pcWhere(x){
+    const ds=pcDistSpoken(x.d);
+    return ds ? ds+" "+pcCompass(x.b)+" of you" : "in your postcode district, "+x.district;
+  }
+  // "2026-09-26T18:30:00" (operator local time) -> "6:30 pm", "tomorrow at 9 am", "Monday at 2:15 pm"
+  function pcWhen(iso){
+    const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso||""));
+    if(!m) return null;
+    const dt=new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    const h=dt.getHours(), mi=dt.getMinutes(), h12=(h%12)||12;
+    const t=h12+(mi?":"+String(mi).padStart(2,"0"):"")+(h<12?" am":" pm");
+    const today=new Date(); today.setHours(0,0,0,0);
+    const day=new Date(dt); day.setHours(0,0,0,0);
+    const dd=Math.round((day-today)/86400000);
+    if(dd===0) return t;
+    if(dd===1) return "tomorrow at "+t;
+    if(dd>1 && dd<7) return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dt.getDay()]+" at "+t;
+    return null;
+  }
+  function pcNearOne(x){
+    const nf=v=>Number(v||0).toLocaleString("en-GB");
+    const now=new Date(), st=x.start?pcWhen(x.start):null;
+    const future=x.start && (function(){ const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(x.start);
+      return m && new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5])>now; })();
+    let s=(x.planned?"planned works ":"unplanned fault ")+pcWhere(x);
+    const n=x.off||(x.planned?x.pred:0);
+    if(n) s+=", about "+nf(n)+" customer"+(n===1?"":"s")+(x.off?" off":" affected");
+    if(x.planned && future && st) s+=", starting "+(/^\d/.test(st)?"at ":"")+st;
+    const et=pcWhen(x.etr);
+    if(et) s+=", "+(x.planned?"due to finish ":"estimated back on ")+(/^\d/.test(et)?"at ":"")+et;
+    return s;
+  }
+  function evaluatePowerCutsNear(n){
+    const cat=CATS.pcnear;
+    if(!armed || !(cat && cat.on) || !n || !n.home) return;
+    const now=Date.now(), seen=pcNearSeenLoad(), live=new Set(n.liveOps||[]);
+    Object.keys(seen).forEach(k=>{ if(now-(seen[k].t||0)>PC_NEAR_KEEP_MS) delete seen[k]; });
+    const cur=new Map((n.list||[]).map(x=>[x.id,x]));
+    const fresh=(n.list||[]).filter(x=>!seen[x.id]);
+    // restored: announced before, no longer in the feed at all, and its operator's feed is
+    // live this poll (so a feed outage, a mute or a radius change can't pass for one)
+    const active=new Set(n.activeIds||[]);
+    const gone=Object.keys(seen).filter(k=>!cur.has(k) && !active.has(k) && live.has(seen[k].dno));
+    if(fresh.length){
+      const unpl=fresh.filter(x=>!x.planned), lead=(unpl[0]||fresh[0]);
+      let msg;
+      if(fresh.length===1) msg=(lead.planned?"Planned power works near you: ":"Power cut near you: ")+pcNearOne(lead)+".";
+      else msg=fresh.length+" power cuts near you, within "+n.km+" kilometres. Nearest: "+pcNearOne(lead)+".";
+      if(unpl.length){ fire("warn", "Warning. "+msg); }
+      else { tone("notice"); say(msg); flashBtn(); }
+      fresh.forEach(x=>{ seen[x.id]={t:now, dno:x.dno, planned:x.planned, d:x.d, b:x.b, district:x.district}; });
+    }
+    if(gone.length){
+      const g=seen[gone[0]];
+      const where=pcWhere(g);
+      let msg;
+      if(gone.length===1) msg=(g.planned?"The planned power works "+where+" have finished."
+                                        :"The power cut "+where+" has been restored.");
+      else msg=gone.length+" power cuts near you have been restored.";
+      tone("notice"); say(msg); flashBtn();
+      gone.forEach(k=>{ delete seen[k]; });
+    }
+    // one that left the "near" list for another reason (radius change, mute, feed down) is
+    // kept silently; it is re-checked each poll and forgotten after 48 h
+    pcNearSeenSave(seen);
   }
 
   // ---- evaluation from the main grid snapshot ----
@@ -7067,30 +7776,73 @@ const Alarm = (function(){
     if(!baselined) baselined=true;   // first pass established the baseline
   }
 
-  // ---- evaluation from flood summary (called when flood counts refresh) ----
-  function _floodLocalClause(localFloods){
-    // Name the nearest in-force LOCAL flood (within the EA page radius) after the
-    // national count, so a listener hears whether anything is happening near them.
+  // ---- flood alarm: national + near-you, count-aware (severe/warning/alert) ----
+  // Announced counts include Severe Warnings (level 1), Warnings (2) AND Alerts (3),
+  // distinguished in speech. Unlike a plain on/off latch (which froze at the first
+  // number heard, so "one national flood warning" stuck even as more came in), the
+  // count is re-announced when it ESCALATES — the first flood of an episode, or a new
+  // severe/warning. National alert-only churn updates the count silently to avoid
+  // nagging. Near-you floods (within the EA-page radius) get their OWN second line.
+  let _floodNat=null, _floodLoc=null, _floodCrit=false;
+  function _floodPhrase(s1,s2,s3){
+    const p=[];
+    if(s1>0) p.push(s1+" severe flood warning"+(s1>1?"s":""));
+    if(s2>0) p.push(s2+" flood warning"+(s2>1?"s":""));
+    if(s3>0) p.push(s3+" flood alert"+(s3>1?"s":""));
+    return p.join(", ");
+  }
+  function evaluateFloods(counts, localFloods){
+    // Disarmed or category off: release any severe crit-latch we hold and reset.
+    if(!armed || !(CATS.flood && CATS.flood.on)){
+      if(_floodCrit){ _floodCrit=false; critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
+      _floodNat=null; _floodLoc=null; return;
+    }
+    if(!counts) return;
+    const s1=+(counts["1"]||0), s2=+(counts["2"]||0), s3=+(counts["3"]||0);
+
+    // Severe presence drives the repeating CRIT tone + critActiveCount (as set() did).
+    const wantCrit=s1>0;
+    if(wantCrit && !_floodCrit){ _floodCrit=true; if(baselined){ critActiveCount++; startCritRepeat(); } }
+    else if(!wantCrit && _floodCrit){ _floodCrit=false; critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
+
+    // National line — speak on the first flood of an episode, or on ESCALATION (a new
+    // severe or warning). Alert-only changes update the stored count without speaking.
+    const active=(s1+s2+s3)>0, p=_floodNat;
+    if(!active){
+      _floodNat=null;
+    } else if(!p || s1>p.s1 || s2>p.s2){
+      if(baselined){
+        tone(s1>0?"crit":(s2>0?"warn":"notice"));
+        say("Flooding. "+_floodPhrase(s1,s2,s3)+" active nationally.");
+        flashBtn();
+      }
+      _floodNat={s1,s2,s3};
+    } else {
+      _floodNat={s1,s2,s3};
+    }
+
+    // Near-you second line — floods within the EA-page radius, its own count; speak on
+    // first appearance or when the local count rises.
     const locals=(Array.isArray(localFloods)?localFloods:[])
       .filter(f=>f&&f.severity_level&&f.severity_level<=3)
       .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
-    if(!locals.length) return "";
-    const n=locals.length, nn=locals[0];
-    const place=nn.name||nn.river_or_sea||"your area";
-    const where=(nn.dist_km!=null)?", "+distPhrase(nn.dist_km)+" from you":"";
-    return (n===1)
-      ? " Including one locally at "+place+where+"."
-      : " Including "+n+" locally, the nearest at "+place+where+".";
-  }
-  function evaluateFloods(counts, localFloods){
-    if(!counts) return;
-    const sev1=+(counts["1"]||0);   // severe = danger to life
-    const sev2=+(counts["2"]||0);   // warning
-    const localClause=_floodLocalClause(localFloods);
-    set("flood","flood-severe", sev1>0, "crit",
-      "Critical. "+sev1+" national severe flood warning"+(sev1>1?"s":"")+" active."+localClause);
-    set("flood","flood-warning", sev2>0, "warn",
-      "Warning. "+sev2+" national flood warning"+(sev2>1?"s":"")+" active."+localClause);
+    let l1=0,l2=0,l3=0;
+    locals.forEach(f=>{ const L=f.severity_level; if(L===1)l1++; else if(L===2)l2++; else if(L===3)l3++; });
+    const ln=locals.length, pl=_floodLoc;
+    if(ln===0){
+      _floodLoc=null;
+    } else if(pl==null || ln>pl){
+      if(baselined){
+        const nn=locals[0], place=nn.name||nn.river_or_sea||"your area";
+        const where=(nn.dist_km!=null)?", "+distPhrase(nn.dist_km)+" from you":"";
+        tone(l1>0?"crit":(l2>0?"warn":"notice"));
+        say("Near you: "+_floodPhrase(l1,l2,l3)+". Nearest at "+place+where+".");
+        flashBtn();
+      }
+      _floodLoc=ln;
+    } else {
+      _floodLoc=ln;
+    }
   }
 
   // ---- aggregated EA situations (rivers, rainfall) ----
@@ -7372,6 +8124,8 @@ const Alarm = (function(){
       testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
         if(cat==="rain") say("Isolated heavy showers to the north-west, which may be with you soon. Test.");
         else if(cat==="nowcast") say("Weather nowcast: Rain is approaching from the south west and may arrive in twenty to thirty minutes. Test.");
+        else if(cat==="pcnear") say("Warning. Power cut near you: unplanned fault 2.3 kilometres north-east of you, about 450 customers off, estimated back on at 6:30 pm. Test.");
+        else if(cat==="powercuts") say("Warning. Unplanned power cuts have passed one hundred thousand customers off across the UK and Ireland and are still climbing, around three thousand new cuts in the last hour, fastest in northern Scotland and southern England. Gale-force gusts of sixty knots in North Scotland suggest a weather cause. Test.");
         else if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
       tog.onclick=()=>{ c.on=!c.on; tog.classList.toggle("on",c.on); persist();
         if(cat==="nowcast" && c.on) primeNowcast();   // adopt current state silently
@@ -7380,6 +8134,19 @@ const Alarm = (function(){
       };
       host.appendChild(row);
     });
+    // power cut near you: radius (5 / 10 / 20 km) + where "home" comes from
+    const nrow=document.createElement("div"); nrow.className="alarm-cat";
+    const _h=pcHome();
+    nrow.innerHTML='<div class="ac-main"><div class="ac-name">Power cut near you — radius</div>'+
+      '<div class="ac-desc">How far from your location counts as near. '+
+      (_h?('Location: <b>'+String(_h.label||(_h.lat.toFixed(3)+", "+_h.lon.toFixed(3))).replace(/</g,"&lt;")+'</b> (set on the EA page).')
+         :'No location set yet — open the <b>ea</b> page and set one.')+'</div></div>'+
+      '<button class="ac-cad">'+pcNearKm()+' km</button>';
+    const nbtn=nrow.querySelector(".ac-cad");
+    nbtn.onclick=()=>{ const i=PC_NEAR_OPTIONS.indexOf(pcNearKm()), v=PC_NEAR_OPTIONS[(i+1)%PC_NEAR_OPTIONS.length];
+      try{ localStorage.setItem("pcNearKm", String(v)); }catch(e){}
+      nbtn.textContent=v+" km"; };
+    host.appendChild(nrow);
     // forecast-alert cadence: Normal / Low (halves the repeat rate of ongoing situations)
     const crow=document.createElement("div"); crow.className="alarm-cat";
     crow.innerHTML='<div class="ac-main"><div class="ac-name">Forecast alert cadence</div>'+
@@ -7427,7 +8194,7 @@ const Alarm = (function(){
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, clearEA,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, evaluatePowerCuts, evaluatePowerCutsNear, rebaselinePowerCuts, clearEA,
            rainWatchWanted, riverWatchWanted, nowcastWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();

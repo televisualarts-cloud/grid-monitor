@@ -1,0 +1,1733 @@
+<!doctype html>
+<!-- UK & Ireland Power Cuts page — build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UK &amp; Ireland Power Cuts — monitor (prototype)</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121822; --panel2:#0e141d; --line:#223041; --ink:#c9d6e5;
+    --dim:#7c8ba0; --accent:#5ec8ff; --warn:#ffb454; --bad:#ff5d5d; --ok:#57d38c;
+    --plan:#6fb7ff;   /* planned cuts: light blue (distinct from the warm severity ramp) */
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  h1,h2{font-weight:600;margin:0}
+  a{color:var(--accent)}
+  .wrap{max-width:1280px;margin:0 auto;padding:16px}
+  .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .top h1{font-size:16px;letter-spacing:.5px}
+  .muted{color:var(--dim)}
+  .pill{display:inline-block;padding:1px 7px;border:1px solid var(--line);border-radius:10px;font-size:11px}
+  .grid{display:grid;gap:14px;grid-template-columns:1.4fr 1fr;margin-top:12px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .panel h2{font-size:12px;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin-bottom:8px}
+  .big{font-size:26px;font-weight:600}
+  #natoff{transition:font-size .25s ease, color .25s ease}
+  .natsplit{display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;font-size:12px}
+  .natsplit .nr{color:var(--dim)}
+  .natsplit .nr b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .natsplit .dot{width:8px;height:8px;margin-right:2px}
+  .kpis{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end}
+  .kpi small{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  canvas{display:block;width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+  .ops{width:100%;border-collapse:collapse;font-size:12px}
+  .ops th,.ops td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
+  .ops th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase}
+  .ops td.num{text-align:right;font-variant-numeric:tabular-nums}
+  /* near you: incidents within the radius of the location set on the dashboard's EA page */
+  .nearyou{font-size:12px;margin:2px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:7px}
+  .nearyou .nh{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+  .nearyou .nr{display:flex;gap:8px;padding:2px 0}
+  .nearyou .nr .d{min-width:92px;font-variant-numeric:tabular-nums}
+  .nearyou .nr.un .d{color:var(--warn)} .nearyou .nr.pl .d{color:#6fb7ff}
+  .bar{height:8px;border-radius:4px;background:var(--accent);min-width:2px}
+  .st{font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line)}
+  .st.ok{color:var(--ok);border-color:#1d4} .st.stale{color:var(--warn);border-color:#a72}
+  .st.no-key{color:var(--warn)} .st.no-feed{color:var(--dim)} .st.error{color:var(--bad);border-color:#a33}
+  .feedstrip{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0}
+  .btn{background:#1a2430;border:1px solid var(--line);color:var(--ink);border-radius:7px;
+       padding:5px 10px;cursor:pointer;font:inherit}
+  .btn:hover{border-color:var(--accent)}
+  /* selected/lit state for any .btn (region buttons, window selector) — solid accent
+     fill with dark ink, so a chosen region stays lit, not just highlighted on hover */
+  .btn.on{background:var(--accent);border-color:var(--accent);color:#08111c;font-weight:600}
+  /* per-provider mute (By-Operator panel): muted rows grey out; the button marks the state */
+  .oprow.muted td{opacity:.45}
+  .mutebtn{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;color:var(--dim);
+    background:transparent;border:1px solid var(--line);border-radius:5px;padding:2px 7px;cursor:pointer}
+  .mutebtn:hover{border-color:var(--accent);color:var(--ink)}
+  .mutebtn.on{color:var(--warn);border-color:var(--warn);opacity:1}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .win button{margin-right:4px}
+  .win button.on{background:var(--accent);border-color:var(--accent);color:#08111c;font-weight:600}
+  .stats{width:100%;border-collapse:collapse;font-size:13px}
+  .stats td{padding:6px 2px;border-top:1px solid var(--line);vertical-align:baseline}
+  .stats tr:first-child td{border-top:0}
+  .stats td.k{color:var(--dim);padding-right:10px}
+  .stats td.v{text-align:right;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .stats td.v b{font-size:15px}
+  .stats .sub{color:var(--dim);font-size:11px;font-variant-numeric:normal}
+  .legend{color:var(--dim);font-size:11px;margin-top:6px}
+  .legend b{color:var(--ink)}
+  /* map + top-right key overlay */
+  .mapwrap{position:relative}
+  /* default: key sits in normal flow beneath the map (narrow screens). JS adds
+     .floating to overlay it top-right only when the canvas is wide enough that the
+     box clears the landmass. */
+  .mapkey{background:rgba(8,12,17,.86);border:1px solid var(--line);border-radius:8px;
+          padding:8px 9px;font-size:10px;line-height:1.4;color:var(--ink);margin-top:8px}
+  .mapkey.floating{position:absolute;top:8px;right:8px;width:230px;margin-top:0;pointer-events:none}
+  .mk-ops div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mk-ops b{color:var(--accent);display:inline-block;width:38px}
+  .mk-scale{border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
+  .mk-t{color:var(--dim);margin-bottom:5px}
+  .mk-t span{font-size:9px}
+  .mk-dots{display:flex;align-items:flex-end;gap:4px}
+  .mk-dots span{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1}
+  .mk-dots i{display:inline-block;border-radius:50%}
+  .mk-dots em{font-style:normal;font-size:9px;color:var(--dim)}
+  .mk-plan{margin-top:6px;color:var(--dim)}
+  @media(max-width:520px){ .mapkey{position:static;width:auto;max-width:none;margin-top:8px} }
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;vertical-align:middle}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(4,7,11,.72);display:none;align-items:center;justify-content:center;z-index:9}
+  .modal.show{display:flex}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:520px;width:92%}
+  .card h2{font-size:13px;margin-bottom:10px}
+  .keyrow{display:grid;grid-template-columns:70px 1fr auto;gap:8px;align-items:center;margin:8px 0}
+  .keyrow input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+                border-radius:6px;padding:6px 8px;font:inherit;width:100%}
+  .note{color:var(--dim);font-size:11px}
+  .err{color:var(--bad)}
+  /* toggle switches (graph swap + map dot visibility) */
+  h2 .sw, h2 .mtogs{float:right;font-weight:400;text-transform:none;letter-spacing:0}
+  .mtogs{display:inline-flex;gap:12px}
+  .sw{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim);cursor:pointer}
+  .sw input{position:absolute;opacity:0;width:0;height:0}
+  .sw>span{width:26px;height:14px;border-radius:8px;background:#2a3644;position:relative;flex:0 0 auto;transition:background .15s}
+  .sw>span::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#8595a8;transition:transform .15s}
+  .sw input:checked + span{background:var(--accent)}
+  .sw input:checked + span::after{transform:translateX(12px);background:#06202e}
+  .sw .swd{width:8px;height:8px;border-radius:50%;display:inline-block}
+  /* wind vs power-cuts correlation */
+  .wc-switch{float:right;font-weight:400;text-transform:none;letter-spacing:0}
+  .wcpred{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.45}
+  .wcpred b{color:var(--ink);font-size:13px}
+  .wc-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 8px}
+  .modal.wide .card{max-width:1000px;width:94%;max-height:92vh;overflow:auto}
+  #wcRegions{display:inline-flex;gap:4px;flex-wrap:wrap}
+  #wcRegions button, .wc-seg button{font-size:11px;padding:3px 7px}
+  .wc-note{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.45}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>⚡ UK &amp; IRELAND POWER CUTS</h1>
+    <span class="muted" id="genline">loading…</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="cog">⚙ feeds / keys</button>
+  </div>
+  <div class="feedstrip" id="feedstrip"></div>
+
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <h2>National now</h2>
+        <div class="kpis">
+          <div class="kpi"><span class="big" id="natoff">–</span><small>customers off</small></div>
+          <div class="kpi"><span class="big" id="natinc">–</span><small>active incidents</small></div>
+          <div class="kpi"><span class="big" id="natpred">–</span><small>predicted off</small></div>
+          <div class="kpi"><span class="big" id="natpsr">–</span><small>PSR affected*</small></div>
+          <div class="kpi"><span class="big" id="natrep">–</span><small>operators reporting</small></div>
+        </div>
+        <div class="natsplit">
+          <div class="nr"><span class="dot" style="background:rgb(224,0,0)"></span> Unplanned <b id="natUnOff">–</b> off · <b id="natUnInc">–</b> incidents</div>
+          <div class="nr"><span class="dot" style="background:var(--plan)"></span> Planned <b id="natPlOff">–</b> off · <b id="natPlInc">–</b> incidents</div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2>Incident locations <span class="muted">— on DNO licence-area boundaries</span>
+          <span class="mtogs">
+            <label class="sw"><input type="checkbox" id="tgUnpl" checked><span></span><i class="swd" style="background:rgb(224,0,0)"></i>unplanned</label>
+            <label class="sw"><input type="checkbox" id="tgPl" checked><span></span><i class="swd" style="background:var(--plan)"></i>planned</label>
+          </span>
+        </h2>
+        <div class="mapwrap">
+          <canvas id="map" height="840"></canvas>
+          <div class="mapkey" id="mapkey">
+            <div class="mk-ops">
+              <div><b>NGED</b> National Grid Elec. Distribution</div>
+              <div><b>UKPN</b> UK Power Networks</div>
+              <div><b>NPg</b> Northern Powergrid</div>
+              <div><b>ENWL</b> Electricity North West</div>
+              <div><b>SPEN</b> SP Energy Networks</div>
+              <div><b>SSEN</b> Scottish &amp; Southern Elec. Networks</div>
+              <div><b>NIE</b> NIE Networks (N. Ireland)</div>
+              <div><b>ESB</b> ESB Networks (Rep. of Ireland)</div>
+            </div>
+            <div class="mk-scale">
+              <div class="mk-t">Unplanned cut — customers affected<br><span>(dot size &amp; colour)</span></div>
+              <div class="mk-dots">
+                <span><i style="width:1.75px;height:1.75px;background:rgb(255,230,0)"></i><em>10</em></span>
+                <span><i style="width:2.25px;height:2.25px;background:rgb(255,150,0)"></i><em>50</em></span>
+                <span><i style="width:2.75px;height:2.75px;background:rgb(255,77,0)"></i><em>100</em></span>
+                <span><i style="width:3.5px;height:3.5px;background:rgb(224,0,0)"></i><em>500</em></span>
+                <span><i style="width:4.25px;height:4.25px;background:rgb(138,14,134)"></i><em>750</em></span>
+                <span><i style="width:5px;height:5px;background:rgb(255,62,165)"></i><em>1000</em></span>
+                <span><i style="width:6px;height:6px;background:rgb(255,62,165)"></i><em>2000</em></span>
+                <span><i style="width:7.5px;height:7.5px;background:rgb(255,62,165)"></i><em>5000+</em></span>
+              </div>
+              <div class="mk-plan"><span class="dot" style="background:var(--plan)"></span> planned cut</div>
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          Positions are postcode centroids, not premises.<br>
+          <b>SPEN</b> publishes no customer count — its dots are scaled by number of postcode sectors.<br>
+          <b>NIE</b> (N. Ireland) publishes no coordinates — its dots use BT postcode-district centroids.<br>
+          <b>Pulsing</b> = new cuts in the last 15 minutes<br>
+          <b>Click a region</b> to open the operator’s cuts list or map<br>
+          <b>PSR</b> = Priority Services Register (vulnerable customers); reported by NGED only so far, so the national PSR figure is partial.
+        </div>
+        <div class="legend" id="repnote"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Statistics <span class="muted">— peaks &amp; severity</span>
+          <label class="sw wc-switch" title="Switch to the wind vs power-cuts correlation"><input type="checkbox" id="tgWind"><span></span>wind</label>
+        </h2>
+        <div id="statsMain">
+          <table class="stats"><tbody id="statsbody">
+            <tr><td class="muted">loading…</td></tr>
+          </tbody></table>
+          <div class="legend" id="statsnote"></div>
+        </div>
+        <div id="wcMiniWrap" style="display:none">
+          <div class="wc-tools">
+            <span class="muted" style="flex:1">Wind → new cuts · <span id="wcMiniRegion">UK &amp; Ireland</span></span>
+            <button class="btn" id="wcEnlarge" title="Enlarge to full panel">⤢ enlarge</button>
+          </div>
+          <canvas id="wcMini" height="150"></canvas>
+          <div class="wcpred" id="wcMiniPred">loading…</div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2 id="opsTitle">By operator <span class="muted">(worst first)</span><label class="sw" title="Switch between operators and the countries of the UK &amp; Ireland"><input type="checkbox" id="tgCountry"><span></span>countries</label></h2>
+        <div class="nearyou" id="nearyou" style="display:none"></div>
+        <table class="ops"><thead><tr id="opshead">
+          <th>DNO</th><th class="num">off</th><th class="num">inc</th><th>severity</th><th>feed</th>
+        </tr></thead><tbody id="opsbody"></tbody></table>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2>Customers off / active incidents
+          <label class="sw" title="1-hour rolling rate + stepped counts vs raw per-sample"><input type="checkbox" id="tgSmooth" checked><span></span>smoothed</label>
+        </h2>
+        <div class="win" id="winsel" style="margin:2px 0 8px"></div>
+        <canvas id="totals" height="150"></canvas>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <h2>Rate — cuts/hr · restorations/hr · net</h2>
+        <canvas id="rate" height="150"></canvas>
+        <div class="legend">
+          <span class="dot" style="background:var(--bad)"></span> new cuts/hr &nbsp;
+          <span class="dot" style="background:var(--ok)"></span> restorations/hr &nbsp;
+          <span class="dot" style="background:var(--accent)"></span> net (worse ↑ / recovering ↓)
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note" id="footnote"></p>
+</div>
+
+<!-- settings / keys -->
+<!-- wind vs power cuts (enlarged) -->
+<div class="modal wide" id="wcModal">
+  <div class="card">
+    <h2>Wind vs power cuts <span class="muted">— learned response</span></h2>
+    <div class="wc-tools"><span class="muted">Region:</span> <span id="wcRegions"></span></div>
+    <div class="wc-tools"><span class="muted">Response:</span>
+      <span class="win wc-seg" id="wcMetric">
+        <button class="btn on" data-m="faults">new faults/hr</button>
+        <button class="btn" data-m="off">customers off/hr</button>
+      </span>
+    </div>
+    <canvas id="wcBig" height="360"></canvas>
+    <div class="wcpred" id="wcBigPred"></div>
+    <div class="wc-note" id="wcMaturity"></div>
+    <div class="wc-note">Unplanned cuts only. Faults include every operator (SPEN too); customers-off
+      excludes SPEN, which publishes no customer counts. Cuts are binned by the trailing-max gust
+      (~1&nbsp;h) of the region's METAR stations, so a flat low-wind end is the calm baseline, not a signal.</div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn" id="wcClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal">
+  <div class="card">
+    <h2>Feeds &amp; API keys</h2>
+    <p class="note">NGED, UK Power Networks and Northern Powergrid are open — no key needed.
+       Electricity North West, SP Energy Networks and NIE Networks (Northern Ireland) need a free
+       OpenDataSoft key. ESB Networks (Republic of Ireland) works on a shared key by default — leave
+       it blank unless you want to override it. Keys are stored by the local server only and never shown here again.</p>
+    <div id="keyrows"></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <span class="note" id="savemsg"></span>
+      <button class="btn" id="cancel">Close</button>
+      <button class="btn" id="save">Save keys</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ---- config -----------------------------------------------------------------
+var API = "/api/powercuts";
+var KEY_LINKS = {
+  ENWL: "https://electricitynorthwest.opendatasoft.com/",
+  SPEN: "https://spenergynetworks.opendatasoft.com/",
+  NIE:  "https://nienetworks.opendatasoft.com/",
+  ESB:  "https://powercheck.esbnetworks.ie/"
+};
+var GATED = ["ENWL","SPEN","NIE","ESB"];            // operators shown in the key settings
+var UK = {lonW:-10.8, lonE:2.1, latS:49.7, latN:59.2};   // map bounds (UK + Republic of Ireland)
+// Coastline for orientation only — UK outline from Natural Earth 1:50m (public domain,
+// nvkelso/natural-earth-vector), Great Britain + Northern Ireland, Shetland dropped. Incident positions come from
+// their own lat/lon, not this outline.
+// DNO licence-area boundaries: NESO 'GIS Boundaries for GB DNO Licence Areas'
+// (gb-dno-license-areas-20240503), reprojected EPSG:27700->WGS84 and simplified to
+// ~1km. NESO Open Data Licence. Approximate (boundaries run through rural areas and
+// shift with new connections) but a good indication of licence-area geography.
+// Each area: {dno, dno_full, area, c:[lon,lat] label-anchor, rings:[[[lon,lat],...]]}.
+var DNO_AREAS = [{"dno":"UKPN","dno_full":"UK Power Networks","area":"East England","c":[0.586,52.24],"rings":[[[0.267,52.812],[0.354,52.81],[0.436,52.851],[0.482,52.948]
+,[0.539,52.981],[0.674,52.994],[0.982,52.985],[1.302,52.938],[1.439,52.886],[1.694,52.737],[1.753,52.631],[1.743,52.563],[1.768,52.481],[1.741,52.448]
+,[1.731,52.389],[1.682,52.313],[1.641,52.279],[1.629,52.185],[1.588,52.085],[1.48,52.048],[1.323,51.928],[1.3,51.952],[1.29,51.955],[1.28,51.953],[1.303,51.934]
+,[1.265,51.908],[1.297,51.865],[1.284,51.84],[1.219,51.804],[1.117,51.768],[1.043,51.764],[0.993,51.783],[0.881,51.751],[0.955,51.738],[0.942,51.645],[0.974,51.621]
+,[0.789,51.517],[0.728,51.525],[0.72,51.509],[0.706,51.527],[0.667,51.532],[0.616,51.51],[0.458,51.499],[0.439,51.459],[0.389,51.448],[0.4,51.447],[0.348,51.448]
+,[0.312,51.47],[0.27,51.458],[0.133,51.518],[0.134,51.583],[0.114,51.605],[0.129,51.621],[0.068,51.677],[0.018,51.623],[-0.032,51.607],[-0.06,51.576],[-0.177,51.571]
+,[-0.206,51.555],[-0.244,51.573],[-0.303,51.532],[-0.348,51.56],[-0.408,51.542],[-0.437,51.548],[-0.452,51.611],[-0.496,51.632],[-0.497,51.601],[-0.521,51.602]
+,[-0.539,51.638],[-0.522,51.655],[-0.531,51.66],[-0.564,51.669],[-0.622,51.629],[-0.766,51.696],[-0.804,51.657],[-0.833,51.657],[-0.877,51.681],[-0.91,51.676]
+,[-0.951,51.733],[-0.982,51.713],[-1.027,51.721],[-1.031,51.743],[-1.122,51.787],[-1.125,51.808],[-1.11,51.817],[-1.141,51.835],[-1.122,51.845],[-1.073,51.834]
+,[-1.06,51.843],[-1.069,51.875],[-1.029,51.891],[-0.976,51.902],[-0.89,51.88],[-0.867,51.893],[-0.801,51.891],[-0.733,51.923],[-0.755,51.94],[-0.73,51.948]
+,[-0.748,51.968],[-0.72,51.976],[-0.707,51.952],[-0.656,51.961],[-0.646,51.972],[-0.669,51.997],[-0.64,52.024],[-0.652,52.063],[-0.583,52.105],[-0.607,52.134]
+,[-0.642,52.145],[-0.63,52.179],[-0.617,52.196],[-0.54,52.22],[-0.52,52.219],[-0.514,52.202],[-0.487,52.206],[-0.449,52.26],[-0.478,52.276],[-0.46,52.286]
+,[-0.52,52.317],[-0.467,52.322],[-0.467,52.339],[-0.5,52.367],[-0.432,52.386],[-0.417,52.412],[-0.362,52.433],[-0.37,52.44],[-0.341,52.467],[-0.359,52.49]
+,[-0.35,52.508],[-0.413,52.525],[-0.402,52.548],[-0.42,52.559],[-0.407,52.564],[-0.413,52.581],[-0.376,52.566],[-0.355,52.588],[-0.359,52.648],[-0.308,52.638]
+,[-0.278,52.651],[-0.284,52.63],[-0.248,52.615],[-0.19,52.615],[-0.191,52.627],[-0.166,52.627],[-0.113,52.668],[-0.064,52.675],[-0.032,52.665],[-0.024,52.63]
+,[-0.009,52.634],[-0.015,52.658],[0.051,52.683],[0.048,52.719],[0.228,52.753],[0.272,52.773],[0.245,52.784],[0.267,52.812]]],"a":"UKPN","b":"#12324e","s":[1.95,52.75]
+,"p":true},{"dno":"NGED","dno_full":"National Grid Electricity Distribution","area":"East Midlands","c":[-0.821,52.693],"rings":[[[0.267,52.812],[0.245,52.784]
+,[0.272,52.773],[0.228,52.753],[0.048,52.719],[0.051,52.683],[-0.015,52.658],[-0.009,52.634],[-0.024,52.63],[-0.032,52.665],[-0.064,52.675],[-0.113,52.668]
+,[-0.166,52.627],[-0.191,52.627],[-0.19,52.615],[-0.248,52.615],[-0.284,52.63],[-0.278,52.651],[-0.308,52.638],[-0.359,52.648],[-0.355,52.588],[-0.376,52.566]
+,[-0.413,52.581],[-0.407,52.564],[-0.42,52.559],[-0.402,52.548],[-0.413,52.525],[-0.35,52.508],[-0.359,52.49],[-0.341,52.467],[-0.37,52.44],[-0.362,52.433]
+,[-0.417,52.412],[-0.432,52.386],[-0.5,52.367],[-0.467,52.339],[-0.467,52.322],[-0.52,52.317],[-0.46,52.286],[-0.478,52.276],[-0.449,52.26],[-0.487,52.206]
+,[-0.514,52.202],[-0.52,52.219],[-0.54,52.22],[-0.617,52.196],[-0.63,52.179],[-0.642,52.145],[-0.607,52.134],[-0.583,52.105],[-0.652,52.063],[-0.64,52.024]
+,[-0.669,51.997],[-0.646,51.972],[-0.656,51.961],[-0.707,51.952],[-0.72,51.976],[-0.748,51.968],[-0.73,51.948],[-0.755,51.94],[-0.733,51.923],[-0.801,51.891]
+,[-0.867,51.893],[-0.89,51.88],[-0.976,51.902],[-1.057,51.876],[-1.094,51.894],[-1.087,51.923],[-1.055,51.948],[-1.095,51.957],[-1.06,52.008],[-1.115,52.016]
+,[-1.196,51.978],[-1.231,51.995],[-1.283,51.98],[-1.278,52.015],[-1.313,52.051],[-1.298,52.078],[-1.321,52.087],[-1.252,52.101],[-1.331,52.168],[-1.44,52.142]
+,[-1.476,52.15],[-1.494,52.129],[-1.521,52.155],[-1.603,52.159],[-1.6,52.179],[-1.637,52.182],[-1.66,52.214],[-1.691,52.211],[-1.833,52.272],[-1.806,52.288]
+,[-1.839,52.301],[-1.844,52.319],[-1.745,52.314],[-1.722,52.338],[-1.683,52.332],[-1.694,52.351],[-1.684,52.363],[-1.632,52.366],[-1.656,52.409],[-1.675,52.415]
+,[-1.604,52.522],[-1.63,52.546],[-1.696,52.537],[-1.689,52.556],[-1.765,52.562],[-1.798,52.598],[-1.78,52.64],[-1.697,52.67],[-1.691,52.703],[-1.73,52.71]
+,[-1.718,52.733],[-1.779,52.757],[-1.769,52.767],[-1.779,52.795],[-1.823,52.794],[-1.834,52.805],[-1.823,52.83],[-1.849,52.853],[-1.952,52.886],[-1.901,52.932]
+,[-1.865,52.939],[-1.88,52.967],[-1.868,52.985],[-1.796,53.002],[-1.795,53.021],[-1.759,53.037],[-1.811,53.052],[-1.785,53.06],[-1.794,53.089],[-1.782,53.094]
+,[-1.822,53.137],[-1.821,53.168],[-1.962,53.226],[-1.99,53.223],[-1.894,53.252],[-1.79,53.256],[-1.825,53.299],[-1.769,53.299],[-1.769,53.312],[-1.81,53.312]
+,[-1.761,53.338],[-1.686,53.336],[-1.663,53.384],[-1.664,53.367],[-1.591,53.346],[-1.612,53.343],[-1.628,53.316],[-1.611,53.322],[-1.593,53.304],[-1.524,53.31]
+,[-1.504,53.285],[-1.454,53.284],[-1.467,53.293],[-1.414,53.319],[-1.423,53.337],[-1.411,53.342],[-1.299,53.333],[-1.291,53.309],[-1.254,53.302],[-1.201,53.304]
+,[-1.137,53.34],[-1.084,53.326],[-1.033,53.349],[-1.05,53.363],[-1.031,53.402],[-1.04,53.41],[-0.996,53.437],[-0.983,53.468],[-1.019,53.484],[-0.977,53.497]
+,[-0.928,53.496],[-0.916,53.46],[-0.804,53.457],[-0.818,53.427],[-0.788,53.415],[-0.776,53.391],[-0.79,53.386],[-0.775,53.378],[-0.791,53.363],[-0.759,53.354]
+,[-0.766,53.33],[-0.75,53.324],[-0.75,53.294],[-0.778,53.284],[-0.764,53.273],[-0.771,53.246],[-0.735,53.244],[-0.735,53.265],[-0.681,53.263],[-0.697,53.299]
+,[-0.644,53.298],[-0.632,53.331],[-0.469,53.348],[-0.36,53.341],[-0.345,53.323],[-0.245,53.34],[-0.214,53.323],[-0.211,53.298],[-0.147,53.294],[-0.088,53.315]
+,[-0.038,53.268],[0.028,53.28],[0.126,53.251],[0.154,53.284],[0.131,53.295],[0.251,53.374],[0.329,53.271],[0.364,53.194],[0.347,53.096],[0.161,53.007]
+,[0.051,52.909],[0.177,52.879],[0.222,52.824],[0.267,52.812]]],"a":"NGED","b":"#163d58","s":[0.55,53.15],"p":true},{"dno":"UKPN","dno_full":"UK Power Networks","area":"London","c":[-0.057,51.526]
+,"rings":[[[-0.244,51.488],[-0.247,51.533],[-0.291,51.533],[-0.258,51.567],[-0.236,51.573],[-0.206,51.555],[-0.177,51.571],[-0.06,51.576],[-0.032,51.607]
+,[0.018,51.623],[0.068,51.677],[0.129,51.621],[0.114,51.605],[0.134,51.583],[0.133,51.518],[0.245,51.473],[0.237,51.448],[0.255,51.438],[0.187,51.433]
+,[0.16,51.408],[0.154,51.435],[0.123,51.432],[0.12,51.414],[0.082,51.413],[0.047,51.368],[0.031,51.367],[0.017,51.395],[-0.027,51.382],[-0.095,51.423]
+,[-0.12,51.419],[-0.141,51.388],[-0.258,51.379],[-0.29,51.401],[-0.278,51.419],[-0.289,51.426],[-0.253,51.444],[-0.291,51.447],[-0.281,51.478],[-0.257,51.472]
+,[-0.244,51.488]]],"a":"UKPN","b":"#163d58","s":[1.05,51.55],"p":true},{"dno":"SPEN","dno_full":"SP Energy Networks","area":"North Wales, Merseyside and Cheshire","c":[-3.455,52.978]
+,"rings":[[[-2.967,53.702],[-2.94,53.658],[-2.98,53.622],[-2.997,53.627],[-3.031,53.586],[-2.979,53.581],[-2.942,53.558],[-2.932,53.577],[-2.897,53.575]
+,[-2.874,53.544],[-2.889,53.524],[-2.821,53.494],[-2.782,53.531],[-2.769,53.513],[-2.72,53.511],[-2.729,53.494],[-2.698,53.46],[-2.627,53.435],[-2.539,53.452]
+,[-2.543,53.419],[-2.502,53.416],[-2.489,53.393],[-2.448,53.413],[-2.388,53.371],[-2.326,53.361],[-2.31,53.366],[-2.312,53.384],[-2.292,53.386],[-2.266,53.318]
+,[-2.31,53.3],[-2.271,53.281],[-2.297,53.275],[-2.305,53.229],[-2.22,53.196],[-2.217,53.169],[-2.251,53.166],[-2.187,53.136],[-2.248,53.09],[-2.318,53.081]
+,[-2.348,53.056],[-2.398,53.047],[-2.37,53.015],[-2.381,52.998],[-2.438,52.985],[-2.435,52.969],[-2.481,52.959],[-2.523,52.97],[-2.529,52.947],[-2.574,52.962]
+,[-2.568,52.884],[-2.638,52.874],[-2.619,52.826],[-2.571,52.83],[-2.549,52.809],[-2.604,52.805],[-2.592,52.777],[-2.723,52.764],[-2.774,52.795],[-2.816,52.787]
+,[-2.802,52.776],[-2.812,52.763],[-2.853,52.769],[-2.896,52.746],[-2.977,52.744],[-2.991,52.768],[-3.005,52.764],[-3.022,52.752],[-2.965,52.732],[-2.961,52.716]
+,[-3.02,52.725],[-3.02,52.707],[-3.047,52.691],[-3.051,52.647],[-3.083,52.641],[-3.06,52.631],[-3.09,52.6],[-3.139,52.586],[-3.111,52.541],[-3.158,52.512]
+,[-3.145,52.489],[-3.231,52.453],[-3.262,52.463],[-3.346,52.436],[-3.403,52.438],[-3.437,52.403],[-3.477,52.391],[-3.514,52.412],[-3.594,52.372],[-3.586,52.358]
+,[-3.724,52.366],[-3.917,52.328],[-3.946,52.298],[-3.987,52.326],[-4.019,52.32],[-4.033,52.29],[-4.076,52.263],[-4.175,52.3],[-4.132,52.345],[-4.059,52.488]
+,[-4.063,52.537],[-4.137,52.61],[-4.103,52.669],[-4.066,52.691],[-4.064,52.713],[-4.159,52.808],[-4.127,52.849],[-4.152,52.902],[-4.221,52.913],[-4.314,52.905]
+,[-4.327,52.888],[-4.388,52.891],[-4.456,52.867],[-4.492,52.834],[-4.495,52.816],[-4.454,52.806],[-4.469,52.793],[-4.535,52.774],[-4.552,52.802],[-4.606,52.82]
+,[-4.695,52.78],[-4.757,52.782],[-4.782,52.752],[-4.811,52.745],[-4.733,52.858],[-4.573,52.952],[-4.52,52.948],[-4.349,53.056],[-4.346,53.085],[-4.376,53.134]
+,[-4.42,53.131],[-4.468,53.178],[-4.512,53.185],[-4.513,53.214],[-4.534,53.233],[-4.605,53.235],[-4.635,53.275],[-4.693,53.284],[-4.709,53.308],[-4.686,53.327]
+,[-4.58,53.342],[-4.566,53.374],[-4.619,53.418],[-4.61,53.43],[-4.499,53.42],[-4.434,53.44],[-4.286,53.421],[-4.257,53.368],[-4.22,53.361],[-4.203,53.303]
+,[-4.12,53.325],[-4.015,53.325],[-4.093,53.258],[-4.079,53.236],[-3.851,53.303],[-3.853,53.319],[-3.886,53.336],[-3.874,53.347],[-3.813,53.329],[-3.772,53.334]
+,[-3.714,53.303],[-3.615,53.298],[-3.319,53.363],[-3.105,53.25],[-3.12,53.269],[-3.098,53.283],[-3.128,53.323],[-3.235,53.387],[-3.03,53.453],[-3.112,53.561]
+,[-3.02,53.664],[-3.021,53.68],[-2.967,53.702]]],"a":"SPEN","b":"#163d58","s":[-5.25,53.5],"lab":[-5.25,53.5],"p":true},{"dno":"NGED","dno_full":"National Grid Electricity Distribution","area":"West Midlands","c":[-2.476,52.317]
+,"rings":[[[-1.987,53.214],[-1.821,53.168],[-1.822,53.137],[-1.782,53.094],[-1.794,53.089],[-1.785,53.06],[-1.811,53.052],[-1.759,53.037],[-1.795,53.021]
+,[-1.796,53.002],[-1.868,52.985],[-1.88,52.967],[-1.865,52.939],[-1.901,52.932],[-1.952,52.886],[-1.849,52.853],[-1.823,52.83],[-1.834,52.805],[-1.823,52.794]
+,[-1.779,52.795],[-1.769,52.767],[-1.779,52.757],[-1.718,52.733],[-1.73,52.71],[-1.691,52.703],[-1.697,52.67],[-1.783,52.638],[-1.798,52.602],[-1.787,52.584]
+,[-1.765,52.562],[-1.689,52.556],[-1.696,52.537],[-1.63,52.546],[-1.604,52.522],[-1.675,52.415],[-1.656,52.409],[-1.632,52.366],[-1.684,52.363],[-1.694,52.351]
+,[-1.683,52.332],[-1.722,52.338],[-1.745,52.314],[-1.844,52.319],[-1.839,52.301],[-1.806,52.288],[-1.833,52.272],[-1.691,52.211],[-1.66,52.214],[-1.637,52.182]
+,[-1.6,52.179],[-1.603,52.159],[-1.521,52.155],[-1.494,52.129],[-1.476,52.15],[-1.44,52.142],[-1.331,52.168],[-1.252,52.102],[-1.321,52.087],[-1.298,52.078]
+,[-1.313,52.051],[-1.277,52.005],[-1.41,51.973],[-1.438,51.988],[-1.495,51.976],[-1.523,51.997],[-1.61,51.957],[-1.623,51.947],[-1.615,51.938],[-1.646,51.922]
+,[-1.73,51.91],[-1.768,51.887],[-1.811,51.895],[-1.851,51.864],[-1.882,51.894],[-1.927,51.896],[-1.925,51.921],[-1.994,51.915],[-2.019,51.879],[-2.002,51.865]
+,[-2.033,51.855],[-2.027,51.795],[-1.998,51.766],[-2.056,51.734],[-2.053,51.716],[-2.0,51.712],[-1.988,51.669],[-2.057,51.672],[-2.081,51.654],[-2.173,51.666]
+,[-2.187,51.636],[-2.252,51.635],[-2.222,51.622],[-2.245,51.581],[-2.276,51.573],[-2.26,51.57],[-2.266,51.536],[-2.252,51.527],[-2.304,51.504],[-2.285,51.458]
+,[-2.295,51.429],[-2.353,51.439],[-2.492,51.418],[-2.527,51.444],[-2.479,51.46],[-2.488,51.476],[-2.415,51.482],[-2.429,51.503],[-2.498,51.501],[-2.488,51.53]
+,[-2.524,51.534],[-2.514,51.561],[-2.56,51.592],[-2.614,51.583],[-2.659,51.597],[-2.617,51.656],[-2.587,51.661],[-2.632,51.704],[-2.669,51.702],[-2.688,51.73]
+,[-2.663,51.754],[-2.681,51.769],[-2.678,51.803],[-2.65,51.826],[-2.757,51.846],[-2.779,51.867],[-2.769,51.881],[-2.842,51.918],[-2.862,51.914],[-2.845,51.922]
+,[-2.878,51.934],[-2.968,51.904],[-2.977,51.928],[-3.008,51.927],[-3.099,52.023],[-3.066,52.05],[-3.066,52.066],[-3.113,52.081],[-3.123,52.103],[-3.105,52.117]
+,[-3.136,52.138],[-3.083,52.151],[-3.102,52.203],[-3.072,52.213],[-3.072,52.229],[-3.027,52.261],[-3.077,52.299],[-3.111,52.305],[-3.104,52.345],[-3.254,52.382]
+,[-3.335,52.441],[-3.267,52.463],[-3.231,52.453],[-3.145,52.489],[-3.158,52.512],[-3.111,52.541],[-3.139,52.586],[-3.09,52.6],[-3.06,52.631],[-3.083,52.641]
+,[-3.051,52.647],[-3.047,52.691],[-3.02,52.707],[-3.02,52.725],[-2.961,52.716],[-2.965,52.732],[-3.022,52.752],[-3.005,52.764],[-2.991,52.768],[-2.977,52.744]
+,[-2.896,52.746],[-2.853,52.769],[-2.812,52.763],[-2.802,52.776],[-2.816,52.787],[-2.774,52.795],[-2.723,52.764],[-2.592,52.777],[-2.604,52.805],[-2.549,52.809]
+,[-2.571,52.83],[-2.619,52.826],[-2.638,52.874],[-2.568,52.884],[-2.574,52.962],[-2.529,52.947],[-2.523,52.97],[-2.481,52.959],[-2.381,52.998],[-2.37,53.015]
+,[-2.398,53.047],[-2.348,53.056],[-2.318,53.081],[-2.248,53.09],[-2.187,53.136],[-2.247,53.16],[-2.245,53.173],[-2.17,53.19],[-2.078,53.17],[-2.048,53.191]
+,[-1.997,53.189],[-1.987,53.214]]],"a":"NGED","b":"#12324e","s":[-4.3,52.85],"p":true},{"dno":"NPg","dno_full":"Northern Powergrid","area":"North East England","c":[-1.796,54.75]
+,"rings":[[[-1.772,55.659],[-1.762,55.616],[-1.696,55.616],[-1.599,55.645],[-1.658,55.594],[-1.612,55.554],[-1.628,55.539],[-1.586,55.492],[-1.582,55.441]
+,[-1.568,55.434],[-1.571,55.408],[-1.6,55.384],[-1.592,55.36],[-1.53,55.336],[-1.562,55.279],[-1.494,55.197],[-1.515,55.159],[-1.479,55.12],[-1.482,55.099]
+,[-1.394,55.015],[-1.401,55.001],[-1.35,54.967],[-1.352,54.891],[-1.314,54.84],[-1.296,54.773],[-1.236,54.726],[-1.17,54.7],[-1.166,54.69],[-1.19,54.68]
+,[-1.152,54.65],[-1.157,54.64],[-1.135,54.652],[-1.105,54.629],[-0.989,54.595],[-0.771,54.562],[-0.739,54.533],[-0.709,54.538],[-0.66,54.504],[-0.565,54.484]
+,[-0.515,54.449],[-0.518,54.421],[-0.451,54.384],[-0.401,54.298],[-0.376,54.29],[-0.383,54.272],[-0.26,54.216],[-0.285,54.204],[-0.319,54.217],[-0.449,54.215]
+,[-0.558,54.195],[-0.555,54.163],[-0.595,54.128],[-0.583,54.095],[-0.603,54.095],[-0.613,54.071],[-0.66,54.063],[-0.645,54.055],[-0.659,54.037],[-0.777,54.054]
+,[-0.8,54.024],[-0.824,54.021],[-0.877,54.041],[-0.892,54.002],[-0.871,53.999],[-0.874,53.988],[-0.927,53.984],[-0.933,53.971],[-0.921,53.961],[-0.933,53.923]
+,[-0.922,53.923],[-0.946,53.896],[-0.925,53.882],[-0.993,53.877],[-0.996,53.862],[-1.042,53.839],[-1.063,53.853],[-1.119,53.853],[-1.127,53.864],[-1.105,53.876]
+,[-1.196,53.922],[-1.222,53.981],[-1.242,53.978],[-1.252,53.994],[-1.354,53.967],[-1.408,53.985],[-1.548,53.953],[-1.653,53.97],[-1.67,53.987],[-1.657,53.992]
+,[-1.69,54.006],[-1.82,53.996],[-1.873,54.036],[-1.841,54.071],[-1.868,54.097],[-2.046,54.182],[-2.061,54.21],[-2.1,54.232],[-2.172,54.228],[-2.198,54.247]
+,[-2.314,54.254],[-2.328,54.28],[-2.318,54.33],[-2.353,54.355],[-2.289,54.385],[-2.303,54.422],[-2.282,54.449],[-2.202,54.452],[-2.157,54.472],[-2.157,54.511]
+,[-2.293,54.603],[-2.319,54.635],[-2.297,54.66],[-2.353,54.687],[-2.307,54.798],[-2.402,54.856],[-2.497,54.81],[-2.534,54.806],[-2.568,54.824],[-2.604,54.874]
+,[-2.546,54.928],[-2.569,54.967],[-2.597,54.981],[-2.561,54.992],[-2.567,55.019],[-2.482,55.04],[-2.502,55.063],[-2.486,55.083],[-2.553,55.082],[-2.592,55.104]
+,[-2.599,55.125],[-2.651,55.133],[-2.691,55.189],[-2.666,55.221],[-2.631,55.224],[-2.631,55.244],[-2.611,55.247],[-2.642,55.261],[-2.559,55.318],[-2.52,55.323]
+,[-2.479,55.356],[-2.382,55.351],[-2.337,55.367],[-2.346,55.373],[-2.33,55.381],[-2.345,55.399],[-2.332,55.41],[-2.194,55.444],[-2.189,55.462],[-2.165,55.47]
+,[-2.206,55.483],[-2.235,55.516],[-2.243,55.556],[-2.195,55.607],[-2.14,55.581],[-2.069,55.593],[-2.037,55.631],[-1.987,55.616],[-1.9,55.628],[-1.798,55.663]
+,[-1.772,55.659]]],"a":"NPg","b":"#12324e","s":[-0.95,55.15],"p":true},{"dno":"ENWL","dno_full":"Electricity North West","area":"North West England","c":[-2.558,54.174]
+,"rings":[[[-2.662,55.146],[-2.599,55.125],[-2.592,55.104],[-2.553,55.082],[-2.503,55.091],[-2.485,55.083],[-2.502,55.063],[-2.482,55.04],[-2.567,55.019]
+,[-2.561,54.992],[-2.597,54.981],[-2.569,54.967],[-2.546,54.928],[-2.604,54.874],[-2.568,54.824],[-2.534,54.806],[-2.497,54.81],[-2.402,54.856],[-2.307,54.798]
+,[-2.353,54.687],[-2.297,54.66],[-2.319,54.635],[-2.293,54.603],[-2.157,54.511],[-2.157,54.472],[-2.202,54.452],[-2.282,54.449],[-2.303,54.422],[-2.289,54.385]
+,[-2.353,54.355],[-2.318,54.33],[-2.328,54.28],[-2.314,54.254],[-2.255,54.242],[-2.289,54.205],[-2.193,54.134],[-2.12,54.109],[-2.103,54.086],[-2.156,54.036]
+,[-2.143,54.008],[-2.194,54.007],[-2.184,53.952],[-2.24,53.935],[-2.22,53.894],[-2.234,53.881],[-2.097,53.891],[-2.044,53.851],[-2.046,53.829],[-2.124,53.799]
+,[-2.131,53.754],[-2.169,53.727],[-2.171,53.701],[-2.119,53.673],[-2.051,53.684],[-2.025,53.62],[-1.942,53.562],[-1.779,53.497],[-1.813,53.469],[-1.859,53.459]
+,[-1.85,53.447],[-1.864,53.427],[-1.906,53.411],[-1.858,53.388],[-1.879,53.374],[-1.848,53.344],[-1.818,53.347],[-1.81,53.312],[-1.769,53.312],[-1.769,53.299]
+,[-1.825,53.299],[-1.79,53.256],[-1.978,53.232],[-1.997,53.189],[-2.048,53.191],[-2.07,53.172],[-2.114,53.169],[-2.17,53.19],[-2.209,53.177],[-2.225,53.2]
+,[-2.305,53.229],[-2.297,53.275],[-2.271,53.281],[-2.31,53.3],[-2.266,53.318],[-2.292,53.386],[-2.312,53.384],[-2.31,53.366],[-2.326,53.361],[-2.388,53.371]
+,[-2.448,53.413],[-2.489,53.393],[-2.502,53.416],[-2.543,53.419],[-2.539,53.452],[-2.627,53.435],[-2.698,53.46],[-2.729,53.494],[-2.72,53.511],[-2.769,53.513]
+,[-2.782,53.531],[-2.821,53.494],[-2.889,53.524],[-2.874,53.544],[-2.897,53.575],[-2.932,53.577],[-2.942,53.558],[-2.979,53.581],[-3.031,53.586],[-2.997,53.627]
+,[-2.98,53.622],[-2.94,53.658],[-2.962,53.702],[-2.933,53.729],[-3.023,53.737],[-3.062,53.762],[-3.057,53.921],[-2.928,53.955],[-2.889,53.948],[-2.879,53.986]
+,[-2.904,53.993],[-2.931,54.034],[-2.884,54.078],[-2.826,54.092],[-2.814,54.119],[-2.868,54.159],[-2.871,54.195],[-2.903,54.186],[-2.925,54.148],[-2.969,54.141]
+,[-3.003,54.151],[-3.041,54.195],[-3.098,54.117],[-3.156,54.081],[-3.145,54.061],[-3.18,54.07],[-3.195,54.097],[-3.23,54.091],[-3.268,54.168],[-3.224,54.179]
+,[-3.209,54.238],[-3.245,54.215],[-3.231,54.203],[-3.249,54.188],[-3.33,54.189],[-3.426,54.281],[-3.432,54.338],[-3.646,54.51],[-3.592,54.568],[-3.582,54.651]
+,[-3.515,54.72],[-3.445,54.76],[-3.446,54.803],[-3.379,54.89],[-3.341,54.904],[-3.299,54.889],[-3.27,54.897],[-3.321,54.92],[-3.287,54.945],[-3.218,54.959]
+,[-3.135,54.934],[-3.077,54.943],[-3.105,54.954],[-3.042,55.0],[-3.049,55.01],[-3.025,55.037],[-3.053,55.048],[-3.04,55.061],[-2.94,55.06],[-2.828,55.125]
+,[-2.825,55.14],[-2.791,55.141],[-2.691,55.189],[-2.662,55.146]]],"a":"ENWL","b":"#1c4a66","s":[-3.75,54.15],"p":true},{"dno":"SSEN","dno_full":"Scottish and Southern Electricity Networks","area":"North Scotland","c":[-3.921,56.988]
+,"rings":[[[-5.072,55.463],[-5.117,55.42],[-5.152,55.437],[-5.248,55.434],[-5.326,55.465],[-5.338,55.495],[-5.364,55.507],[-5.357,55.567],[-5.405,55.612]
+,[-5.379,55.673],[-5.27,55.725],[-5.155,55.682],[-5.121,55.612],[-5.145,55.585],[-5.102,55.574],[-5.053,55.519],[-5.084,55.497],[-5.072,55.463]],[[-6.128,56.123]
+,[-6.218,55.997],[-6.286,55.995],[-6.287,56.038],[-6.252,56.087],[-6.154,56.136],[-6.128,56.123]],[[-6.494,56.621],[-6.631,56.558],[-6.67,56.577],[-6.702,56.531]
+,[-6.81,56.484],[-6.867,56.485],[-6.887,56.471],[-6.884,56.445],[-6.906,56.437],[-6.986,56.449],[-7.007,56.502],[-6.955,56.532],[-6.875,56.523],[-6.776,56.551]
+,[-6.538,56.679],[-6.426,56.712],[-6.494,56.621]],[[-6.105,56.921],[-6.121,56.865],[-6.216,56.888],[-6.214,56.909],[-6.166,56.919],[-6.171,56.935],[-6.155,56.945]
+,[-6.127,56.944],[-6.105,56.921]],[[-6.313,57.058],[-6.253,57.037],[-6.24,57.022],[-6.252,57.013],[-6.231,57.002],[-6.245,56.967],[-6.303,56.932],[-6.376,56.948]
+,[-6.466,57.006],[-6.376,57.055],[-6.313,57.058]],[[-6.501,57.073],[-6.46,57.042],[-6.596,57.038],[-6.618,57.049],[-6.558,57.072],[-6.501,57.073]],[[-7.741,57.542]
+,[-7.585,57.541],[-7.573,57.534],[-7.62,57.508],[-7.695,57.512],[-7.741,57.542]],[[-6.249,58.517],[-6.178,58.469],[-6.186,58.448],[-6.163,58.429],[-6.206,58.367]
+,[-6.158,58.342],[-6.273,58.288],[-6.279,58.267],[-6.32,58.263],[-6.313,58.245],[-6.338,58.232],[-6.289,58.213],[-6.17,58.267],[-6.137,58.266],[-6.155,58.214]
+,[-6.226,58.179],[-6.322,58.185],[-6.363,58.169],[-6.366,58.047],[-6.352,58.03],[-6.383,57.997],[-6.44,57.976],[-6.466,57.936],[-6.658,57.899],[-6.638,57.852]
+,[-6.705,57.846],[-6.779,57.804],[-6.891,57.768],[-7.012,57.688],[-7.049,57.69],[-7.036,57.655],[-7.126,57.557],[-7.135,57.501],[-7.184,57.43],[-7.18,57.397]
+,[-7.207,57.379],[-7.199,57.346],[-7.211,57.329],[-7.186,57.297],[-7.235,57.265],[-7.253,57.231],[-7.234,57.191],[-7.248,57.152],[-7.204,57.117],[-7.222,57.084]
+,[-7.27,57.071],[-7.349,56.968],[-7.399,56.976],[-7.439,56.944],[-7.435,56.911],[-7.491,56.914],[-7.492,56.88],[-7.54,56.871],[-7.544,56.846],[-7.603,56.83]
+,[-7.617,56.811],[-7.603,56.779],[-7.669,56.783],[-7.668,56.823],[-7.589,56.876],[-7.57,56.918],[-7.588,56.937],[-7.519,56.993],[-7.534,57.015],[-7.464,57.029]
+,[-7.454,57.072],[-7.398,57.068],[-7.378,57.084],[-7.422,57.129],[-7.442,57.231],[-7.467,57.242],[-7.435,57.253],[-7.445,57.289],[-7.408,57.303],[-7.411,57.352]
+,[-7.44,57.386],[-7.409,57.399],[-7.402,57.435],[-7.42,57.467],[-7.381,57.515],[-7.541,57.595],[-7.602,57.603],[-7.51,57.633],[-7.495,57.664],[-7.33,57.692]
+,[-7.292,57.742],[-7.232,57.713],[-7.202,57.739],[-7.148,57.74],[-7.137,57.731],[-7.156,57.693],[-7.145,57.681],[-7.11,57.681],[-7.066,57.714],[-7.105,57.745]
+,[-7.086,57.798],[-7.18,57.829],[-7.107,57.846],[-7.065,57.828],[-7.028,57.841],[-7.011,57.857],[-7.028,57.882],[-7.079,57.872],[-7.095,57.894],[-6.997,57.942]
+,[-7.084,57.963],[-7.094,57.983],[-7.159,58.005],[-7.177,58.026],[-7.146,58.077],[-7.123,58.179],[-7.076,58.193],[-7.038,58.246],[-6.978,58.227],[-6.927,58.288]
+,[-6.838,58.292],[-6.673,58.354],[-6.556,58.371],[-6.528,58.4],[-6.293,58.494],[-6.288,58.515],[-6.249,58.517]],[[-3.087,58.656],[-3.018,58.642],[-3.036,58.596]
+,[-3.06,58.588],[-3.061,58.561],[-3.124,58.515],[-3.113,58.481],[-3.041,58.476],[-3.044,58.448],[-3.101,58.369],[-3.215,58.302],[-3.383,58.262],[-3.509,58.164]
+,[-3.796,58.055],[-3.843,58.004],[-3.979,57.965],[-4.005,57.857],[-4.071,57.863],[-4.126,57.846],[-4.048,57.821],[-3.964,57.85],[-3.868,57.828],[-3.784,57.871]
+,[-3.767,57.868],[-3.772,57.852],[-3.969,57.691],[-4.027,57.687],[-3.986,57.676],[-4.094,57.605],[-4.103,57.589],[-4.084,57.571],[-4.162,57.563],[-4.226,57.5]
+,[-4.169,57.494],[-4.153,57.52],[-4.05,57.562],[-4.082,57.586],[-4.016,57.607],[-3.932,57.59],[-3.854,57.597],[-3.711,57.66],[-3.537,57.667],[-3.504,57.68]
+,[-3.499,57.708],[-3.341,57.729],[-3.277,57.728],[-3.181,57.694],[-3.031,57.669],[-2.858,57.71],[-2.538,57.674],[-2.392,57.673],[-2.299,57.699],[-2.19,57.677]
+,[-2.12,57.704],[-2.0,57.702],[-1.984,57.683],[-1.915,57.677],[-1.871,57.634],[-1.816,57.614],[-1.817,57.578],[-1.797,57.556],[-1.798,57.529],[-1.761,57.508]
+,[-1.78,57.484],[-1.76,57.468],[-1.829,57.409],[-1.854,57.404],[-1.854,57.387],[-1.967,57.321],[-2.024,57.258],[-2.071,57.164],[-2.042,57.14],[-2.043,57.124]
+,[-2.194,56.967],[-2.188,56.91],[-2.209,56.879],[-2.314,56.796],[-2.414,56.756],[-2.44,56.711],[-2.434,56.686],[-2.495,56.656],[-2.497,56.638],[-2.472,56.624]
+,[-2.514,56.58],[-2.706,56.494],[-2.731,56.46],[-2.799,56.476],[-2.986,56.447],[-3.049,56.452],[-3.225,56.364],[-3.276,56.357],[-3.256,56.34],[-3.301,56.314]
+,[-3.292,56.289],[-3.336,56.289],[-3.382,56.268],[-3.35,56.256],[-3.367,56.24],[-3.283,56.235],[-3.29,56.225],[-3.266,56.22],[-3.26,56.196],[-3.309,56.185]
+,[-3.293,56.173],[-3.306,56.167],[-3.372,56.164],[-3.369,56.146],[-3.386,56.142],[-3.525,56.145],[-3.566,56.159],[-3.581,56.139],[-3.636,56.132],[-3.648,56.16]
+,[-3.592,56.174],[-3.575,56.194],[-3.619,56.206],[-3.737,56.189],[-3.751,56.211],[-3.781,56.217],[-3.832,56.191],[-3.881,56.197],[-3.948,56.174],[-3.949,56.145]
+,[-3.982,56.143],[-3.986,56.121],[-4.038,56.131],[-4.104,56.099],[-4.133,56.045],[-4.099,56.022],[-4.126,56.01],[-4.152,56.008],[-4.164,56.03],[-4.197,56.009]
+,[-4.281,56.031],[-4.375,56.023],[-4.4,55.995],[-4.513,56.027],[-4.602,56.02],[-4.64,56.036],[-4.673,56.024],[-4.702,56.077],[-4.821,56.138],[-4.89,56.058]
+,[-4.869,55.971],[-4.905,55.937],[-4.953,55.827],[-4.89,55.799],[-4.878,55.776],[-4.93,55.702],[-5.038,55.719],[-5.102,55.772],[-5.165,55.775],[-5.174,55.803]
+,[-5.143,55.845],[-5.208,55.822],[-5.307,55.84],[-5.329,55.825],[-5.308,55.787],[-5.314,55.766],[-5.391,55.745],[-5.441,55.707],[-5.473,55.642],[-5.453,55.575]
+,[-5.482,55.573],[-5.506,55.486],[-5.538,55.463],[-5.511,55.367],[-5.564,55.313],[-5.563,55.295],[-5.536,55.285],[-5.543,55.278],[-5.595,55.272],[-5.615,55.301]
+,[-5.656,55.304],[-5.764,55.284],[-5.813,55.309],[-5.804,55.393],[-5.728,55.435],[-5.714,55.537],[-5.725,55.577],[-5.697,55.601],[-5.673,55.669],[-5.716,55.679]
+,[-5.756,55.621],[-5.786,55.656],[-5.783,55.677],[-5.728,55.744],[-5.679,55.731],[-5.721,55.708],[-5.719,55.692],[-5.683,55.688],[-5.643,55.701],[-5.61,55.737]
+,[-5.628,55.778],[-5.676,55.804],[-5.666,55.858],[-5.718,55.906],[-5.75,55.905],[-5.722,55.932],[-5.755,55.946],[-5.718,55.958],[-5.647,56.048],[-5.668,56.075]
+,[-5.618,56.069],[-5.604,56.083],[-5.651,56.119],[-5.701,56.092],[-5.828,55.962],[-5.867,55.887],[-5.958,55.791],[-6.04,55.773],[-6.043,55.742],[-6.022,55.727]
+,[-6.03,55.707],[-6.01,55.672],[-6.037,55.651],[-6.14,55.61],[-6.188,55.615],[-6.263,55.575],[-6.301,55.575],[-6.345,55.587],[-6.347,55.612],[-6.313,55.649]
+,[-6.27,55.666],[-6.3,55.704],[-6.346,55.715],[-6.342,55.737],[-6.366,55.738],[-6.478,55.668],[-6.523,55.671],[-6.54,55.696],[-6.464,55.774],[-6.494,55.792]
+,[-6.466,55.812],[-6.46,55.854],[-6.399,55.862],[-6.336,55.906],[-6.317,55.877],[-6.284,55.88],[-6.164,55.946],[-6.12,55.939],[-6.112,55.916],[-6.083,55.908]
+,[-6.049,55.942],[-6.013,55.954],[-6.008,55.989],[-5.961,56.037],[-5.758,56.132],[-5.76,56.171],[-5.737,56.191],[-5.736,56.224],[-5.774,56.231],[-5.813,56.209]
+,[-5.822,56.222],[-5.774,56.25],[-5.719,56.247],[-5.663,56.267],[-5.677,56.318],[-5.568,56.347],[-5.576,56.373],[-5.626,56.371],[-5.567,56.412],[-5.453,56.456]
+,[-5.471,56.475],[-5.549,56.47],[-5.633,56.439],[-5.66,56.388],[-5.702,56.358],[-5.834,56.305],[-5.891,56.316],[-5.874,56.334],[-5.894,56.343],[-5.93,56.317]
+,[-6.043,56.288],[-6.222,56.278],[-6.346,56.245],[-6.366,56.271],[-6.423,56.291],[-6.467,56.283],[-6.447,56.33],[-6.472,56.35],[-6.374,56.357],[-6.264,56.338]
+,[-6.228,56.35],[-6.211,56.387],[-6.163,56.413],[-6.196,56.453],[-6.262,56.441],[-6.317,56.467],[-6.318,56.497],[-6.297,56.519],[-6.322,56.527],[-6.481,56.454]
+,[-6.432,56.5],[-6.306,56.568],[-6.325,56.578],[-6.331,56.608],[-6.239,56.614],[-6.234,56.637],[-6.131,56.66],[-6.041,56.632],[-5.995,56.667],[-6.064,56.689]
+,[-6.189,56.682],[-6.226,56.701],[-6.233,56.728],[-6.19,56.758],[-5.989,56.774],[-5.967,56.788],[-5.9,56.761],[-5.887,56.821],[-5.802,56.857],[-5.865,56.876]
+,[-5.903,56.859],[-5.943,56.904],[-5.871,56.946],[-5.825,57.014],[-5.727,57.021],[-5.702,56.993],[-5.663,56.982],[-5.694,57.016],[-5.685,57.031],[-5.75,57.024]
+,[-5.804,57.061],[-5.727,57.12],[-5.667,57.136],[-5.754,57.167],[-5.896,57.053],[-6.02,57.013],[-6.046,57.055],[-6.018,57.076],[-6.002,57.109],[-6.012,57.119]
+,[-5.928,57.168],[-5.997,57.165],[-6.017,57.199],[-6.093,57.118],[-6.12,57.136],[-6.119,57.184],[-6.156,57.187],[-6.177,57.15],[-6.22,57.124],[-6.327,57.157]
+,[-6.293,57.195],[-6.348,57.181],[-6.406,57.214],[-6.533,57.349],[-6.573,57.328],[-6.628,57.344],[-6.672,57.329],[-6.744,57.386],[-6.751,57.415],[-6.795,57.419]
+,[-6.79,57.458],[-6.751,57.463],[-6.75,57.505],[-6.716,57.517],[-6.689,57.496],[-6.657,57.505],[-6.663,57.552],[-6.643,57.609],[-6.508,57.595],[-6.511,57.573]
+,[-6.54,57.59],[-6.562,57.579],[-6.56,57.554],[-6.455,57.51],[-6.378,57.579],[-6.403,57.584],[-6.407,57.613],[-6.435,57.64],[-6.417,57.655],[-6.44,57.686]
+,[-6.38,57.666],[-6.362,57.709],[-6.329,57.705],[-6.292,57.731],[-6.285,57.695],[-6.218,57.672],[-6.13,57.588],[-6.123,57.483],[-6.14,57.427],[-6.167,57.41]
+,[-6.091,57.406],[-6.085,57.44],[-5.994,57.551],[-5.99,57.582],[-5.954,57.583],[-5.947,57.566],[-5.977,57.479],[-6.024,57.431],[-5.986,57.369],[-5.992,57.342]
+,[-5.982,57.329],[-5.94,57.334],[-5.878,57.313],[-5.917,57.29],[-5.913,57.28],[-5.853,57.286],[-5.81,57.262],[-5.75,57.29],[-5.728,57.317],[-5.693,57.331]
+,[-5.66,57.364],[-5.833,57.329],[-5.865,57.351],[-5.82,57.437],[-5.859,57.439],[-5.88,57.472],[-5.849,57.577],[-5.813,57.589],[-5.756,57.566],[-5.71,57.573]
+,[-5.75,57.61],[-5.803,57.613],[-5.827,57.638],[-5.796,57.697],[-5.738,57.722],[-5.831,57.73],[-5.812,57.787],[-5.823,57.857],[-5.665,57.883],[-5.62,57.928]
+,[-5.554,57.918],[-5.542,57.883],[-5.511,57.867],[-5.484,57.901],[-5.404,57.91],[-5.415,57.931],[-5.38,57.938],[-5.36,57.988],[-5.395,57.993],[-5.442,57.955]
+,[-5.518,57.949],[-5.533,57.961],[-5.516,57.99],[-5.471,58.0],[-5.481,58.032],[-5.443,58.106],[-5.362,58.079],[-5.31,58.087],[-5.358,58.128],[-5.322,58.175]
+,[-5.41,58.24],[-5.376,58.267],[-5.349,58.255],[-5.267,58.272],[-5.171,58.264],[-5.168,58.278],[-5.217,58.286],[-5.185,58.338],[-5.216,58.382],[-5.16,58.403]
+,[-5.146,58.437],[-5.096,58.452],[-5.147,58.475],[-5.125,58.506],[-5.126,58.546],[-5.056,58.546],[-4.996,58.64],[-4.967,58.624],[-4.866,58.621],[-4.815,58.594]
+,[-4.767,58.608],[-4.731,58.573],[-4.655,58.577],[-4.632,58.56],[-4.582,58.584],[-4.514,58.582],[-4.399,58.554],[-4.327,58.565],[-4.252,58.531],[-4.153,58.57]
+,[-4.074,58.57],[-4.024,58.606],[-3.996,58.573],[-3.914,58.569],[-3.786,58.573],[-3.657,58.624],[-3.539,58.627],[-3.526,58.602],[-3.46,58.616],[-3.372,58.6]
+,[-3.358,58.614],[-3.422,58.639],[-3.406,58.667],[-3.367,58.674],[-3.307,58.649],[-3.231,58.655],[-3.15,58.671],[-3.121,58.701],[-3.095,58.684],[-3.087,58.656]
+],[[-3.061,59.201],[-3.029,59.183],[-2.97,59.193],[-2.91,59.18],[-2.91,59.128],[-2.943,59.107],[-2.884,59.066],[-2.792,59.088],[-2.812,59.05],[-2.799,59.028]
+,[-2.889,59.018],[-2.902,58.996],[-2.88,58.99],[-2.908,58.968],[-2.794,58.995],[-2.784,58.964],[-2.831,58.955],[-2.818,58.948],[-2.704,58.977],[-2.703,58.926]
+,[-2.658,58.9],[-2.696,58.89],[-2.742,58.918],[-2.788,58.906],[-2.862,58.845],[-2.872,58.816],[-2.916,58.796],[-2.926,58.768],[-2.901,58.755],[-2.911,58.734]
+,[-2.957,58.726],[-2.999,58.752],[-2.989,58.779],[-3.029,58.812],[-3.173,58.774],[-3.292,58.773],[-3.379,58.835],[-3.389,58.864],[-3.44,58.87],[-3.42,58.918]
+,[-3.34,58.954],[-3.362,58.963],[-3.375,58.998],[-3.35,59.14],[-3.223,59.158],[-3.143,59.151],[-3.108,59.191],[-3.061,59.201]],[[-2.858,59.365],[-2.893,59.301]
+,[-2.874,59.276],[-2.806,59.25],[-2.751,59.255],[-2.674,59.233],[-2.607,59.274],[-2.63,59.302],[-2.622,59.311],[-2.524,59.306],[-2.548,59.286],[-2.54,59.272]
+,[-2.421,59.318],[-2.365,59.278],[-2.47,59.276],[-2.51,59.241],[-2.507,59.22],[-2.554,59.235],[-2.588,59.217],[-2.63,59.233],[-2.664,59.193],[-2.628,59.168]
+,[-2.575,59.16],[-2.566,59.141],[-2.597,59.125],[-2.534,59.126],[-2.542,59.107],[-2.519,59.092],[-2.534,59.073],[-2.606,59.069],[-2.613,59.094],[-2.64,59.103]
+,[-2.645,59.074],[-2.688,59.072],[-2.697,59.086],[-2.68,59.105],[-2.695,59.149],[-2.836,59.117],[-2.841,59.132],[-2.811,59.153],[-2.871,59.212],[-2.915,59.226]
+,[-2.887,59.25],[-2.949,59.283],[-2.941,59.272],[-2.97,59.264],[-2.969,59.243],[-2.984,59.242],[-3.031,59.277],[-3.032,59.303],[-3.079,59.33],[-3.005,59.335]
+,[-2.96,59.364],[-2.911,59.363],[-2.886,59.39],[-2.858,59.365]]],"a":"SSEN","b":"#12324e","s":[-5.7,58.5],"p":true},{"dno":"UKPN","dno_full":"UK Power Networks","area":"South East England","c":[0.394,51.14]
+,"rings":[[[0.476,51.49],[0.69,51.478],[0.765,51.446],[0.904,51.421],[0.973,51.351],[1.115,51.386],[1.43,51.397],[1.455,51.374],[1.43,51.322],[1.37,51.319]
+,[1.415,51.224],[1.41,51.171],[1.333,51.108],[1.076,51.059],[1.01,51.027],[0.971,50.972],[0.98,50.909],[0.782,50.93],[0.663,50.867],[0.368,50.813],[0.255,50.733]
+,[-0.171,50.819],[-0.538,50.797],[-0.573,50.817],[-0.575,50.829],[-0.502,50.835],[-0.474,50.89],[-0.482,50.899],[-0.492,50.885],[-0.499,50.899],[-0.556,50.883]
+,[-0.542,50.891],[-0.55,50.913],[-0.535,50.914],[-0.567,50.935],[-0.563,50.949],[-0.534,50.949],[-0.524,50.989],[-0.506,50.997],[-0.443,50.988],[-0.426,51.006]
+,[-0.409,51.001],[-0.364,51.052],[-0.376,51.074],[-0.366,51.086],[-0.402,51.094],[-0.394,51.109],[-0.535,51.094],[-0.539,51.083],[-0.593,51.093],[-0.575,51.184]
+,[-0.659,51.256],[-0.631,51.278],[-0.666,51.268],[-0.7,51.293],[-0.64,51.334],[-0.548,51.348],[-0.591,51.378],[-0.54,51.403],[-0.512,51.399],[-0.489,51.427]
+,[-0.421,51.392],[-0.382,51.408],[-0.388,51.429],[-0.367,51.442],[-0.387,51.448],[-0.317,51.459],[-0.319,51.472],[-0.291,51.487],[-0.275,51.479],[-0.291,51.447]
+,[-0.253,51.444],[-0.289,51.426],[-0.278,51.419],[-0.29,51.401],[-0.261,51.38],[-0.141,51.388],[-0.12,51.419],[-0.095,51.423],[-0.027,51.382],[0.017,51.395]
+,[0.031,51.367],[0.049,51.368],[0.082,51.413],[0.12,51.414],[0.123,51.432],[0.154,51.435],[0.16,51.408],[0.187,51.433],[0.253,51.436],[0.237,51.448],[0.242,51.471]
+,[0.277,51.457],[0.313,51.47],[0.348,51.448],[0.395,51.446],[0.447,51.457],[0.476,51.49]]],"a":"UKPN","b":"#27506e","s":[0.95,50.72],"p":true},{"dno":"NGED","dno_full":"National Grid Electricity Distribution","area":"South Wales","c":[-4.143,51.908]
+,"rings":[[[-3.403,52.438],[-3.317,52.437],[-3.254,52.382],[-3.104,52.345],[-3.111,52.305],[-3.077,52.299],[-3.027,52.261],[-3.072,52.229],[-3.072,52.213]
+,[-3.102,52.203],[-3.083,52.151],[-3.136,52.138],[-3.105,52.117],[-3.123,52.103],[-3.113,52.081],[-3.066,52.066],[-3.066,52.05],[-3.099,52.023],[-3.008,51.927]
+,[-2.977,51.928],[-2.968,51.904],[-2.878,51.934],[-2.845,51.922],[-2.862,51.914],[-2.842,51.918],[-2.769,51.881],[-2.779,51.867],[-2.757,51.846],[-2.65,51.826]
+,[-2.678,51.803],[-2.681,51.769],[-2.663,51.754],[-2.688,51.73],[-2.669,51.702],[-2.632,51.704],[-2.587,51.661],[-2.617,51.656],[-2.646,51.624],[-2.645,51.601]
+,[-2.902,51.529],[-2.984,51.54],[-3.114,51.486],[-3.156,51.445],[-3.163,51.405],[-3.191,51.392],[-3.401,51.378],[-3.56,51.397],[-3.654,51.473],[-3.722,51.476]
+,[-3.755,51.502],[-3.786,51.562],[-3.821,51.571],[-3.817,51.587],[-3.861,51.615],[-3.977,51.6],[-3.991,51.582],[-3.969,51.562],[-4.063,51.553],[-4.133,51.564]
+,[-4.15,51.537],[-4.21,51.532],[-4.338,51.561],[-4.298,51.584],[-4.32,51.612],[-4.249,51.652],[-4.182,51.631],[-4.118,51.654],[-4.156,51.651],[-4.207,51.679]
+,[-4.324,51.672],[-4.388,51.722],[-4.371,51.735],[-4.379,51.765],[-4.432,51.758],[-4.413,51.742],[-4.449,51.728],[-4.554,51.736],[-4.676,51.722],[-4.688,51.709]
+,[-4.675,51.695],[-4.705,51.658],[-4.67,51.641],[-4.68,51.626],[-4.851,51.642],[-4.889,51.625],[-4.892,51.607],[-4.947,51.593],[-5.065,51.616],[-5.07,51.658]
+,[-5.181,51.675],[-5.201,51.706],[-5.296,51.691],[-5.245,51.72],[-5.314,51.729],[-5.308,51.749],[-5.216,51.739],[-5.181,51.778],[-5.116,51.779],[-5.113,51.81]
+,[-5.138,51.856],[-5.204,51.854],[-5.231,51.867],[-5.341,51.842],[-5.384,51.87],[-5.42,51.852],[-5.393,51.906],[-5.379,51.884],[-5.349,51.881],[-5.314,51.91]
+,[-5.2,51.953],[-5.094,51.974],[-5.1,52.014],[-5.081,52.034],[-4.988,52.029],[-4.967,52.005],[-4.928,52.016],[-4.913,52.038],[-4.85,52.027],[-4.845,52.051]
+,[-4.796,52.063],[-4.732,52.122],[-4.569,52.148],[-4.52,52.14],[-4.38,52.219],[-4.326,52.218],[-4.238,52.256],[-4.175,52.3],[-4.076,52.263],[-4.033,52.29]
+,[-4.019,52.32],[-3.987,52.326],[-3.946,52.298],[-3.917,52.328],[-3.724,52.366],[-3.586,52.358],[-3.594,52.372],[-3.536,52.404],[-3.514,52.412],[-3.477,52.391]
+,[-3.437,52.403],[-3.403,52.438]]],"a":"NGED","b":"#1c4a66","s":[-5.7,52.55],"lab":[-5.7,52.55],"p":true},{"dno":"NGED","dno_full":"National Grid Electricity Distribution","area":"South West England","c":[-3.621,50.768]
+,"rings":[[[-6.238,49.952],[-6.33,49.879],[-6.453,49.874],[-6.383,49.899],[-6.373,49.919],[-6.4,49.948],[-6.339,49.98],[-6.288,49.984],[-6.238,49.952]
+],[[-2.669,51.576],[-2.56,51.592],[-2.514,51.561],[-2.524,51.534],[-2.488,51.53],[-2.498,51.501],[-2.456,51.508],[-2.42,51.494],[-2.416,51.479],[-2.489,51.475]
+,[-2.479,51.46],[-2.527,51.444],[-2.508,51.425],[-2.443,51.417],[-2.345,51.44],[-2.272,51.421],[-2.293,51.358],[-2.324,51.35],[-2.348,51.321],[-2.334,51.302]
+,[-2.404,51.284],[-2.362,51.234],[-2.41,51.218],[-2.406,51.203],[-2.503,51.121],[-2.482,51.112],[-2.549,51.09],[-2.585,51.096],[-2.592,51.069],[-2.569,51.064]
+,[-2.585,51.043],[-2.703,51.007],[-2.692,50.988],[-2.705,50.978],[-2.667,50.962],[-2.662,50.928],[-2.611,50.91],[-2.599,50.885],[-2.68,50.876],[-2.735,50.845]
+,[-2.702,50.839],[-2.684,50.826],[-2.691,50.805],[-2.645,50.79],[-2.631,50.746],[-2.666,50.748],[-2.662,50.709],[-2.692,50.681],[-2.907,50.729],[-3.008,50.695]
+,[-3.252,50.668],[-3.294,50.627],[-3.353,50.603],[-3.415,50.608],[-3.502,50.51],[-3.504,50.485],[-3.473,50.46],[-3.547,50.439],[-3.543,50.41],[-3.475,50.397]
+,[-3.513,50.343],[-3.629,50.294],[-3.65,50.24],[-3.635,50.218],[-3.718,50.197],[-3.767,50.216],[-3.815,50.21],[-3.873,50.238],[-3.865,50.258],[-3.953,50.3]
+,[-4.044,50.289],[-4.114,50.302],[-4.15,50.329],[-4.222,50.307],[-4.236,50.333],[-4.304,50.356],[-4.426,50.357],[-4.444,50.331],[-4.671,50.31],[-4.695,50.339]
+,[-4.756,50.322],[-4.746,50.297],[-4.774,50.285],[-4.762,50.252],[-4.797,50.215],[-4.859,50.23],[-4.901,50.191],[-4.948,50.2],[-4.977,50.149],[-5.007,50.135]
+,[-5.033,50.156],[-5.028,50.177],[-5.046,50.197],[-5.035,50.143],[-5.065,50.139],[-5.094,50.096],[-5.054,50.062],[-5.061,50.035],[-5.099,50.001],[-5.159,50.001]
+,[-5.195,49.956],[-5.251,49.975],[-5.286,50.055],[-5.312,50.075],[-5.508,50.122],[-5.533,50.107],[-5.522,50.081],[-5.545,50.059],[-5.673,50.019],[-5.7,50.049]
+,[-5.751,50.067],[-5.698,50.085],[-5.728,50.123],[-5.675,50.169],[-5.63,50.173],[-5.55,50.22],[-5.475,50.223],[-5.437,50.199],[-5.41,50.216],[-5.405,50.246]
+,[-5.354,50.245],[-5.252,50.288],[-5.237,50.336],[-5.161,50.352],[-5.151,50.407],[-5.055,50.437],[-5.041,50.485],[-5.052,50.498],[-5.03,50.533],[-5.045,50.547]
+,[-5.003,50.574],[-4.944,50.572],[-4.937,50.558],[-4.928,50.577],[-4.94,50.588],[-4.921,50.6],[-4.795,50.606],[-4.769,50.672],[-4.664,50.716],[-4.656,50.742]
+,[-4.564,50.787],[-4.573,50.904],[-4.54,50.967],[-4.533,51.025],[-4.422,51.018],[-4.371,50.995],[-4.307,51.001],[-4.216,51.07],[-4.229,51.112],[-4.268,51.142]
+,[-4.222,51.154],[-4.234,51.192],[-4.089,51.222],[-4.044,51.215],[-3.926,51.237],[-3.812,51.237],[-3.784,51.251],[-3.616,51.223],[-3.535,51.236],[-3.398,51.187]
+,[-3.274,51.185],[-3.13,51.215],[-3.065,51.207],[-3.022,51.247],[-3.016,51.315],[-3.04,51.329],[-2.996,51.331],[-3.007,51.36],[-2.968,51.374],[-2.984,51.391]
+,[-2.913,51.402],[-2.892,51.433],[-2.809,51.485],[-2.737,51.498],[-2.682,51.544],[-2.669,51.576]]],"a":"NGED","b":"#163d58","s":[-4.9,50.95],"p":true}
+,{"dno":"NPg","dno_full":"Northern Powergrid","area":"Yorkshire","c":[-1.056,53.746],"rings":[[[-2.221,54.251],[-2.172,54.228],[-2.1,54.232],[-2.061,54.21]
+,[-2.046,54.182],[-1.963,54.152],[-1.947,54.125],[-1.905,54.123],[-1.841,54.071],[-1.873,54.036],[-1.823,53.997],[-1.69,54.006],[-1.657,53.992],[-1.67,53.987]
+,[-1.653,53.97],[-1.548,53.953],[-1.408,53.985],[-1.354,53.967],[-1.252,53.994],[-1.242,53.978],[-1.222,53.981],[-1.196,53.922],[-1.105,53.876],[-1.127,53.864]
+,[-1.119,53.853],[-1.063,53.853],[-1.042,53.839],[-0.996,53.862],[-0.993,53.877],[-0.925,53.882],[-0.946,53.896],[-0.922,53.923],[-0.933,53.923],[-0.921,53.961]
+,[-0.933,53.971],[-0.927,53.984],[-0.874,53.988],[-0.871,53.999],[-0.892,54.002],[-0.877,54.041],[-0.824,54.021],[-0.8,54.024],[-0.777,54.054],[-0.659,54.037]
+,[-0.645,54.055],[-0.66,54.063],[-0.61,54.073],[-0.603,54.095],[-0.583,54.095],[-0.595,54.128],[-0.555,54.163],[-0.558,54.195],[-0.412,54.217],[-0.277,54.204]
+,[-0.233,54.169],[-0.07,54.121],[-0.195,54.072],[-0.207,54.031],[-0.197,53.991],[-0.121,53.876],[0.121,53.67],[0.155,53.6],[0.109,53.569],[0.138,53.607]
+,[0.076,53.638],[-0.103,53.631],[-0.282,53.737],[-0.507,53.709],[-0.514,53.692],[-0.282,53.716],[-0.206,53.648],[-0.09,53.587],[-0.054,53.585],[0.027,53.525]
+,[0.16,53.493],[0.251,53.374],[0.131,53.295],[0.154,53.284],[0.126,53.251],[0.028,53.28],[-0.038,53.268],[-0.088,53.315],[-0.147,53.294],[-0.211,53.298]
+,[-0.214,53.323],[-0.245,53.34],[-0.345,53.323],[-0.36,53.341],[-0.469,53.348],[-0.632,53.331],[-0.644,53.298],[-0.697,53.299],[-0.681,53.263],[-0.735,53.265]
+,[-0.735,53.244],[-0.771,53.246],[-0.764,53.273],[-0.778,53.284],[-0.75,53.294],[-0.75,53.324],[-0.766,53.33],[-0.759,53.354],[-0.791,53.363],[-0.775,53.378]
+,[-0.79,53.386],[-0.776,53.391],[-0.788,53.415],[-0.818,53.427],[-0.804,53.457],[-0.916,53.46],[-0.928,53.496],[-0.977,53.497],[-1.019,53.484],[-0.983,53.468]
+,[-0.996,53.437],[-1.04,53.41],[-1.031,53.402],[-1.05,53.363],[-1.033,53.349],[-1.084,53.326],[-1.137,53.34],[-1.201,53.304],[-1.254,53.302],[-1.291,53.309]
+,[-1.299,53.333],[-1.411,53.342],[-1.423,53.337],[-1.414,53.319],[-1.467,53.293],[-1.454,53.284],[-1.504,53.285],[-1.524,53.31],[-1.593,53.304],[-1.611,53.322]
+,[-1.628,53.316],[-1.612,53.343],[-1.591,53.346],[-1.664,53.367],[-1.663,53.384],[-1.686,53.336],[-1.761,53.338],[-1.801,53.319],[-1.818,53.347],[-1.848,53.344]
+,[-1.879,53.374],[-1.858,53.388],[-1.906,53.411],[-1.864,53.427],[-1.85,53.447],[-1.859,53.459],[-1.813,53.469],[-1.779,53.497],[-1.942,53.562],[-2.025,53.62]
+,[-2.051,53.684],[-2.119,53.673],[-2.171,53.701],[-2.169,53.727],[-2.131,53.754],[-2.124,53.799],[-2.046,53.829],[-2.042,53.849],[-2.097,53.891],[-2.234,53.881]
+,[-2.22,53.894],[-2.24,53.935],[-2.184,53.952],[-2.194,54.007],[-2.143,54.008],[-2.156,54.036],[-2.103,54.084],[-2.12,54.109],[-2.193,54.134],[-2.289,54.205]
+,[-2.255,54.23],[-2.26,54.247],[-2.221,54.251]]],"a":"NPg","b":"#27506e","s":[0.3,54.05],"p":true},{"dno":"SPEN","dno_full":"SP Energy Networks","area":"South and Central Scotland","c":[-3.456,55.531]
+,"rings":[[[-2.923,56.456],[-2.795,56.441],[-2.821,56.373],[-2.795,56.35],[-2.656,56.323],[-2.579,56.275],[-2.679,56.221],[-2.807,56.181],[-2.871,56.184]
+,[-2.91,56.206],[-2.966,56.202],[-3.139,56.113],[-3.168,56.061],[-3.276,56.053],[-3.288,56.031],[-3.265,56.01],[-3.272,55.995],[-3.176,55.995],[-3.089,55.954]
+,[-3.017,55.957],[-2.909,55.984],[-2.894,56.014],[-2.866,56.018],[-2.871,56.039],[-2.817,56.071],[-2.716,56.08],[-2.666,56.064],[-2.636,56.084],[-2.598,56.035]
+,[-2.553,56.008],[-2.44,55.992],[-2.326,55.937],[-2.131,55.921],[-2.116,55.888],[-2.068,55.875],[-2.059,55.847],[-1.949,55.736],[-1.875,55.699],[-1.775,55.691]
+,[-1.772,55.659],[-1.806,55.663],[-1.875,55.632],[-1.981,55.617],[-2.036,55.631],[-2.061,55.617],[-2.069,55.593],[-2.14,55.581],[-2.197,55.607],[-2.243,55.556]
+,[-2.235,55.516],[-2.206,55.483],[-2.165,55.47],[-2.189,55.462],[-2.194,55.444],[-2.332,55.41],[-2.345,55.399],[-2.33,55.381],[-2.346,55.373],[-2.337,55.367]
+,[-2.382,55.351],[-2.479,55.356],[-2.52,55.323],[-2.559,55.318],[-2.642,55.261],[-2.611,55.247],[-2.631,55.244],[-2.631,55.224],[-2.666,55.221],[-2.704,55.173]
+,[-2.825,55.14],[-2.828,55.125],[-2.94,55.06],[-3.05,55.056],[-3.025,55.037],[-3.049,55.01],[-3.042,55.0],[-3.076,54.975],[-3.145,54.96],[-3.204,54.972]
+,[-3.268,54.962],[-3.431,54.981],[-3.51,54.961],[-3.569,54.982],[-3.58,54.936],[-3.557,54.905],[-3.62,54.849],[-3.638,54.851],[-3.649,54.874],[-3.705,54.879]
+,[-3.967,54.766],[-4.087,54.76],[-4.159,54.775],[-4.272,54.832],[-4.366,54.859],[-4.405,54.888],[-4.426,54.871],[-4.405,54.831],[-4.334,54.799],[-4.352,54.782]
+,[-4.357,54.729],[-4.343,54.706],[-4.405,54.673],[-4.575,54.734],[-4.602,54.77],[-4.712,54.819],[-4.784,54.829],[-4.842,54.86],[-4.951,54.808],[-4.896,54.704]
+,[-4.859,54.683],[-4.875,54.655],[-4.844,54.636],[-4.878,54.629],[-4.971,54.662],[-4.982,54.685],[-4.962,54.701],[-4.97,54.725],[-4.997,54.731],[-5.009,54.77]
+,[-5.147,54.851],[-5.19,54.911],[-5.193,54.976],[-5.174,55.003],[-5.106,55.023],[-5.085,55.017],[-5.05,54.967],[-5.064,54.961],[-5.054,54.928],[-5.001,54.917]
+,[-5.068,55.027],[-5.004,55.14],[-4.873,55.226],[-4.843,55.284],[-4.852,55.325],[-4.78,55.363],[-4.773,55.404],[-4.737,55.429],[-4.654,55.446],[-4.628,55.497]
+,[-4.694,55.545],[-4.664,55.556],[-4.689,55.595],[-4.846,55.64],[-4.873,55.681],[-4.93,55.702],[-4.878,55.776],[-4.89,55.799],[-4.953,55.827],[-4.905,55.937]
+,[-4.869,55.971],[-4.89,56.058],[-4.822,56.138],[-4.702,56.077],[-4.673,56.024],[-4.64,56.036],[-4.602,56.02],[-4.513,56.027],[-4.4,55.995],[-4.375,56.023]
+,[-4.281,56.031],[-4.197,56.009],[-4.164,56.03],[-4.152,56.008],[-4.134,56.007],[-4.099,56.022],[-4.133,56.045],[-4.104,56.099],[-4.038,56.131],[-3.986,56.121]
+,[-3.982,56.143],[-3.949,56.145],[-3.948,56.174],[-3.881,56.197],[-3.832,56.191],[-3.781,56.217],[-3.751,56.211],[-3.737,56.189],[-3.619,56.206],[-3.575,56.194]
+,[-3.592,56.174],[-3.648,56.16],[-3.636,56.132],[-3.581,56.139],[-3.566,56.159],[-3.525,56.145],[-3.369,56.146],[-3.372,56.164],[-3.306,56.167],[-3.293,56.173]
+,[-3.309,56.185],[-3.26,56.196],[-3.266,56.22],[-3.29,56.225],[-3.283,56.235],[-3.367,56.24],[-3.35,56.256],[-3.382,56.268],[-3.336,56.289],[-3.292,56.289]
+,[-3.301,56.314],[-3.256,56.34],[-3.277,56.356],[-2.923,56.456]]],"a":"SPEN","b":"#163d58","s":[-2.35,56.12],"p":true},{"dno":"SSEN","dno_full":"Scottish and Southern Electricity Networks","area":"Southern England","c":[-1.519,51.262]
+,"rings":[[[-1.113,52.016],[-1.053,52.002],[-1.095,51.957],[-1.055,51.948],[-1.087,51.923],[-1.094,51.894],[-1.058,51.886],[-1.069,51.875],[-1.06,51.843]
+,[-1.141,51.834],[-1.11,51.817],[-1.125,51.808],[-1.122,51.787],[-1.031,51.743],[-1.027,51.721],[-0.982,51.713],[-0.951,51.733],[-0.91,51.676],[-0.877,51.681]
+,[-0.833,51.657],[-0.804,51.657],[-0.773,51.695],[-0.742,51.694],[-0.731,51.676],[-0.622,51.629],[-0.558,51.667],[-0.522,51.655],[-0.539,51.638],[-0.52,51.601]
+,[-0.497,51.601],[-0.496,51.632],[-0.451,51.61],[-0.437,51.548],[-0.395,51.543],[-0.348,51.56],[-0.308,51.546],[-0.307,51.533],[-0.243,51.527],[-0.255,51.473]
+,[-0.294,51.486],[-0.317,51.459],[-0.387,51.448],[-0.367,51.442],[-0.388,51.429],[-0.382,51.408],[-0.421,51.392],[-0.489,51.427],[-0.512,51.399],[-0.54,51.403]
+,[-0.592,51.377],[-0.548,51.348],[-0.64,51.334],[-0.651,51.315],[-0.687,51.314],[-0.7,51.297],[-0.666,51.268],[-0.631,51.278],[-0.659,51.256],[-0.575,51.184]
+,[-0.593,51.093],[-0.539,51.083],[-0.535,51.094],[-0.394,51.109],[-0.402,51.094],[-0.366,51.086],[-0.376,51.074],[-0.366,51.045],[-0.408,51.001],[-0.426,51.006]
+,[-0.443,50.988],[-0.506,50.997],[-0.524,50.989],[-0.534,50.949],[-0.567,50.943],[-0.535,50.914],[-0.55,50.912],[-0.542,50.891],[-0.555,50.882],[-0.474,50.894]
+,[-0.51,50.829],[-0.577,50.828],[-0.538,50.797],[-0.722,50.768],[-0.789,50.718],[-0.901,50.768],[-1.022,50.781],[-1.143,50.77],[-1.294,50.83],[-1.328,50.791]
+,[-1.31,50.775],[-1.586,50.714],[-1.701,50.732],[-1.748,50.708],[-1.829,50.716],[-1.908,50.7],[-1.936,50.679],[-1.943,50.651],[-1.917,50.641],[-1.946,50.62]
+,[-1.946,50.592],[-2.049,50.572],[-2.196,50.617],[-2.422,50.63],[-2.439,50.616],[-2.405,50.586],[-2.406,50.548],[-2.455,50.509],[-2.456,50.556],[-2.478,50.576]
+,[-2.692,50.681],[-2.662,50.709],[-2.666,50.748],[-2.631,50.746],[-2.64,50.78],[-2.691,50.805],[-2.684,50.826],[-2.702,50.839],[-2.735,50.845],[-2.68,50.876]
+,[-2.599,50.885],[-2.611,50.91],[-2.662,50.928],[-2.667,50.962],[-2.705,50.978],[-2.692,50.988],[-2.703,51.007],[-2.585,51.043],[-2.569,51.064],[-2.592,51.069]
+,[-2.585,51.096],[-2.549,51.09],[-2.482,51.112],[-2.503,51.121],[-2.406,51.203],[-2.41,51.218],[-2.362,51.234],[-2.404,51.284],[-2.334,51.302],[-2.348,51.321]
+,[-2.284,51.37],[-2.289,51.394],[-2.272,51.421],[-2.295,51.426],[-2.285,51.458],[-2.304,51.504],[-2.252,51.527],[-2.266,51.536],[-2.26,51.57],[-2.276,51.573]
+,[-2.245,51.581],[-2.222,51.622],[-2.252,51.635],[-2.187,51.636],[-2.173,51.666],[-2.081,51.654],[-2.057,51.672],[-1.988,51.669],[-2,51.712],[-2.053,51.716]
+,[-2.056,51.734],[-1.998,51.766],[-2.027,51.795],[-2.033,51.855],[-2.002,51.865],[-2.019,51.879],[-2.01,51.906],[-1.925,51.921],[-1.927,51.896],[-1.882,51.894]
+,[-1.851,51.864],[-1.811,51.895],[-1.768,51.887],[-1.73,51.91],[-1.646,51.922],[-1.615,51.938],[-1.623,51.947],[-1.61,51.957],[-1.523,51.997],[-1.495,51.976]
+,[-1.438,51.988],[-1.41,51.973],[-1.358,51.977],[-1.36,51.988],[-1.296,52.001],[-1.283,52],[-1.283,51.979],[-1.231,51.995],[-1.197,51.977],[-1.113,52.016]
+],[[-1.198,50.738],[-1.154,50.744],[-1.103,50.725],[-1.062,50.686],[-1.153,50.647],[-1.176,50.596],[-1.296,50.571],[-1.487,50.662],[-1.587,50.659],[-1.553,50.685]
+]],"a":"SSEN","b":"#1c4a66","s":[-1.25,50.42],"p":true}];
+var IE_AREAS = [{"dno":"NIE","dno_full":"Northern Ireland Electricity Networks","area":"Northern Ireland","c":[-6.694,54.609],"rings":[[[-6.657,54.092],[-6.666,54.115]
+,[-6.635,54.15],[-6.64,54.168],[-6.695,54.198],[-6.745,54.184],[-6.788,54.203],[-6.824,54.232],[-6.838,54.261],[-6.882,54.277],[-6.857,54.293],[-6.88,54.342]
+,[-6.906,54.349],[-6.922,54.373],[-7.018,54.413],[-7.049,54.412],[-7.079,54.395],[-7.127,54.35],[-7.16,54.335],[-7.192,54.335],[-7.185,54.317],[-7.211,54.304]
+,[-7.209,54.293],[-7.176,54.284],[-7.181,54.27],[-7.146,54.252],[-7.16,54.241],[-7.153,54.224],[-7.249,54.197],[-7.261,54.181],[-7.246,54.167],[-7.265,54.161]
+,[-7.264,54.141],[-7.28,54.126],[-7.297,54.126],[-7.296,54.165],[-7.326,54.155],[-7.333,54.143],[-7.31,54.115],[-7.327,54.114],[-7.395,54.122],[-7.404,54.135]
+,[-7.426,54.137],[-7.415,54.146],[-7.44,54.147],[-7.502,54.125],[-7.609,54.14],[-7.633,54.169],[-7.705,54.2],[-7.856,54.211],[-7.87,54.227],[-7.88,54.287]
+,[-7.951,54.301],[-8.002,54.358],[-8.056,54.366],[-8.146,54.431],[-8.174,54.462],[-8.072,54.487],[-8.002,54.543],[-7.887,54.532],[-7.849,54.541],[-7.749,54.596]
+,[-7.708,54.604],[-7.711,54.624],[-7.754,54.614],[-7.815,54.639],[-7.846,54.631],[-7.864,54.649],[-7.907,54.661],[-7.915,54.672],[-7.907,54.687],[-7.93,54.697]
+,[-7.846,54.731],[-7.771,54.706],[-7.737,54.707],[-7.65,54.745],[-7.543,54.742],[-7.552,54.755],[-7.543,54.793],[-7.455,54.863],[-7.445,54.884],[-7.445,54.932]
+,[-7.409,54.951],[-7.413,54.985],[-7.401,54.995],[-7.405,55.004],[-7.367,55.036],[-7.291,55.047],[-7.247,55.069],[-7.257,55.051],[-7.195,55.058],[-7.134,55.044]
+,[-7.065,55.044],[-7.017,55.071],[-7.01,55.102],[-6.975,55.135],[-6.963,55.195],[-6.884,55.174],[-6.755,55.178],[-6.64,55.208],[-6.571,55.211],[-6.52,55.241]
+,[-6.476,55.249],[-6.416,55.232],[-6.378,55.246],[-6.353,55.243],[-6.24,55.208],[-6.16,55.222],[-6.121,55.218],[-6.047,55.179],[-6.037,55.168],[-6.041,55.112]
+,[-6.062,55.074],[-6.054,55.065],[-5.976,55.053],[-5.97,55.026],[-5.986,54.982],[-5.93,54.971],[-5.886,54.941],[-5.869,54.91],[-5.821,54.875],[-5.801,54.821]
+,[-5.746,54.805],[-5.716,54.784],[-5.734,54.805],[-5.798,54.845],[-5.782,54.862],[-5.752,54.857],[-5.702,54.825],[-5.69,54.793],[-5.693,54.765],[-5.729,54.729]
+,[-5.845,54.701],[-5.891,54.672],[-5.927,54.633],[-5.915,54.628],[-5.907,54.606],[-5.895,54.605],[-5.839,54.65],[-5.748,54.68],[-5.695,54.669],[-5.575,54.68]
+,[-5.537,54.657],[-5.514,54.598],[-5.479,54.569],[-5.469,54.516],[-5.431,54.485],[-5.434,54.461],[-5.464,54.425],[-5.461,54.392],[-5.489,54.37],[-5.475,54.359]
+,[-5.516,54.338],[-5.577,54.403],[-5.572,54.426],[-5.549,54.443],[-5.544,54.458],[-5.558,54.512],[-5.645,54.568],[-5.702,54.578],[-5.697,54.551],[-5.716,54.537]
+,[-5.626,54.516],[-5.67,54.506],[-5.64,54.496],[-5.645,54.472],[-5.626,54.461],[-5.633,54.447],[-5.626,54.441],[-5.661,54.38],[-5.709,54.352],[-5.58,54.384]
+,[-5.551,54.365],[-5.541,54.327],[-5.553,54.299],[-5.613,54.256],[-5.633,54.256],[-5.64,54.235],[-5.656,54.23],[-5.679,54.246],[-5.737,54.249],[-5.862,54.231]
+,[-5.869,54.161],[-5.894,54.105],[-6.027,54.04],[-6.095,54.036],[-6.113,54.05],[-6.085,54.057],[-6.174,54.074],[-6.186,54.093],[-6.264,54.105],[-6.27,54.098]
+,[-6.285,54.105],[-6.327,54.098],[-6.355,54.111],[-6.368,54.097],[-6.367,54.075],[-6.378,54.063],[-6.434,54.055],[-6.451,54.068],[-6.479,54.068],[-6.564,54.049]
+,[-6.595,54.052],[-6.616,54.037],[-6.673,54.068],[-6.657,54.092]]],"a":"NIE","b":"#173d54","s":[-9.3,55.15],"lab":[-9.3,55.15],"p":true},{"dno":"ESB","dno_full":"ESB Networks","area":"Republic of Ireland","c":[-8.145,53.178]
+,"rings":[[[-7.247,55.069],[-7.355,55.041],[-7.405,55.004],[-7.455,54.863],[-7.543,54.793],[-7.543,54.742],[-7.65,54.745],[-7.771,54.706],[-7.846,54.731]
+,[-7.93,54.697],[-7.846,54.631],[-7.711,54.624],[-7.708,54.604],[-7.887,54.532],[-8.002,54.543],[-8.072,54.487],[-8.174,54.462],[-8.056,54.366],[-8.002,54.358]
+,[-7.951,54.301],[-7.88,54.287],[-7.856,54.211],[-7.705,54.2],[-7.609,54.14],[-7.502,54.125],[-7.415,54.146],[-7.395,54.122],[-7.327,54.114],[-7.31,54.115]
+,[-7.326,54.155],[-7.296,54.165],[-7.297,54.126],[-7.28,54.126],[-7.246,54.167],[-7.249,54.197],[-7.153,54.224],[-7.146,54.252],[-7.209,54.293],[-7.192,54.335]
+,[-7.018,54.413],[-6.88,54.342],[-6.857,54.293],[-6.882,54.277],[-6.788,54.203],[-6.745,54.184],[-6.695,54.198],[-6.64,54.168],[-6.673,54.068],[-6.631,54.042]
+,[-6.378,54.063],[-6.355,54.111],[-6.285,54.105],[-6.107,54.014],[-6.161,53.974],[-6.36,54.016],[-6.378,53.935],[-6.351,53.881],[-6.243,53.865],[-6.255,53.822]
+,[-6.223,53.796],[-6.248,53.756],[-6.23,53.657],[-6.077,53.555],[-6.133,53.461],[-6.195,53.461],[-6.131,53.443],[-6.127,53.399],[-6.051,53.385],[-6.062,53.367]
+,[-6.132,53.392],[-6.218,53.347],[-6.097,53.286],[-6.105,53.229],[-6.03,53.111],[-6.052,53.009],[-5.994,52.957],[-6.13,52.816],[-6.148,52.746],[-6.215,52.666]
+,[-6.209,52.546],[-6.356,52.409],[-6.366,52.344],[-6.469,52.36],[-6.463,52.378],[-6.496,52.364],[-6.409,52.289],[-6.373,52.323],[-6.39,52.296],[-6.318,52.241]
+,[-6.347,52.197],[-6.377,52.178],[-6.399,52.185],[-6.382,52.212],[-6.426,52.194],[-6.473,52.207],[-6.58,52.178],[-6.716,52.217],[-6.806,52.213],[-6.764,52.261]
+,[-6.832,52.241],[-6.819,52.186],[-6.932,52.125],[-6.949,52.131],[-6.904,52.172],[-6.997,52.289],[-6.969,52.22],[-6.98,52.186],[-6.955,52.179],[-7.017,52.138]
+,[-7.106,52.131],[-7.072,52.166],[-7.106,52.173],[-7.106,52.152],[-7.187,52.133],[-7.435,52.126],[-7.565,52.084],[-7.6,52.101],[-7.627,52.063],[-7.545,52.055]
+,[-7.583,52.029],[-7.59,51.991],[-7.709,51.974],[-7.723,51.945],[-7.829,51.953],[-7.85,51.98],[-7.87,51.93],[-7.922,51.912],[-7.891,51.882],[-8.008,51.856]
+,[-8.021,51.824],[-8.246,51.803],[-8.23,51.837],[-8.175,51.857],[-8.203,51.864],[-8.187,51.893],[-8.409,51.892],[-8.429,51.885],[-8.329,51.861],[-8.347,51.83]
+,[-8.298,51.83],[-8.292,51.81],[-8.319,51.803],[-8.285,51.803],[-8.297,51.766],[-8.436,51.693],[-8.484,51.714],[-8.464,51.695],[-8.484,51.678],[-8.491,51.699]
+,[-8.512,51.706],[-8.558,51.706],[-8.498,51.693],[-8.539,51.648],[-8.532,51.611],[-8.573,51.645],[-8.758,51.645],[-8.69,51.631],[-8.696,51.577],[-8.854,51.596]
+,[-8.933,51.535],[-8.991,51.563],[-9.121,51.563],[-9.116,51.538],[-9.193,51.525],[-9.224,51.487],[-9.265,51.487],[-9.272,51.508],[-9.381,51.474],[-9.32,51.535]
+,[-9.402,51.501],[-9.402,51.546],[-9.443,51.56],[-9.611,51.494],[-9.656,51.52],[-9.717,51.48],[-9.704,51.474],[-9.82,51.446],[-9.813,51.474],[-9.834,51.487]
+,[-9.546,51.611],[-9.848,51.549],[-9.595,51.656],[-9.459,51.684],[-9.443,51.72],[-9.525,51.727],[-9.56,51.762],[-9.546,51.72],[-9.627,51.685],[-9.874,51.656]
+,[-10.029,51.597],[-10.156,51.583],[-10.149,51.611],[-10.06,51.631],[-10.071,51.657],[-10.101,51.659],[-10.088,51.672],[-10.004,51.678],[-9.957,51.706]
+,[-9.998,51.714],[-9.981,51.732],[-9.889,51.762],[-9.902,51.741],[-9.868,51.749],[-9.854,51.775],[-9.786,51.769],[-9.813,51.788],[-9.738,51.837],[-9.581,51.878]
+,[-9.864,51.804],[-9.882,51.824],[-10.136,51.741],[-10.224,51.782],[-10.177,51.814],[-10.235,51.851],[-10.341,51.788],[-10.341,51.844],[-10.389,51.846]
+,[-10.396,51.885],[-10.254,51.909],[-10.307,51.953],[-10.258,51.974],[-10.266,51.988],[-10.033,52.041],[-9.971,52.09],[-9.926,52.063],[-9.908,52.131],[-9.772,52.125]
+,[-9.793,52.138],[-9.758,52.152],[-9.957,52.145],[-9.955,52.109],[-9.998,52.138],[-10.186,52.109],[-10.279,52.136],[-10.307,52.125],[-10.272,52.112],[-10.368,52.125]
+,[-10.354,52.112],[-10.437,52.097],[-10.468,52.115],[-10.461,52.18],[-10.409,52.2],[-10.417,52.186],[-10.372,52.176],[-10.367,52.228],[-10.172,52.287]
+,[-10.166,52.235],[-10.101,52.241],[-10.045,52.269],[-10.036,52.29],[-10.06,52.31],[-10.014,52.306],[-10.009,52.253],[-9.947,52.238],[-9.738,52.248],[-9.869,52.273]
+,[-9.881,52.296],[-9.849,52.285],[-9.834,52.289],[-9.862,52.303],[-9.826,52.31],[-9.834,52.375],[-9.95,52.412],[-9.704,52.484],[-9.635,52.474],[-9.683,52.495]
+,[-9.648,52.57],[-9.272,52.577],[-9.052,52.632],[-9.006,52.621],[-8.96,52.652],[-8.751,52.673],[-8.961,52.694],[-8.952,52.734],[-8.97,52.748],[-8.943,52.775]
+,[-9.024,52.747],[-9.147,52.624],[-9.286,52.591],[-9.333,52.598],[-9.279,52.639],[-9.434,52.612],[-9.581,52.666],[-9.553,52.639],[-9.694,52.606],[-9.707,52.58]
+,[-9.936,52.557],[-9.824,52.595],[-9.622,52.714],[-9.628,52.727],[-9.499,52.753],[-9.491,52.803],[-9.354,52.933],[-9.478,52.94],[-9.388,53.009],[-9.272,53.147]
+,[-9.159,53.111],[-9.073,53.118],[-9.128,53.159],[-9.004,53.146],[-9.046,53.174],[-8.987,53.177],[-8.936,53.146],[-8.957,53.18],[-8.895,53.221],[-9.046,53.221]
+,[-8.963,53.235],[-8.991,53.248],[-8.943,53.262],[-9.022,53.275],[-9.512,53.228],[-9.566,53.262],[-9.555,53.291],[-9.612,53.236],[-9.628,53.248],[-9.617,53.321]
+,[-9.561,53.341],[-9.601,53.365],[-9.553,53.385],[-9.622,53.378],[-9.607,53.349],[-9.635,53.33],[-9.653,53.393],[-9.743,53.314],[-9.807,53.302],[-9.902,53.324]
+,[-9.887,53.359],[-9.786,53.393],[-9.82,53.399],[-9.799,53.42],[-9.86,53.394],[-9.881,53.406],[-9.848,53.434],[-9.911,53.426],[-9.922,53.389],[-9.961,53.38]
+,[-10.063,53.413],[-10.177,53.413],[-10.142,53.446],[-10.053,53.454],[-10.087,53.482],[-10.021,53.47],[-10.012,53.482],[-10.107,53.494],[-10.153,53.544]
+,[-10.203,53.544],[-10.18,53.555],[-10.108,53.55],[-10.115,53.57],[-10.071,53.57],[-10.005,53.544],[-9.971,53.563],[-10.047,53.599],[-9.868,53.617],[-9.823,53.606]
+,[-9.697,53.598],[-9.908,53.646],[-9.908,53.762],[-9.566,53.796],[-9.622,53.817],[-9.56,53.865],[-9.587,53.872],[-9.566,53.899],[-9.758,53.899],[-9.911,53.859]
+,[-9.944,53.879],[-9.908,53.92],[-9.916,53.954],[-9.868,53.961],[-9.788,53.916],[-9.786,53.947],[-9.832,53.956],[-9.85,53.998],[-9.899,54.025],[-9.898,54.055]
+,[-9.834,54.112],[-9.881,54.112],[-9.917,54.07],[-9.971,54.079],[-9.991,54.105],[-9.908,54.118],[-9.977,54.18],[-9.936,54.187],[-10.011,54.218],[-10.017,54.189]
+,[-10.053,54.187],[-10.039,54.167],[-10.087,54.159],[-10.067,54.125],[-10.095,54.118],[-10.067,54.095],[-10.117,54.096],[-10.128,54.125],[-10.06,54.222]
+,[-10.115,54.235],[-9.998,54.304],[-9.972,54.277],[-9.881,54.263],[-9.927,54.227],[-9.977,54.242],[-9.984,54.223],[-9.91,54.204],[-9.844,54.277],[-9.765,54.256]
+,[-9.799,54.284],[-9.758,54.284],[-9.829,54.297],[-9.846,54.321],[-9.786,54.338],[-9.707,54.318],[-9.268,54.304],[-9.248,54.277],[-9.211,54.276],[-9.21,54.218]
+,[-9.149,54.181],[-9.141,54.146],[-9.135,54.208],[-9.09,54.227],[-9.051,54.289],[-8.939,54.29],[-8.857,54.263],[-8.676,54.271],[-8.573,54.2],[-8.511,54.208]
+,[-8.621,54.256],[-8.594,54.284],[-8.47,54.277],[-8.573,54.314],[-8.519,54.327],[-8.661,54.338],[-8.664,54.359],[-8.474,54.43],[-8.467,54.475],[-8.443,54.447]
+,[-8.21,54.502],[-8.271,54.524],[-8.216,54.55],[-8.219,54.57],[-8.173,54.594],[-8.175,54.619],[-8.138,54.606],[-8.121,54.647],[-8.292,54.606],[-8.28,54.63]
+,[-8.302,54.64],[-8.457,54.565],[-8.388,54.62],[-8.422,54.619],[-8.432,54.641],[-8.462,54.603],[-8.494,54.633],[-8.564,54.609],[-8.673,54.619],[-8.792,54.66]
+,[-8.778,54.68],[-8.798,54.692],[-8.637,54.768],[-8.457,54.756],[-8.545,54.784],[-8.53,54.788],[-8.408,54.763],[-8.558,54.818],[-8.491,54.852],[-8.326,54.832]
+,[-8.381,54.856],[-8.367,54.881],[-8.313,54.879],[-8.337,54.904],[-8.409,54.887],[-8.451,54.922],[-8.45,54.946],[-8.367,54.948],[-8.457,55.003],[-8.415,55.003]
+,[-8.347,55.064],[-8.32,55.034],[-8.32,55.105],[-8.278,55.161],[-8.141,55.161],[-8.156,55.124],[-7.977,55.222],[-7.95,55.21],[-8.004,55.174],[-7.909,55.188]
+,[-7.899,55.156],[-7.86,55.168],[-7.895,55.14],[-7.856,55.139],[-7.835,55.165],[-7.866,55.215],[-7.799,55.256],[-7.816,55.195],[-7.718,55.167],[-7.703,55.099]
+,[-7.668,55.147],[-7.695,55.207],[-7.724,55.215],[-7.723,55.176],[-7.788,55.219],[-7.761,55.256],[-7.644,55.273],[-7.611,55.241],[-7.614,55.196],[-7.573,55.181]
+,[-7.526,55.116],[-7.641,55.051],[-7.562,55.045],[-7.681,54.954],[-7.456,55.056],[-7.454,55.086],[-7.478,55.096],[-7.463,55.143],[-7.55,55.215],[-7.516,55.254]
+,[-7.524,55.29],[-7.479,55.284],[-7.469,55.304],[-7.406,55.287],[-7.348,55.314],[-7.321,55.282],[-7.257,55.284],[-7.351,55.335],[-7.353,55.359],[-7.4,55.38]
+,[-7.384,55.386],[-7.209,55.345],[-7.129,55.286],[-6.94,55.239],[-6.943,55.219],[-7.173,55.144],[-7.247,55.069]]],"a":"ESB","b":"#123650","s":[-8.2,50.4]
+,"p":true}];
+DNO_AREAS = DNO_AREAS.concat(IE_AREAS);   // NI (NIE Networks) + Republic of Ireland (ESB Networks)
+// Coarse country outlines (Natural Earth admin-1 unions for England/Scotland/Wales + NI,
+// admin-0 for the Republic; simplified to ~2 km) used ONLY to classify each incident into a
+// country for the per-country view. A point is tested with a small bbox tolerance and, if it
+// still falls just offshore of the coarse outline, assigned to the NEAREST country.
+var COUNTRIES = [{"name":"England","rings":[[[-4.105,50.371],[-4.191,50.418],[-4.16,50.459],[-4.201,50.459],[-4.235,50.438],[-4.229,50.397],[-4.29,50.397],[-4.194,50.377]
+,[-4.229,50.371],[-4.18,50.356],[-4.194,50.322],[-4.338,50.371],[-4.495,50.328],[-4.752,50.33],[-4.8,50.23],[-4.947,50.199],[-5.002,50.144],[-5.02,50.192]
+,[-5.053,50.196],[-5.043,50.144],[-5.126,50.096],[-5.057,50.061],[-5.191,49.959],[-5.304,50.08],[-5.475,50.13],[-5.619,50.046],[-5.705,50.052],[-5.716,50.083]
+,[-5.685,50.162],[-5.511,50.219],[-5.438,50.194],[-5.15,50.35],[-5.154,50.399],[-5.05,50.429],[-4.996,50.548],[-4.947,50.562],[-4.934,50.52],[-4.845,50.514]
+,[-4.922,50.555],[-4.921,50.589],[-4.792,50.595],[-4.752,50.67],[-4.577,50.775],[-4.526,51.015],[-4.338,50.997],[-4.208,51.076],[-4.256,51.152],[-4.215,51.152]
+,[-4.229,51.192],[-3.769,51.248],[-3.385,51.186],[-3.029,51.22],[-3.022,51.192],[-3.0,51.233],[-3.022,51.323],[-2.992,51.322],[-2.975,51.384],[-2.716,51.5]
+,[-2.556,51.659],[-2.381,51.762],[-2.398,51.782],[-2.482,51.743],[-2.665,51.617],[-2.681,51.772],[-2.647,51.822],[-2.735,51.84],[-2.874,51.929],[-2.961,51.911]
+,[-3.123,52.073],[-3.101,52.112],[-3.125,52.129],[-3.076,52.153],[-3.108,52.173],[-3.051,52.233],[-2.956,52.264],[-2.999,52.296],[-2.957,52.341],[-3.071,52.347]
+,[-3.215,52.438],[-2.975,52.542],[-3.015,52.568],[-3.115,52.529],[-3.123,52.581],[-2.96,52.731],[-3.14,52.796],[-3.127,52.885],[-2.993,52.953],[-2.779,52.901]
+,[-2.717,52.926],[-2.727,52.966],[-2.818,52.989],[-2.957,53.144],[-2.918,53.189],[-3.085,53.259],[-3.186,53.393],[-3.036,53.434],[-2.953,53.324],[-2.881,53.288]
+,[-2.776,53.3],[-2.7,53.352],[-2.8,53.321],[-2.925,53.35],[-3.102,53.558],[-2.899,53.735],[-3.049,53.77],[-3.057,53.906],[-2.858,53.968],[-2.83,54.016]
+,[-2.895,54.002],[-2.918,54.034],[-2.796,54.125],[-2.854,54.194],[-2.81,54.212],[-2.796,54.249],[-2.939,54.155],[-2.998,54.16],[-3.049,54.222],[-3.061,54.162]
+,[-3.145,54.1],[-3.145,54.064],[-3.241,54.112],[-3.248,54.174],[-3.215,54.18],[-3.207,54.263],[-3.232,54.203],[-3.307,54.192],[-3.407,54.278],[-3.413,54.343]
+,[-3.634,54.513],[-3.364,54.9],[-3.255,54.9],[-3.317,54.92],[-3.214,54.954],[-3.123,54.933],[-3.022,54.954],[-3.091,54.954],[-3.022,54.968],[-3.05,54.982]
+,[-3.026,55.051],[-2.954,55.041],[-2.625,55.227],[-2.623,55.266],[-2.552,55.314],[-2.452,55.363],[-2.359,55.363],[-2.189,55.449],[-2.328,55.638],[-2.243,55.65]
+,[-2.074,55.794],[-2.023,55.805],[-1.816,55.633],[-1.781,55.646],[-1.748,55.619],[-1.768,55.613],[-1.631,55.585],[-1.518,55.157],[-1.363,54.965],[-1.275,54.748]
+,[-1.172,54.701],[-1.192,54.689],[-1.165,54.653],[-1.199,54.622],[-1.153,54.613],[-1.138,54.647],[-0.563,54.477],[-0.448,54.373],[-0.37,54.248],[-0.277,54.218]
+,[-0.234,54.16],[-0.076,54.112],[-0.164,54.083],[-0.219,54.023],[-0.151,53.899],[0.133,53.643],[0.149,53.61],[0.131,53.573],[0.11,53.563],[0.12,53.618]
+,[0.035,53.646],[-0.092,53.631],[-0.26,53.735],[-0.544,53.709],[-0.637,53.732],[-0.726,53.701],[-0.62,53.712],[-0.53,53.678],[-0.279,53.707],[-0.189,53.62]
+,[0.152,53.476],[0.219,53.42],[0.342,53.226],[0.357,53.146],[0.33,53.086],[0.161,53.009],[0.01,52.886],[0.106,52.889],[0.247,52.796],[0.326,52.803],[0.385,52.768]
+,[0.486,52.933],[0.57,52.969],[1.014,52.96],[0.966,52.974],[1.275,52.929],[1.644,52.776],[1.747,52.625],[1.771,52.486],[1.631,52.27],[1.582,52.081],[1.472,52.056]
+,[1.332,51.94],[1.264,51.994],[1.158,52.029],[1.274,51.961],[1.069,51.953],[1.282,51.947],[1.2,51.878],[1.287,51.882],[1.276,51.845],[1.065,51.775],[0.98,51.844]
+,[0.874,51.747],[0.699,51.72],[0.761,51.693],[0.93,51.744],[0.952,51.678],[0.911,51.624],[0.952,51.617],[0.924,51.588],[0.771,51.528],[0.456,51.506],[0.385,51.453]
+,[0.535,51.492],[0.695,51.477],[0.723,51.447],[0.555,51.412],[0.713,51.384],[0.7,51.41],[0.726,51.419],[0.764,51.364],[0.977,51.349],[1.448,51.383],[1.425,51.333]
+,[1.378,51.326],[1.413,51.222],[1.384,51.152],[1.067,51.064],[0.966,50.983],[0.98,50.918],[0.762,50.931],[0.624,50.859],[0.365,50.819],[0.271,50.747],[-0.27,50.831]
+,[-0.758,50.777],[-0.79,50.73],[-0.904,50.772],[-0.864,50.808],[-0.939,50.843],[-1.021,50.844],[-1.083,50.781],[-1.103,50.795],[-1.069,50.844],[-1.165,50.844]
+,[-1.124,50.819],[-1.151,50.781],[-1.466,50.918],[-1.317,50.8],[-1.525,50.761],[-1.561,50.719],[-1.693,50.74],[-1.94,50.691],[-2.039,50.74],[-2.083,50.699]
+,[-2.036,50.713],[-1.953,50.677],[-1.932,50.644],[-1.965,50.602],[-2.398,50.646],[-2.46,50.607],[-2.429,50.558],[-2.453,50.528],[-2.484,50.59],[-2.693,50.693]
+,[-2.865,50.734],[-3.26,50.675],[-3.368,50.617],[-3.464,50.679],[-3.433,50.61],[-3.506,50.521],[-3.487,50.459],[-3.556,50.432],[-3.487,50.405],[-3.527,50.35]
+,[-3.571,50.356],[-3.632,50.312],[-3.661,50.221],[-3.789,50.212],[-3.961,50.322],[-4.044,50.296],[-4.108,50.337],[-4.105,50.371]],[[-1.062,50.685],[-1.162,50.646]
+,[-1.168,50.603],[-1.279,50.583],[-1.486,50.669],[-1.569,50.658],[-1.506,50.708],[-1.296,50.773],[-1.097,50.727],[-1.062,50.685]]]},{"name":"Scotland","rings":[[[-2.944,55.047]
+,[-3.026,55.051],[-3.05,54.982],[-3.135,54.968],[-3.571,54.995],[-3.582,54.884],[-3.812,54.855],[-3.817,54.886],[-3.858,54.845],[-3.824,54.825],[-3.964,54.772]
+,[-4.043,54.769],[-4.064,54.832],[-4.084,54.777],[-4.123,54.773],[-4.209,54.826],[-4.201,54.866],[-4.271,54.839],[-4.403,54.907],[-4.417,54.846],[-4.344,54.795]
+,[-4.348,54.702],[-4.382,54.68],[-4.497,54.701],[-4.597,54.775],[-4.859,54.866],[-4.955,54.805],[-4.867,54.69],[-4.859,54.633],[-4.944,54.653],[-4.955,54.729]
+,[-5.157,54.879],[-5.171,55.009],[-5.115,55.032],[-5.061,54.931],[-4.996,54.92],[-5.05,55.027],[-5.008,55.141],[-4.867,55.222],[-4.833,55.331],[-4.618,55.496]
+,[-4.687,55.544],[-4.666,55.562],[-4.693,55.605],[-4.818,55.637],[-4.921,55.709],[-4.861,55.757],[-4.886,55.92],[-4.799,55.958],[-4.482,55.928],[-4.673,55.962]
+,[-4.783,56.018],[-4.824,56.079],[-4.838,56.051],[-4.779,55.992],[-4.852,55.988],[-4.865,56.067],[-4.756,56.207],[-4.852,56.113],[-4.894,56.174],[-4.921,56.168]
+,[-4.886,56.08],[-4.893,55.99],[-4.955,55.997],[-4.914,55.962],[-4.969,55.88],[-5.042,55.885],[-5.124,56.01],[-5.087,55.901],[-5.172,55.936],[-5.181,55.969]
+,[-5.242,55.893],[-5.201,55.831],[-5.307,55.86],[-5.338,55.904],[-5.338,55.997],[-5.204,56.119],[-5.105,56.152],[-4.921,56.278],[-5.065,56.229],[-5.109,56.175]
+,[-5.346,56.051],[-5.369,56.009],[-5.444,56.028],[-5.455,55.956],[-5.318,55.783],[-5.433,55.721],[-5.49,55.645],[-5.455,55.592],[-5.511,55.484],[-5.585,55.427]
+,[-5.525,55.359],[-5.616,55.307],[-5.783,55.314],[-5.791,55.399],[-5.716,55.448],[-5.722,55.565],[-5.681,55.674],[-5.455,55.846],[-5.599,55.764],[-5.66,55.797]
+,[-5.674,55.846],[-5.571,55.935],[-5.672,55.887],[-5.696,55.916],[-5.571,56.038],[-5.626,56.024],[-5.708,55.943],[-5.577,56.097],[-5.532,56.086],[-5.559,56.131]
+,[-5.51,56.188],[-5.606,56.14],[-5.559,56.23],[-5.493,56.26],[-5.592,56.25],[-5.573,56.328],[-5.448,56.36],[-5.538,56.36],[-5.457,56.441],[-5.209,56.447]
+,[-5.119,56.508],[-5.065,56.565],[-5.201,56.462],[-5.378,56.459],[-5.411,56.504],[-5.469,56.476],[-5.428,56.538],[-5.357,56.52],[-5.242,56.565],[-5.414,56.545]
+,[-5.298,56.646],[-5.318,56.661],[-4.996,56.716],[-5.161,56.696],[-5.238,56.717],[-5.12,56.818],[-5.674,56.497],[-5.77,56.538],[-5.749,56.572],[-5.854,56.55]
+,[-6.008,56.642],[-5.839,56.627],[-5.866,56.661],[-5.76,56.701],[-5.647,56.681],[-5.544,56.695],[-5.75,56.715],[-5.897,56.675],[-6.162,56.678],[-6.223,56.695]
+,[-6.234,56.729],[-5.965,56.785],[-5.852,56.747],[-5.886,56.785],[-5.757,56.785],[-5.851,56.829],[-5.734,56.845],[-5.66,56.873],[-5.744,56.854],[-5.784,56.86]
+,[-5.736,56.894],[-5.921,56.894],[-5.852,56.9],[-5.88,56.922],[-5.832,56.997],[-5.755,57.027],[-5.659,56.979],[-5.571,56.984],[-5.523,57.004],[-5.629,56.992]
+,[-5.702,57.045],[-5.78,57.052],[-5.776,57.076],[-5.646,57.129],[-5.558,57.1],[-5.4,57.106],[-5.541,57.106],[-5.681,57.158],[-5.626,57.216],[-5.644,57.233]
+,[-5.578,57.267],[-5.407,57.23],[-5.502,57.278],[-5.441,57.319],[-5.578,57.278],[-5.729,57.298],[-5.654,57.354],[-5.613,57.342],[-5.501,57.371],[-5.448,57.422]
+,[-5.563,57.363],[-5.64,57.374],[-5.607,57.389],[-5.62,57.417],[-5.707,57.36],[-5.808,57.355],[-5.811,57.442],[-5.859,57.453],[-5.873,57.494],[-5.839,57.579]
+,[-5.64,57.511],[-5.654,57.532],[-5.513,57.541],[-5.66,57.545],[-5.806,57.643],[-5.791,57.696],[-5.674,57.71],[-5.804,57.744],[-5.811,57.833],[-5.777,57.868]
+,[-5.699,57.869],[-5.66,57.792],[-5.606,57.77],[-5.626,57.792],[-5.585,57.785],[-5.585,57.831],[-5.654,57.895],[-5.613,57.929],[-5.487,57.856],[-5.455,57.854]
+,[-5.415,57.908],[-5.222,57.847],[-5.393,57.918],[-5.366,57.943],[-5.071,57.833],[-5.222,57.921],[-5.204,57.96],[-5.428,58.031],[-5.414,58.052],[-5.447,58.084]
+,[-5.301,58.07],[-5.277,58.086],[-5.297,58.135],[-5.242,58.148],[-5.331,58.182],[-5.392,58.261],[-5.294,58.241],[-5.129,58.271],[-4.934,58.223],[-4.982,58.251]
+,[-4.927,58.265],[-5.05,58.26],[-5.173,58.354],[-5.143,58.415],[-5.016,58.388],[-5.098,58.415],[-5.106,58.437],[-5.05,58.454],[-4.996,58.437],[-5.106,58.506]
+,[-5.028,58.544],[-4.988,58.628],[-4.836,58.605],[-4.804,58.559],[-4.818,58.525],[-4.777,58.607],[-4.66,58.556],[-4.761,58.448],[-4.612,58.525],[-4.585,58.574]
+,[-4.427,58.546],[-4.495,58.45],[-4.344,58.539],[-4.235,58.525],[-4.221,58.552],[-4.081,58.562],[-4.029,58.595],[-3.896,58.566],[-3.598,58.627],[-3.364,58.601]
+,[-3.351,58.621],[-3.413,58.656],[-3.375,58.677],[-3.341,58.648],[-3.019,58.64],[-3.129,58.513],[-3.053,58.466],[-3.13,58.369],[-4.002,57.936],[-4.084,57.964]
+,[-3.988,57.908],[-4.009,57.868],[-4.299,57.863],[-4.392,57.908],[-4.308,57.851],[-4.04,57.818],[-3.984,57.842],[-3.915,57.808],[-3.779,57.856],[-3.988,57.696]
+,[-4.043,57.737],[-4.295,57.68],[-4.428,57.578],[-4.202,57.675],[-4.097,57.658],[-4.009,57.689],[-4.105,57.579],[-4.263,57.552],[-4.208,57.538],[-4.249,57.497]
+,[-4.195,57.492],[-4.035,57.557],[-4.084,57.586],[-3.837,57.593],[-3.625,57.662],[-3.646,57.641],[-3.591,57.641],[-3.612,57.668],[-3.536,57.662],[-3.492,57.713]
+,[-3.409,57.723],[-3.035,57.669],[-2.916,57.703],[-2.433,57.668],[-1.998,57.703],[-1.829,57.613],[-1.761,57.497],[-1.85,57.394],[-1.98,57.319],[-2.069,57.175]
+,[-2.049,57.119],[-2.187,56.985],[-2.186,56.915],[-2.426,56.751],[-2.515,56.591],[-2.728,56.47],[-3.061,56.452],[-3.238,56.368],[-3.323,56.366],[-3.231,56.356]
+,[-2.885,56.458],[-2.803,56.428],[-2.838,56.366],[-2.803,56.345],[-2.577,56.284],[-2.648,56.229],[-2.806,56.188],[-2.964,56.206],[-3.128,56.123],[-3.164,56.064]
+,[-3.343,56.027],[-3.671,56.051],[-3.837,56.113],[-3.668,56.013],[-3.078,55.947],[-2.94,55.969],[-2.823,56.06],[-2.635,56.058],[-2.569,56.024],[-2.584,56.003]
+,[-2.508,56.01],[-2.308,55.935],[-2.138,55.915],[-2.023,55.805],[-2.243,55.65],[-2.328,55.638],[-2.189,55.449],[-2.359,55.363],[-2.452,55.363],[-2.552,55.314]
+,[-2.623,55.266],[-2.625,55.227],[-2.944,55.047]],[[-6.973,57.733],[-7.125,57.837],[-7.079,57.813],[-6.914,57.868],[-6.963,57.895],[-6.912,57.911],[-6.832,57.902]
+,[-6.866,57.921],[-6.839,57.936],[-7.113,57.99],[-6.935,58.052],[-7.058,58.039],[-7.024,58.08],[-7.076,58.062],[-7.113,58.1],[-7.113,58.182],[-7.017,58.189]
+,[-7.054,58.201],[-7.05,58.232],[-6.907,58.217],[-6.937,58.211],[-6.86,58.107],[-6.888,58.168],[-6.869,58.189],[-6.798,58.202],[-6.737,58.168],[-6.709,58.189]
+,[-6.819,58.285],[-6.716,58.34],[-6.557,58.369],[-6.267,58.512],[-6.205,58.481],[-6.167,58.42],[-6.215,58.368],[-6.167,58.347],[-6.366,58.237],[-6.271,58.216]
+,[-6.151,58.258],[-6.16,58.217],[-6.234,58.184],[-6.4,58.21],[-6.373,58.141],[-6.619,58.086],[-6.407,58.107],[-6.366,58.059],[-6.4,58.045],[-6.352,58.039]
+,[-6.424,58.004],[-6.545,58.018],[-6.455,57.97],[-6.551,57.943],[-6.56,57.915],[-6.63,57.957],[-6.619,57.915],[-6.709,58.004],[-6.592,58.059],[-6.688,58.059]
+,[-6.764,58.004],[-6.674,57.929],[-6.696,57.921],[-6.661,57.88],[-6.787,57.899],[-6.806,57.88],[-6.742,57.831],[-6.853,57.833],[-6.873,57.778],[-6.973,57.733]
+],[[-6.696,57.364],[-6.784,57.456],[-6.722,57.456],[-6.747,57.488],[-6.726,57.511],[-6.607,57.444],[-6.631,57.502],[-6.564,57.504],[-6.655,57.552],[-6.64,57.607]
+,[-6.465,57.513],[-6.421,57.518],[-6.443,57.488],[-6.4,57.521],[-6.311,57.463],[-6.39,57.552],[-6.36,57.593],[-6.4,57.6],[-6.416,57.646],[-6.311,57.703]
+,[-6.154,57.59],[-6.133,57.476],[-6.188,57.394],[-6.127,57.408],[-6.135,57.357],[-6.099,57.332],[-6.154,57.306],[-6.045,57.308],[-6.078,57.278],[-6.008,57.287]
+,[-5.901,57.243],[-5.768,57.277],[-5.647,57.265],[-5.691,57.19],[-5.782,57.166],[-5.8,57.124],[-5.935,57.041],[-6.007,57.028],[-6.027,57.062],[-5.987,57.118]
+,[-5.845,57.188],[-5.986,57.175],[-6.044,57.23],[-6.024,57.196],[-6.089,57.127],[-6.113,57.188],[-6.164,57.201],[-6.318,57.161],[-6.277,57.202],[-6.346,57.188]
+,[-6.38,57.223],[-6.346,57.243],[-6.408,57.243],[-6.482,57.312],[-6.416,57.335],[-6.324,57.311],[-6.463,57.347],[-6.476,57.401],[-6.524,57.381],[-6.531,57.415]
+,[-6.581,57.339],[-6.696,57.364]],[[-1.119,60.391],[-1.068,60.396],[-1.07,60.36],[-1.172,60.348],[-1.075,60.321],[-1.138,60.291],[-1.09,60.273],[-1.148,60.249]
+,[-1.193,60.273],[-1.185,60.245],[-1.219,60.238],[-1.179,60.232],[-1.199,60.204],[-1.158,60.225],[-1.193,60.176],[-1.155,60.193],[-1.124,60.15],[-1.213,60.107]
+,[-1.165,60.06],[-1.219,60.04],[-1.201,59.986],[-1.247,59.998],[-1.275,59.854],[-1.376,59.909],[-1.323,59.951],[-1.35,59.978],[-1.323,59.978],[-1.263,60.115]
+,[-1.289,60.156],[-1.269,60.185],[-1.312,60.181],[-1.268,60.245],[-1.329,60.204],[-1.358,60.244],[-1.411,60.259],[-1.35,60.211],[-1.398,60.211],[-1.455,60.156]
+,[-1.527,60.193],[-1.466,60.217],[-1.504,60.243],[-1.525,60.212],[-1.625,60.217],[-1.69,60.285],[-1.481,60.316],[-1.466,60.279],[-1.423,60.326],[-1.364,60.286]
+,[-1.336,60.307],[-1.364,60.321],[-1.343,60.348],[-1.26,60.355],[-1.395,60.39],[-1.384,60.423],[-1.439,60.431],[-1.446,60.492],[-1.48,60.457],[-1.48,60.485]
+,[-1.609,60.483],[-1.527,60.557],[-1.455,60.509],[-1.384,60.512],[-1.48,60.539],[-1.411,60.58],[-1.419,60.608],[-1.316,60.594],[-1.301,60.643],[-1.336,60.485]
+,[-1.295,60.492],[-1.37,60.402],[-1.234,60.444],[-1.295,60.471],[-1.218,60.498],[-1.152,60.431],[-1.224,60.411],[-1.152,60.389],[-1.034,60.451],[-1.119,60.391]
+],[[-5.658,56.4],[-5.742,56.414],[-5.784,56.366],[-5.703,56.365],[-5.809,56.319],[-5.88,56.326],[-5.854,56.344],[-5.873,56.358],[-6.066,56.289],[-6.267,56.263]
+,[-6.366,56.322],[-6.31,56.347],[-6.247,56.312],[-6.25,56.332],[-6.021,56.382],[-6.154,56.359],[-6.203,56.38],[-6.127,56.448],[-6.01,56.47],[-6.017,56.504]
+,[-6.127,56.474],[-6.174,56.517],[-6.338,56.552],[-6.29,56.572],[-6.325,56.606],[-6.23,56.609],[-6.151,56.652],[-6.058,56.64],[-5.963,56.526],[-5.794,56.517]
+,[-5.648,56.448],[-5.688,56.435],[-5.658,56.4]],[[-6.035,55.678],[-6.287,55.578],[-6.319,55.628],[-6.243,55.66],[-6.325,55.715],[-6.25,55.777],[-6.349,55.773]
+,[-6.463,55.674],[-6.504,55.681],[-6.504,55.723],[-6.449,55.777],[-6.482,55.79],[-6.445,55.849],[-6.331,55.89],[-6.311,55.818],[-6.297,55.867],[-6.14,55.941]
+,[-6.099,55.801],[-6.03,55.729],[-6.035,55.678]],[[-2.707,58.932],[-2.839,58.883],[-2.927,58.905],[-2.981,58.96],[-3.203,58.916],[-3.239,58.951],[-3.207,59.005]
+,[-3.228,59.039],[-3.276,59.011],[-3.257,58.978],[-3.289,58.95],[-3.353,58.983],[-3.35,59.098],[-3.279,59.144],[-3.085,59.128],[-2.994,59.06],[-3.132,59.005]
+,[-2.781,58.99],[-2.838,58.95],[-2.795,58.926],[-2.796,58.957],[-2.714,58.967],[-2.707,58.932]],[[-5.078,55.455],[-5.217,55.438],[-5.346,55.483],[-5.346,55.55]
+,[-5.398,55.614],[-5.379,55.668],[-5.297,55.723],[-5.181,55.695],[-5.137,55.592],[-5.094,55.567],[-5.12,55.524],[-5.071,55.509],[-5.093,55.5],[-5.078,55.455]
+],[[-5.689,56.112],[-5.886,55.887],[-5.945,55.859],[-5.962,55.805],[-6.062,55.809],[-6.075,55.916],[-5.886,55.976],[-5.981,55.97],[-5.955,56.035],[-5.716,56.153]
+,[-5.689,56.112]],[[-7.092,57.612],[-7.216,57.641],[-7.154,57.587],[-7.106,57.593],[-7.15,57.562],[-7.312,57.552],[-7.134,57.538],[-7.236,57.504],[-7.315,57.515]
+,[-7.346,57.545],[-7.318,57.552],[-7.545,57.593],[-7.477,57.662],[-7.387,57.662],[-7.414,57.648],[-7.397,57.635],[-7.312,57.689],[-7.333,57.662],[-7.257,57.648]
+,[-7.277,57.662],[-7.182,57.689],[-7.189,57.655],[-7.074,57.646],[-7.092,57.612]],[[-7.195,57.306],[-7.257,57.237],[-7.353,57.243],[-7.271,57.216],[-7.258,57.18]
+,[-7.271,57.148],[-7.308,57.156],[-7.346,57.148],[-7.216,57.12],[-7.239,57.101],[-7.353,57.1],[-7.414,57.216],[-7.455,57.237],[-7.39,57.312],[-7.428,57.388]
+,[-7.363,57.408],[-7.223,57.34],[-7.394,57.381],[-7.37,57.355],[-7.195,57.306]],[[-1.043,60.662],[-1.014,60.615],[-1.069,60.615],[-1.011,60.578],[-1.042,60.553]
+,[-1.024,60.503],[-1.154,60.508],[-1.171,60.646],[-1.103,60.615],[-1.124,60.66],[-1.104,60.726],[-0.993,60.731],[-0.986,60.646],[-1.043,60.662]]]},{"name":"Wales","rings":[[[-3.695,51.472]
+,[-3.855,51.624],[-3.99,51.607],[-3.975,51.563],[-4.027,51.554],[-4.29,51.556],[-4.29,51.617],[-4.235,51.645],[-4.221,51.624],[-4.091,51.64],[-4.071,51.676]
+,[-4.315,51.677],[-4.379,51.727],[-4.31,51.734],[-4.363,51.743],[-4.365,51.789],[-4.399,51.762],[-4.446,51.773],[-4.427,51.747],[-4.461,51.736],[-4.645,51.732]
+,[-4.712,51.65],[-4.864,51.644],[-4.946,51.598],[-5.12,51.678],[-4.845,51.714],[-4.879,51.762],[-4.824,51.796],[-4.934,51.775],[-4.901,51.762],[-4.911,51.718]
+,[-5.149,51.718],[-5.183,51.689],[-5.25,51.734],[-5.11,51.779],[-5.126,51.856],[-5.311,51.864],[-5.298,51.911],[-5.12,51.959],[-5.07,52.026],[-4.841,52.015]
+,[-4.838,52.049],[-4.72,52.113],[-4.673,52.097],[-4.676,52.127],[-4.638,52.138],[-4.502,52.138],[-4.316,52.216],[-4.11,52.365],[-4.057,52.529],[-3.947,52.549]
+,[-4.053,52.542],[-4.125,52.604],[-4.057,52.701],[-3.988,52.734],[-4.049,52.722],[-4.149,52.812],[-4.117,52.831],[-4.13,52.889],[-4.078,52.927],[-4.407,52.893]
+,[-4.482,52.851],[-4.516,52.789],[-4.595,52.817],[-4.763,52.789],[-4.735,52.83],[-4.596,52.928],[-4.358,53.028],[-4.341,53.113],[-4.321,53.102],[-4.178,53.218]
+,[-3.831,53.289],[-3.878,53.338],[-3.716,53.287],[-3.602,53.289],[-3.33,53.352],[-3.088,53.235],[-3.085,53.259],[-2.956,53.216],[-2.911,53.175],[-2.957,53.144]
+,[-2.851,53.017],[-2.717,52.946],[-2.779,52.901],[-2.993,52.953],[-3.127,52.885],[-3.14,52.796],[-2.96,52.731],[-3.123,52.581],[-3.115,52.529],[-3.015,52.568]
+,[-2.975,52.542],[-3.215,52.438],[-3.071,52.347],[-2.957,52.341],[-2.999,52.296],[-2.956,52.264],[-3.051,52.233],[-3.108,52.173],[-3.076,52.153],[-3.125,52.129]
+,[-3.101,52.112],[-3.123,52.073],[-2.961,51.911],[-2.874,51.929],[-2.735,51.84],[-2.647,51.822],[-2.681,51.772],[-2.665,51.617],[-2.859,51.546],[-2.975,51.563]
+,[-3.173,51.453],[-3.185,51.398],[-3.539,51.399],[-3.695,51.472]],[[-4.098,53.25],[-4.196,53.22],[-4.28,53.155],[-4.413,53.132],[-4.385,53.182],[-4.448,53.159]
+,[-4.495,53.18],[-4.571,53.275],[-4.571,53.393],[-4.325,53.42],[-4.277,53.401],[-4.203,53.298],[-4.043,53.303],[-4.098,53.25]]]},{"name":"Northern Ireland","rings":[[[-6.673,54.068]
+,[-6.64,54.168],[-6.788,54.203],[-6.882,54.277],[-6.857,54.293],[-6.88,54.342],[-7.018,54.413],[-7.192,54.335],[-7.209,54.293],[-7.146,54.252],[-7.153,54.224]
+,[-7.249,54.197],[-7.28,54.126],[-7.296,54.165],[-7.326,54.155],[-7.327,54.114],[-7.415,54.146],[-7.609,54.14],[-7.705,54.2],[-7.856,54.211],[-7.88,54.287]
+,[-7.951,54.301],[-8.174,54.462],[-8.072,54.487],[-8.002,54.543],[-7.887,54.532],[-7.708,54.604],[-7.846,54.631],[-7.93,54.697],[-7.846,54.731],[-7.771,54.706]
+,[-7.543,54.742],[-7.543,54.793],[-7.455,54.863],[-7.445,54.932],[-7.367,55.036],[-7.247,55.069],[-7.257,55.051],[-7.065,55.044],[-7.017,55.071],[-6.963,55.195]
+,[-6.755,55.178],[-6.476,55.249],[-6.121,55.218],[-6.047,55.179],[-6.062,55.074],[-5.976,55.053],[-5.986,54.982],[-5.886,54.941],[-5.801,54.821],[-5.716,54.784]
+,[-5.798,54.845],[-5.752,54.857],[-5.69,54.793],[-5.729,54.729],[-5.891,54.672],[-5.927,54.633],[-5.907,54.606],[-5.748,54.68],[-5.575,54.68],[-5.431,54.485]
+,[-5.475,54.359],[-5.516,54.338],[-5.577,54.403],[-5.544,54.458],[-5.558,54.512],[-5.702,54.578],[-5.716,54.537],[-5.626,54.516],[-5.67,54.506],[-5.626,54.441]
+,[-5.709,54.352],[-5.58,54.384],[-5.551,54.365],[-5.553,54.299],[-5.656,54.23],[-5.862,54.231],[-5.894,54.105],[-6.027,54.04],[-6.355,54.111],[-6.378,54.063]
+,[-6.616,54.037],[-6.673,54.068]]]},{"name":"Republic of Ireland","rings":[[[-7.247,55.069],[-7.405,55.004],[-7.543,54.742],[-7.93,54.697],[-7.846,54.631]
+,[-7.708,54.604],[-7.887,54.532],[-8.002,54.543],[-8.174,54.462],[-7.88,54.287],[-7.856,54.211],[-7.705,54.2],[-7.609,54.14],[-7.327,54.114],[-7.326,54.155]
+,[-7.28,54.126],[-7.249,54.197],[-7.153,54.224],[-7.209,54.293],[-7.192,54.335],[-7.018,54.413],[-6.88,54.342],[-6.882,54.277],[-6.788,54.203],[-6.64,54.168]
+,[-6.673,54.068],[-6.631,54.042],[-6.378,54.063],[-6.355,54.111],[-6.107,54.014],[-6.161,53.974],[-6.36,54.016],[-6.378,53.935],[-6.351,53.881],[-6.243,53.865]
+,[-6.23,53.657],[-6.077,53.555],[-6.133,53.461],[-6.195,53.461],[-6.062,53.367],[-6.132,53.392],[-6.218,53.347],[-6.097,53.286],[-6.105,53.229],[-6.03,53.111]
+,[-6.052,53.009],[-5.994,52.957],[-6.13,52.816],[-6.215,52.666],[-6.209,52.546],[-6.356,52.409],[-6.366,52.344],[-6.496,52.364],[-6.409,52.289],[-6.373,52.323]
+,[-6.39,52.296],[-6.318,52.241],[-6.347,52.197],[-6.58,52.178],[-6.806,52.213],[-6.764,52.261],[-6.832,52.241],[-6.819,52.186],[-6.932,52.125],[-6.904,52.172]
+,[-6.997,52.289],[-6.955,52.179],[-7.017,52.138],[-7.106,52.131],[-7.072,52.166],[-7.106,52.173],[-7.187,52.133],[-7.6,52.101],[-7.627,52.063],[-7.545,52.055]
+,[-7.59,51.991],[-7.723,51.945],[-7.85,51.98],[-7.922,51.912],[-7.891,51.882],[-8.021,51.824],[-8.246,51.803],[-8.175,51.857],[-8.187,51.893],[-8.409,51.892]
+,[-8.298,51.83],[-8.297,51.766],[-8.436,51.693],[-8.484,51.714],[-8.484,51.678],[-8.491,51.699],[-8.512,51.706],[-8.558,51.706],[-8.498,51.693],[-8.532,51.611]
+,[-8.573,51.645],[-8.758,51.645],[-8.69,51.631],[-8.696,51.577],[-8.854,51.596],[-8.933,51.535],[-9.121,51.563],[-9.224,51.487],[-9.272,51.508],[-9.381,51.474]
+,[-9.32,51.535],[-9.402,51.501],[-9.402,51.546],[-9.443,51.56],[-9.82,51.446],[-9.834,51.487],[-9.546,51.611],[-9.848,51.549],[-9.459,51.684],[-9.443,51.72]
+,[-9.56,51.762],[-9.546,51.72],[-9.627,51.685],[-9.874,51.656],[-10.156,51.583],[-10.06,51.631],[-10.088,51.672],[-9.957,51.706],[-9.981,51.732],[-9.786,51.769]
+,[-9.813,51.788],[-9.738,51.837],[-9.581,51.878],[-10.136,51.741],[-10.224,51.782],[-10.177,51.814],[-10.235,51.851],[-10.341,51.788],[-10.341,51.844]
+,[-10.389,51.846],[-10.396,51.885],[-10.254,51.909],[-10.307,51.953],[-10.266,51.988],[-10.033,52.041],[-9.971,52.09],[-9.926,52.063],[-9.908,52.131],[-9.772,52.125]
+,[-9.793,52.138],[-9.758,52.152],[-9.957,52.145],[-9.955,52.109],[-9.998,52.138],[-10.186,52.109],[-10.279,52.136],[-10.307,52.125],[-10.272,52.112],[-10.437,52.097]
+,[-10.461,52.18],[-10.372,52.176],[-10.367,52.228],[-10.172,52.287],[-10.166,52.235],[-10.101,52.241],[-10.045,52.269],[-10.06,52.31],[-9.947,52.238],[-9.738,52.248]
+,[-9.869,52.273],[-9.881,52.296],[-9.826,52.31],[-9.834,52.375],[-9.95,52.412],[-9.635,52.474],[-9.683,52.495],[-9.648,52.57],[-9.272,52.577],[-8.751,52.673]
+,[-8.961,52.694],[-8.943,52.775],[-9.024,52.747],[-9.147,52.624],[-9.286,52.591],[-9.333,52.598],[-9.279,52.639],[-9.434,52.612],[-9.581,52.666],[-9.553,52.639]
+,[-9.707,52.58],[-9.936,52.557],[-9.628,52.727],[-9.499,52.753],[-9.491,52.803],[-9.354,52.933],[-9.478,52.94],[-9.272,53.147],[-9.073,53.118],[-9.128,53.159]
+,[-9.004,53.146],[-9.046,53.174],[-8.987,53.177],[-8.936,53.146],[-8.957,53.18],[-8.895,53.221],[-9.046,53.221],[-8.943,53.262],[-9.022,53.275],[-9.512,53.228]
+,[-9.566,53.262],[-9.555,53.291],[-9.612,53.236],[-9.617,53.321],[-9.561,53.341],[-9.601,53.365],[-9.553,53.385],[-9.622,53.378],[-9.635,53.33],[-9.653,53.393]
+,[-9.807,53.302],[-9.902,53.324],[-9.786,53.393],[-9.82,53.399],[-9.799,53.42],[-9.86,53.394],[-9.848,53.434],[-9.911,53.426],[-9.961,53.38],[-10.177,53.413]
+,[-10.053,53.454],[-10.087,53.482],[-10.021,53.47],[-10.012,53.482],[-10.107,53.494],[-10.203,53.544],[-10.18,53.555],[-10.005,53.544],[-9.971,53.563]
+,[-10.047,53.599],[-9.868,53.617],[-9.823,53.606],[-9.697,53.598],[-9.908,53.646],[-9.908,53.762],[-9.566,53.796],[-9.622,53.817],[-9.56,53.865],[-9.587,53.872]
+,[-9.566,53.899],[-9.944,53.879],[-9.908,53.92],[-9.916,53.954],[-9.788,53.916],[-9.899,54.025],[-9.834,54.112],[-9.971,54.079],[-9.991,54.105],[-9.908,54.118]
+,[-9.977,54.18],[-9.936,54.187],[-10.011,54.218],[-10.087,54.159],[-10.067,54.095],[-10.117,54.096],[-10.06,54.222],[-10.115,54.235],[-9.998,54.304],[-9.881,54.263]
+,[-9.927,54.227],[-9.977,54.242],[-9.91,54.204],[-9.844,54.277],[-9.765,54.256],[-9.799,54.284],[-9.758,54.284],[-9.846,54.321],[-9.786,54.338],[-9.268,54.304]
+,[-9.211,54.276],[-9.21,54.218],[-9.141,54.146],[-9.135,54.208],[-9.051,54.289],[-8.676,54.271],[-8.573,54.2],[-8.511,54.208],[-8.621,54.256],[-8.47,54.277]
+,[-8.573,54.314],[-8.519,54.327],[-8.664,54.359],[-8.474,54.43],[-8.467,54.475],[-8.443,54.447],[-8.21,54.502],[-8.271,54.524],[-8.121,54.647],[-8.292,54.606]
+,[-8.302,54.64],[-8.457,54.565],[-8.388,54.62],[-8.673,54.619],[-8.792,54.66],[-8.798,54.692],[-8.637,54.768],[-8.457,54.756],[-8.53,54.788],[-8.408,54.763]
+,[-8.558,54.818],[-8.491,54.852],[-8.326,54.832],[-8.381,54.856],[-8.313,54.879],[-8.337,54.904],[-8.409,54.887],[-8.451,54.922],[-8.367,54.948],[-8.457,55.003]
+,[-8.347,55.064],[-8.32,55.034],[-8.278,55.161],[-8.141,55.161],[-8.156,55.124],[-7.977,55.222],[-7.95,55.21],[-8.004,55.174],[-7.909,55.188],[-7.899,55.156]
+,[-7.86,55.168],[-7.895,55.14],[-7.856,55.139],[-7.835,55.165],[-7.866,55.215],[-7.799,55.256],[-7.816,55.195],[-7.718,55.167],[-7.703,55.099],[-7.668,55.147]
+,[-7.695,55.207],[-7.724,55.215],[-7.723,55.176],[-7.788,55.219],[-7.761,55.256],[-7.644,55.273],[-7.526,55.116],[-7.641,55.051],[-7.562,55.045],[-7.681,54.954]
+,[-7.456,55.056],[-7.463,55.143],[-7.55,55.215],[-7.524,55.29],[-7.348,55.314],[-7.257,55.284],[-7.384,55.386],[-6.94,55.239],[-7.173,55.144],[-7.247,55.069]
+]]}];
+COUNTRIES.forEach(function(c){ c.bb=c.rings.map(function(r){
+  var xs=r.map(function(p){return p[0];}), ys=r.map(function(p){return p[1];});
+  return [Math.min.apply(null,xs),Math.max.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,ys)]; }); });
+function countryOf(lat,lon){
+  if(lat==null||lon==null) return null;
+  for(var a=0;a<COUNTRIES.length;a++){ var c=COUNTRIES[a];
+    for(var r=0;r<c.rings.length;r++){ var b=c.bb[r];
+      if(lon>=b[0]-0.02&&lon<=b[1]+0.02&&lat>=b[2]-0.02&&lat<=b[3]+0.02 && _inRing(lon,lat,c.rings[r])) return c.name; } }
+  var kx=Math.cos(lat*Math.PI/180), best=Infinity, bn=null;   // nearest-country fallback (coast/islands)
+  for(var a2=0;a2<COUNTRIES.length;a2++){ var c2=COUNTRIES[a2];
+    for(var r2=0;r2<c2.rings.length;r2++){ var ring=c2.rings[r2];
+      for(var i=0;i<ring.length;i++){ var dx=(ring[i][0]-lon)*kx, dy=ring[i][1]-lat, d=dx*dx+dy*dy;
+        if(d<best){ best=d; bn=c2.name; } } } }
+  return bn;
+}
+var win = 24;                            // history window (hours)
+var last = null;
+var statusByDno = {};   // operator code -> feed status (ok/stale/error/no-key/no-feed), for map-label colouring
+// Manually-muted providers (shared, same-origin localStorage — also read by the dashboard
+// badge/alarm). Mute a provider when it warns its data may be unreliable: it's excluded from
+// the national totals and greyed on the map, here and on the dashboard.
+function pcMutedGet(){ try{ return JSON.parse(localStorage.getItem("pcMutedOps")||"[]"); }catch(e){ return []; } }
+function pcMutedHas(dno){ return pcMutedGet().indexOf(dno)>=0; }
+function pcMutedToggle(dno){ var m=pcMutedGet(); var i=m.indexOf(dno);
+  if(i>=0) m.splice(i,1); else m.push(dno);
+  try{ localStorage.setItem("pcMutedOps", JSON.stringify(m)); }catch(e){}
+  if(last) render(last); }
+
+// ---- helpers ----------------------------------------------------------------
+function $(id){ return document.getElementById(id); }
+// ---- near you (shared with the dashboard via same-origin localStorage) ----
+function pcHome(){ try{ var o=JSON.parse(localStorage.getItem("ukgrid.ea.location")||"null");
+  if(o && typeof o.lat==="number" && typeof o.lon==="number") return o; }catch(e){} return null; }
+function pcNearKm(){ try{ var v=+localStorage.getItem("pcNearKm"); return (v===5||v===10||v===20)?v:10; }catch(e){ return 10; } }
+function pcKm(la1,lo1,la2,lo2){ var r=Math.PI/180, a=Math.pow(Math.sin((la2-la1)*r/2),2)+
+  Math.cos(la1*r)*Math.cos(la2*r)*Math.pow(Math.sin((lo2-lo1)*r/2),2); return 2*6371*Math.asin(Math.sqrt(a)); }
+function pcBearing(la1,lo1,la2,lo2){ var r=Math.PI/180, p1=la1*r, p2=la2*r, dl=(lo2-lo1)*r;
+  var y=Math.sin(dl)*Math.cos(p2), x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y,x)/r+360)%360; }
+var PC_ABBR=["N","NE","E","SE","S","SW","W","NW"];
+var PC_DONE_RE=/restor|clos|complet|resolv|cancel|finish/i;
+// "2026-09-27T15:00:00" (operator local time) -> "15:00" today, else "Sun 15:00"
+function pcWhenShort(iso){ var m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso||"")); if(!m) return null;
+  var d=new Date(+m[1],+m[2]-1,+m[3]), t=new Date(); t.setHours(0,0,0,0);
+  return (d.getTime()===t.getTime()?"":["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" ")+m[4]+":"+m[5]; }
+function renderNear(incs){
+  var box=$("nearyou"); if(!box) return;
+  var h=pcHome();
+  if(!h){ box.style.display="block";
+    box.innerHTML='<div class="nh">Near you</div><span class="muted">Set your location on the dashboard\'s EA page to see power cuts near you.</span>'; return; }
+  var km=pcNearKm(), muted=pcMutedGet(), L=[];
+  (incs||[]).forEach(function(i){
+    if(muted.indexOf(i.dno)>=0 || PC_DONE_RE.test(i.status||"") || i.lat==null || i.lon==null) return;
+    var d=pcKm(h.lat,h.lon,i.lat,i.lon); if(d>km) return;
+    L.push({i:i, d:d, b:pcBearing(h.lat,h.lon,i.lat,i.lon)});
+  });
+  L.sort(function(a,b){ return a.d-b.d; });
+  box.style.display="block";
+  var head='<div class="nh">Near you · within '+km+' km of '+String(h.label||"your location").replace(/</g,"&lt;")+'</div>';
+  if(!L.length){ box.innerHTML=head+'<span class="muted">No power cuts within '+km+' km.</span>'; return; }
+  box.innerHTML=head+L.slice(0,6).map(function(x){
+    var i=x.i, et=pcWhenShort(i.etr);
+    return '<div class="nr '+(i.planned?"pl":"un")+'"><span class="d">'+(x.d<1?"<1":x.d.toFixed(1))+" km "+PC_ABBR[Math.round(x.b/45)%8]+
+      '</span><span>'+(i.planned?"planned":"unplanned")+" · "+i.dno+
+      (i.customers_off?(" · "+fmt(i.customers_off)+" off"):"")+(et?(' · <span class="muted">'+(i.planned?"until ":"est. back ")+et+"</span>"):"")+"</span></div>";
+  }).join("")+(L.length>6?'<div class="muted">and '+(L.length-6)+' more</div>':"");
+}
+function fmt(n){ return (n==null?"–":Number(n).toLocaleString()); }
+function ago(ts){ if(!ts) return ""; var s=Math.max(0,Date.now()/1000-ts);
+  if(s<90) return Math.round(s)+"s ago"; if(s<5400) return Math.round(s/60)+"m ago"; return Math.round(s/3600)+"h ago"; }
+function dpr(){ return window.devicePixelRatio||1; }
+function fitCanvas(c,h){ var r=dpr(); var w=c.clientWidth||600; c.width=w*r; c.height=h*r;
+  var x=c.getContext("2d"); x.setTransform(r,0,0,r,0,0); return {x:x,w:w,h:h}; }
+
+// ---- fetch ------------------------------------------------------------------
+function load(){
+  fetch(API+"?hours="+win).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(render)
+    .catch(function(e){
+      $("genline").innerHTML = '<span class="err">endpoint not reachable ('+e.message+
+        ') — is grid_server running with powercuts.py?</span>';
+    });
+}
+
+// ---- render -----------------------------------------------------------------
+// Customers-off readout: grows 1pt per severity step (10k/25k/50k/100k/1M) and takes a
+// warning colour on the bands set below. Symmetric — steps back down as the figure falls.
+function styleNatOff(v){
+  var el=$("natoff"); if(!el) return; v=v||0;
+  var steps=[10000,25000,50000,100000,1000000], n=0;
+  for(var i=0;i<steps.length;i++){ if(v>=steps[i]) n++; }
+  el.style.fontSize=(26 + n*(4/3)).toFixed(2)+"px";      // base 26px, +1pt (=4/3 px) per step
+  var col="";
+  if(v>=500000) col="rgb(255,62,165)";                    // hot pink 500k+
+  else if(v>=100000) col="var(--bad)";                    // red 100k–500k
+  else if(v>=25000 && v<50000) col="rgb(255,214,0)";      // yellow 25k–50k
+  el.style.color=col;                                      // "" -> inherits default ink
+}
+function renderSplit(incs){
+  var plOff=0,plInc=0,unOff=0,unInc=0;
+  (incs||[]).forEach(function(i){ var off=i.customers_off||0;
+    if(i.planned){ plOff+=off; plInc++; } else { unOff+=off; unInc++; } });
+  $("natUnOff").textContent=fmt(unOff); $("natUnInc").textContent=fmt(unInc);
+  $("natPlOff").textContent=fmt(plOff); $("natPlInc").textContent=fmt(plInc);
+}
+function render(d){
+  last = d;
+  statusByDno = {};
+  (d.operators||[]).forEach(function(o){ statusByDno[o.dno]=o.status; });
+  var n = d.national||{};
+  // National totals recomputed here so MUTED providers are excluded (the server figure counts
+  // all reporting operators). Muted ones are still shown in the table + on the map, greyed.
+  var muted = pcMutedGet();
+  var counted = (d.operators||[]).filter(function(o){
+    return (o.status==="ok"||o.status==="stale") && muted.indexOf(o.dno)<0; });
+  var sumOf=function(k){ return counted.reduce(function(s,o){return s+(o[k]||0);},0); };
+  var natOff=sumOf("customers_off");
+  $("natoff").textContent  = fmt(natOff);
+  styleNatOff(natOff);
+  $("natinc").textContent  = fmt(sumOf("incidents"));
+  $("natpred").textContent = fmt(sumOf("customers_predicted"));
+  $("natpsr").textContent  = fmt(sumOf("psr_customers"));
+  $("natrep").textContent  = counted.length+" / "+(n.operators_total||0);
+  renderSplit((d.incidents||[]).filter(function(i){return muted.indexOf(i.dno)<0;}));
+  $("genline").textContent = "updated "+ago(d.generated)+
+      (d.cache_age_s!=null? " · sampled "+d.cache_age_s+"s ago":"");
+  var reporting = counted.map(function(o){return o.dno;});
+  $("repnote").innerHTML = "National totals sum only the <b>"+reporting.length+
+      "</b> reporting operators ("+reporting.join(", ")+"). Others are shown but not counted — never treated as zero."+
+      (muted.length? " <b style=\"color:var(--warn)\">Muted (excluded): "+muted.join(", ")+"</b>.":"");
+
+  renderStats(d.stats);
+  renderFeedstrip(d.operators||[]);
+  renderOps(d.operators||[]);
+  renderNear(d.incidents||[]);
+  drawMap(d.incidents||[]);
+  drawPlots(d.history||[]);
+  $("footnote").textContent = d.attribution||"";
+}
+
+// ---- statistics panel -------------------------------------------------------
+// Times/dates are shown in the viewer's LOCAL time (the plots above use UT); the
+// panel note says so. Server (compute_stats) does the windowing; this only formats.
+function tLoc(ts){ if(!ts) return "—";
+  return new Date(ts*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
+function dtLoc(ts){ if(!ts) return "—";
+  return new Date(ts*1000).toLocaleString([], {weekday:"short",day:"2-digit",month:"short",
+                                               hour:"2-digit",minute:"2-digit"}); }
+function renderStats(st){
+  var body=$("statsbody"), note=$("statsnote");
+  if(!st){ body.innerHTML='<tr><td class="muted">no statistics available</td></tr>';
+           note.textContent=""; return; }
+  function offRow(label, s, withDate){
+    if(!s || s.off==null) return '<tr><td class="k">'+label+'</td><td class="v">—</td></tr>';
+    var when=withDate?dtLoc(s.ts):tLoc(s.ts);
+    return '<tr><td class="k">'+label+'</td><td class="v"><b>'+fmt(s.off)+
+           '</b> <span class="sub">@ '+when+'</span></td></tr>';
+  }
+  function incRow(label, s, withDate){
+    if(!s || s.off==null) return '<tr><td class="k">'+label+'</td><td class="v">—</td></tr>';
+    var when=withDate?dtLoc(s.ts):tLoc(s.ts);
+    var tag=[s.dno, s.voltage].filter(Boolean).join(" ");
+    return '<tr><td class="k">'+label+'</td><td class="v"><b>'+fmt(s.off)+
+           '</b> <span class="sub">'+(tag?tag+' · ':'')+when+'</span></td></tr>';
+  }
+  var v=st.volt_now||{};
+  var voltStr='HV '+(v.HV||0)+' · LV '+(v.LV||0)+
+              (v.EHV?' · EHV '+v.EHV:'')+
+              ' <span class="sub">· '+(v.unknown||0)+' unclassified</span>';
+  body.innerHTML=
+    offRow("Max customers off — 24 h", st.max_off_24h, false)+
+    offRow("Max customers off — 7 days", st.max_off_week, true)+
+    incRow("Worst incident — 24 h", st.worst_inc_24h, false)+
+    incRow("Worst incident — 7 days", st.worst_inc_week, true)+
+    '<tr><td class="k">Active incidents by voltage</td><td class="v">'+voltStr+'</td></tr>';
+  note.innerHTML='Customer-count figures exclude SPEN areas, because the number of '+
+    'customers affected by cuts is not provided by them.';
+}
+
+function stEl(o){
+  var label={ok:"live","stale":"stale","no-key":"key needed","no-feed":"no feed",error:"down"}[o.status]||o.status;
+  return '<span class="st '+o.status+'">'+o.dno+": "+label+'</span>';
+}
+function renderFeedstrip(ops){ $("feedstrip").innerHTML = ops.map(stEl).join(""); }
+
+var countryMode = false;
+function renderOps(ops){
+  if(countryMode){ renderOpsByCountry(); return; }
+  $("opshead").innerHTML='<th>DNO</th><th class="num">off</th><th class="num">inc</th><th>severity</th><th>feed</th><th></th>';
+  var muted = pcMutedGet();
+  var max = Math.max(1, Math.max.apply(null, ops.map(function(o){return o.customers_off||0;})));
+  var rows = ops.slice().sort(function(a,b){return (b.customers_off||0)-(a.customers_off||0);});
+  $("opsbody").innerHTML = rows.map(function(o){
+    var w = Math.round(100*(o.customers_off||0)/max);
+    var pct = o.customers_tracked ? ((100*(o.customers_off||0)/o.customers_tracked).toFixed(3)+"%") : "";
+    var m = muted.indexOf(o.dno)>=0;
+    return '<tr class="oprow'+(m?" muted":"")+'"><td>'+o.dno+"</td>"+
+      '<td class="num" title="'+pct+' of tracked">'+fmt(o.customers_off)+"</td>"+
+      '<td class="num">'+fmt(o.incidents)+"</td>"+
+      '<td><div class="bar" style="width:'+w+'%"></div></td>'+
+      '<td><span class="st '+o.status+'">'+
+        ({ok:"live","stale":"stale","no-key":"key needed","no-feed":"no feed",error:"down"}[o.status]||o.status)+
+        "</span></td>"+
+      '<td><button class="mutebtn'+(m?" on":"")+'" onclick="pcMutedToggle(\''+o.dno+'\')" title="'+
+        (m?"Muted — excluded from totals &amp; alarms. Click to include again.":"Mute this provider — exclude from totals &amp; alarms (use when it warns its data may be unreliable)")+
+        '">'+(m?"muted":"mute")+"</button></td></tr>";
+  }).join("");
+}
+// Per-country view: place each live incident by its coordinate (countryOf) and sum. Coordless
+// or no-customer-count rows (e.g. SPEN) add 0 to 'off' but still count as an incident — the
+// same basis as the national figure. Reporting operators only (as the incident list already is).
+function renderOpsByCountry(){
+  $("opshead").innerHTML='<th>Country</th><th class="num">off</th><th class="num">inc</th><th>severity</th>';
+  var agg={};
+  ((last&&last.incidents)||[]).forEach(function(i){
+    var cn=countryOf(i.lat,i.lon)||"Unknown";
+    var a=agg[cn]||(agg[cn]={off:0,inc:0});
+    a.off+=(i.customers_off||0); a.inc++;
+  });
+  var rows=Object.keys(agg).map(function(k){return {name:k,off:agg[k].off,inc:agg[k].inc};})
+             .sort(function(a,b){return (b.off-a.off)||(b.inc-a.inc);});
+  var max=Math.max.apply(null,rows.map(function(r){return r.off;}).concat([1]));
+  $("opsbody").innerHTML=rows.map(function(r){
+    var w=Math.round(100*r.off/max);
+    return "<tr><td>"+r.name+"</td>"+
+      '<td class="num">'+fmt(r.off)+"</td>"+
+      '<td class="num">'+fmt(r.inc)+"</td>"+
+      '<td><div class="bar" style="width:'+w+'%"></div></td></tr>';
+  }).join("");
+}
+
+// ---- dot map (accurate lat/lon; regions from NESO licence-area boundaries) ----
+function projector(g, rightPad){
+  // aspect-correct equirectangular (lon compressed by cos(mid-lat) so Britain isn't
+  // stretched sideways); fits the bounds into the canvas, letterboxed and centred.
+  // rightPad reserves a gutter on the right so, when the key floats top-right, the map
+  // shifts left and the North-East landmass slides out from under the key box.
+  rightPad = rightPad || 0;
+  var pad=6;
+  var kx=Math.cos((UK.latN+UK.latS)/2*Math.PI/180);
+  var availW=g.w-2*pad-rightPad;
+  var Xspan=(UK.lonE-UK.lonW)*kx, Yspan=(UK.latN-UK.latS);
+  var sc=Math.min(availW/Xspan,(g.h-2*pad)/Yspan);
+  var ox=pad+(availW-Xspan*sc)/2, oy=(g.h-Yspan*sc)/2;
+  var P=function(lon,lat){ return [ox+(lon-UK.lonW)*kx*sc, oy+(UK.latN-lat)*sc]; };
+  P.w=g.w; P.h=g.h;
+  return P;
+}
+
+// Incident heat scale — colour by customers-off on the sliding ramp the user set:
+//   <10 yellow · 50 orange · 100 dark-orange · 500 red · 750 purple · >1000 hot-pink.
+// Piecewise-linear in customers-off between the named stops; clamped at both ends.
+var HEAT_STOPS = [[10,[255,230,0]],[50,[255,150,0]],[100,[255,77,0]],
+                  [500,[224,0,0]],[750,[138,14,134]],[1000,[255,62,165]]];
+function heatRGB(off){
+  var v=off||0, s=HEAT_STOPS;
+  if(v<=s[0][0]) return s[0][1];
+  if(v>=s[s.length-1][0]) return s[s.length-1][1];
+  for(var i=1;i<s.length;i++){ if(v<=s[i][0]){
+    var a=s[i-1], b=s[i], t=(v-a[0])/((b[0]-a[0])||1);
+    return [Math.round(a[1][0]+t*(b[1][0]-a[1][0])),
+            Math.round(a[1][1]+t*(b[1][1]-a[1][1])),
+            Math.round(a[1][2]+t*(b[1][2]-a[1][2]))]; } }
+  return s[s.length-1][1];
+}
+function heatCss(off){ var c=heatRGB(off); return "rgb("+c[0]+","+c[1]+","+c[2]+")"; }
+
+// Incident dot RADIUS by ABSOLUTE customers-off — the SAME scale as the map-key
+// swatches (key diameters 1.75/2.25/2.75/3.5/4.25/5/6/7.5 px at
+// 10/50/100/500/750/1000/2000/5000+, i.e. radii 0.875/1.125/1.375/1.75/2.125/2.5/3/3.75).
+// Piecewise-linear between the stops, clamped both ends, so a dot on the map reads at
+// the size the key shows. Size runs to two extra severity steps (2000, 5000+) above
+// the COLOUR ramp: HEAT_STOPS still caps at 1000, so 1000/2000/5000 dots share the top
+// pink and are told apart by SIZE alone (colour range deliberately unchanged).
+// (Base sizes were reduced 4x from the original 3.5..10 radii on request.)
+var SIZE_STOPS = [[10,0.875],[50,1.125],[100,1.375],[500,1.75],[750,2.125],
+                  [1000,2.5],[2000,3],[5000,3.75]];
+function radiusFor(off){
+  var v=off||0, s=SIZE_STOPS;
+  if(v<=s[0][0]) return s[0][1];
+  if(v>=s[s.length-1][0]) return s[s.length-1][1];
+  for(var i=1;i<s.length;i++){ if(v<=s[i][0]){
+    var a=s[i-1], b=s[i], t=(v-a[0])/((b[0]-a[0])||1);
+    return a[1]+t*(b[1]-a[1]); } }
+  return s[s.length-1][1];
+}
+
+// Word-wrap `text` to at most `maxw` px given the current ctx font; returns lines.
+function wrapText(x,text,maxw){
+  var words=String(text).split(" "), lines=[], line="";
+  for(var i=0;i<words.length;i++){
+    var t=line?line+" "+words[i]:words[i];
+    if(x.measureText(t).width>maxw && line){ lines.push(line); line=words[i]; }
+    else line=t;
+  }
+  if(line) lines.push(line);
+  return lines;
+}
+// New-cut pulse: incidents that have NEWLY APPEARED in the monitor (tracked by id,
+// client-side) slow-pulse for PULSE_MS. Never pulse the pre-existing set on first load.
+var PULSE_MS = 900000;          // 15 minutes
+var firstSeen = {};             // "dno|id" -> ms first observed (0 = pre-existing at load)
+var seeded = false;             // has the initial set been recorded (so it never pulses)?
+var lastIncs = [];
+var mapRAF = null;
+
+// ---- pan / wheel-zoom view transform ----------------------------------------
+// Everything is drawn in base canvas coords (UK fitted to the canvas); this view
+// scales+translates the whole map like an image. scale 1 = fully zoomed out (fit).
+var view = {scale:1, tx:0, ty:0};
+var lastG = {w:600, h:750};
+var smoothPlots = true;                    // graphs: new (1h-rolling rate + stepped counts)
+var showUnplanned = true, showPlanned = true;   // map dot visibility toggles
+// Each operator's official live power-cut map (verified Sep 2026). Clicking a licence
+// area opens its operator's page in a new tab.
+var DNO_URL = {
+  NGED: "https://powercuts.nationalgrid.co.uk/power-cut-map",
+  UKPN: "https://www.ukpowernetworks.co.uk/power-cut/map",
+  NPg:  "https://www.northernpowergrid.com/power-cuts-map",
+  ENWL: "https://www.enwl.co.uk/power-cuts/power-cuts-power-cuts-live-power-cut-information-fault-list/fault-list/",
+  SPEN: "https://www.spenergynetworks.co.uk/pages/power_cuts_map.aspx",
+  SSEN: "https://powertrack.ssen.co.uk/",
+  NIE:  "https://powercheck.nienetworks.co.uk/",
+  ESB:  "https://powercheck.esbnetworks.ie/"
+};
+function clampView(g){
+  view.scale = Math.max(1, Math.min(8, view.scale));
+  view.tx = Math.min(0, Math.max(g.w - g.w*view.scale, view.tx));   // keep edges pinned in
+  view.ty = Math.min(0, Math.max(g.h - g.h*view.scale, view.ty));
+}
+function redrawMap(){ if(lastIncs) paintMap(lastIncs); }
+
+function noteIncidents(incs){
+  var nowms = Date.now(), present = {};
+  incs.forEach(function(i){
+    var id = i.dno+"|"+i.id;
+    present[id] = 1;
+    if(!(id in firstSeen)) firstSeen[id] = seeded ? nowms : 0;  // 0 -> existed at load
+  });
+  Object.keys(firstSeen).forEach(function(id){ if(!present[id]) delete firstSeen[id]; });
+  seeded = true;
+}
+
+function drawMap(incs){
+  lastIncs = incs;
+  noteIncidents(incs);
+  startMapAnim();               // draws once; keeps animating only while a pulse is live
+}
+
+function startMapAnim(){
+  if(mapRAF) return;
+  (function frame(){
+    var pulsing = paintMap(lastIncs);
+    mapRAF = pulsing ? requestAnimationFrame(frame) : null;
+  })();
+}
+
+function hexA(hex,al){ var h=hex.replace("#",""); return "rgba("+
+  parseInt(h.substr(0,2),16)+","+parseInt(h.substr(2,2),16)+","+parseInt(h.substr(4,2),16)+","+al+")"; }
+
+// pixel-space land test (even-odd ray cast) over the projected licence-area rings
+function _inRing(px,py,ring){ var inside=false,n=ring.length,j=n-1;
+  for(var i=0;i<n;i++){ var xi=ring[i][0],yi=ring[i][1],xj=ring[j][0],yj=ring[j][1];
+    if(((yi>py)!==(yj>py)) && (px < (xj-xi)*(py-yi)/((yj-yi)||1e-9)+xi)) inside=!inside; j=i; }
+  return inside; }
+function _inLand(px,py,polys){ for(var k=0;k<polys.length;k++){ var rs=polys[k];
+  for(var r=0;r<rs.length;r++){ if(_inRing(px,py,rs[r])) return true; } } return false; }
+
+// Cache the projected polygons + computed label positions per canvas size (the layout
+// only changes on resize, so this heavy pass never runs during pulse animation frames).
+var _rc={key:null, polys:null, labels:null};
+function _ensureLayout(x,P,keyRect){
+  var key=P.w+"x"+P.h+(keyRect?"|f":"|n");
+  if(_rc.key===key) return _rc;
+  var polys=DNO_AREAS.map(function(a){ return a.rings.map(function(r){
+    return r.map(function(pt){ return P(pt[0],pt[1]); }); }); });
+  x.font="bold 13px ui-monospace,Menlo,Consolas,monospace";
+  var maxT=Math.max(P.w,P.h)*1.3;
+  function inOwn(px,py,rings){ for(var r=0;r<rings.length;r++){ if(_inRing(px,py,rings[r])) return true; } return false; }
+  var labels=DNO_AREAS.map(function(a,idx){
+    var A=P(a.c[0],a.c[1]), S=P(a.s[0],a.s[1]);
+    var dx=S[0]-A[0], dy=S[1]-A[1], L=Math.hypot(dx,dy)||1; dx/=L; dy/=L;
+    var pw=x.measureText(a.a).width+10, ph=17, own=polys[idx];
+    // march out from the anchor: E = where the ray leaves the region's OWN polygon (its
+    // near edge — the leader stops here so lines stay short); K = where it leaves ALL land.
+    var E=null, K=null;
+    for(var t=0;t<maxT;t+=4){ var px=A[0]+dx*t, py=A[1]+dy*t;
+      if(!E && !inOwn(px,py,own)) E=[px,py];
+      if(!_inLand(px,py,polys)){ K=[px,py]; break; } }
+    if(!E) E=S; if(!K) K=E;
+    // pill: a label-width beyond the coast, then push seaward until all corners clear land
+    var gap=pw, nearHalf=(Math.abs(dx)*pw+Math.abs(dy)*ph)/2;
+    var cx=K[0]+dx*(gap+nearHalf), cy=K[1]+dy*(gap+nearHalf);
+    var onLand=function(X,Y){ return _inLand(X,Y,polys)
+        || _inLand(X-pw/2,Y-ph/2,polys) || _inLand(X+pw/2,Y-ph/2,polys)
+        || _inLand(X-pw/2,Y+ph/2,polys) || _inLand(X+pw/2,Y+ph/2,polys); };
+    var g=0; while(onLand(cx,cy)&&g<120){ cx+=dx*4; cy+=dy*4; g++; }
+    var fixed=false;
+    if(a.lab){ var Lp=P(a.lab[0],a.lab[1]); cx=Lp[0]; cy=Lp[1]; fixed=true; }  // Andy-placed label
+    return {a:a, cx:cx, cy:cy, pw:pw, ph:ph, dx:dx, dy:dy, ex:E[0], ey:E[1], onLand:onLand, fixed:fixed};
+  });
+  // settle: separate clashing pills, then re-clear land / clamp / avoid the key
+  function settle(o){
+    if(o.fixed){                        // pinned label: keep the chosen spot, only clamp on-canvas
+      o.cx=Math.max(o.pw/2+2, Math.min(P.w-o.pw/2-2, o.cx));
+      o.cy=Math.max(o.ph/2+2, Math.min(P.h-o.ph/2-2, o.cy));
+      return;
+    }
+    var g=0; while(o.onLand(o.cx,o.cy)&&g<80){ o.cx+=o.dx*4; o.cy+=o.dy*4; g++; }
+    o.cx=Math.max(o.pw/2+2, Math.min(P.w-o.pw/2-2, o.cx));
+    o.cy=Math.max(o.ph/2+2, Math.min(P.h-o.ph/2-2, o.cy));
+    if(keyRect && o.cx+o.pw/2>keyRect.x0-4 && o.cx-o.pw/2<keyRect.x1+4 && o.cy-o.ph/2<keyRect.y1+4)
+      o.cy=keyRect.y1+4+o.ph/2;
+  }
+  for(var pass=0; pass<3; pass++){
+    for(var it=0; it<16; it++){
+      var moved=false;
+      for(var i=0;i<labels.length;i++) for(var j=i+1;j<labels.length;j++){
+        var Aa=labels[i], Bb=labels[j];
+        var ox=(Aa.pw+Bb.pw)/2+6-Math.abs(Aa.cx-Bb.cx);
+        var oy=(Aa.ph+Bb.ph)/2+5-Math.abs(Aa.cy-Bb.cy);
+        if(ox>0 && oy>0){                                 // overlapping — push apart
+          if(Aa.fixed && Bb.fixed){ /* both pinned — leave them */ }
+          else if(oy<=ox){ var s=oy/2+0.5;
+            if(Aa.fixed){ Bb.cy += (Bb.cy>=Aa.cy? s*2 : -s*2); }        // move only the free one
+            else if(Bb.fixed){ Aa.cy += (Aa.cy>=Bb.cy? s*2 : -s*2); }
+            else if(Aa.cy<=Bb.cy){Aa.cy-=s;Bb.cy+=s;}else{Aa.cy+=s;Bb.cy-=s;}
+            moved=true;
+          }
+          else { var s2=ox/2+0.5;
+            if(Aa.fixed){ Bb.cx += (Bb.cx>=Aa.cx? s2*2 : -s2*2); }
+            else if(Bb.fixed){ Aa.cx += (Aa.cx>=Bb.cx? s2*2 : -s2*2); }
+            else if(Aa.cx<=Bb.cx){Aa.cx-=s2;Bb.cx+=s2;}else{Aa.cx+=s2;Bb.cx-=s2;}
+            moved=true;
+          }
+        }
+      }
+      if(!moved) break;
+    }
+    labels.forEach(settle);
+  }
+  _rc.key=key; _rc.polys=polys; _rc.labels=labels;
+  return _rc;
+}
+
+// Region fills at HALF alpha (so the incident dots read strongly), outline, then each
+// operator acronym floated in the sea a clear label-width off its coast, with a thin
+// leader line to the area — no end dot. keyRect (when the key floats) is avoided.
+// feed-status -> map-label ink (canvas needs literal colours, not CSS vars): matches the
+// --ok/--warn/--bad/--dim palette. Unknown/first-load statuses fall back to default ink.
+var LABEL_COL={ok:"#57d38c", stale:"#ffb454", error:"#ff5d5d", "no-key":"#7c8ba0", "no-feed":"#7c8ba0"};
+function drawRegions(x,P,keyRect){
+  var L=_ensureLayout(x,P,keyRect);
+  L.polys.forEach(function(rings,idx){
+    rings.forEach(function(ring){
+      x.beginPath();
+      ring.forEach(function(q,i){ i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1]); });
+      x.closePath();
+      x.fillStyle=hexA(DNO_AREAS[idx].b,0.5); x.fill();
+      x.strokeStyle="rgba(150,180,210,0.4)"; x.lineWidth=1; x.stroke();
+    });
+  });
+  x.font="bold 13px ui-monospace,Menlo,Consolas,monospace"; x.textBaseline="middle";
+  L.labels.forEach(function(o){
+    x.strokeStyle="rgba(150,180,210,0.6)"; x.lineWidth=1;   // leader to the region's near edge (no end dot)
+    x.beginPath(); x.moveTo(o.cx,o.cy); x.lineTo(o.ex,o.ey); x.stroke();
+    x.fillStyle="rgba(9,13,18,0.86)"; x.strokeStyle="rgba(150,180,210,0.5)"; x.lineWidth=1;
+    x.beginPath(); x.rect(o.cx-o.pw/2, o.cy-o.ph/2, o.pw, o.ph); x.fill(); x.stroke();
+    // label ink tracks feed freshness: green live, amber stale, red down; grey when a key's
+    // needed or there's no feed; default ink until the first snapshot arrives
+    x.fillStyle=pcMutedHas(o.a.a) ? "#55617a" : (LABEL_COL[statusByDno[o.a.a]] || "#dbe7f3"); x.textAlign="center";
+    x.fillText(o.a.a, o.cx, o.cy);
+  });
+  x.textAlign="left"; x.textBaseline="alphabetic";
+}
+
+function paintMap(incs){
+  var c=$("map");
+  // Responsive height: track the container width (the map is tall, so ~1.25x), clamped so
+  // the panel neither collapses on a phone nor over-expands on a wide desktop.
+  var cw=c.clientWidth||600, H=Math.max(360, Math.min(820, Math.round(cw*1.25)));
+  var g=fitCanvas(c,H), x=g.x, nowms=Date.now();
+  lastG={w:g.w,h:g.h};
+  // The key floats over the top-right ONLY when the canvas is wide enough that the
+  // box clears the landmass; otherwise it drops into normal flow beneath the map.
+  var floatKey = g.w>=610, ke=null, keyRect=null;
+  try{ ke=document.getElementById("mapkey"); if(ke&&ke.classList) ke.classList.toggle("floating", floatKey); }catch(e){}
+  if(floatKey){
+    var kw=230, kh=178;
+    try{ if(ke){ if(ke.offsetWidth) kw=ke.offsetWidth; if(ke.offsetHeight) kh=ke.offsetHeight; } }catch(e){}
+    keyRect={x0:g.w-8-kw, y0:8, x1:g.w-8, y1:8+kh};
+  }
+  // Reserve a small right gutter only while the key floats, so the map is nudged left
+  // and the key box sits over open sea rather than the landmass.
+  var P=projector(g, floatKey?40:0);
+  x.clearRect(0,0,g.w,g.h);
+  clampView(g);
+  x.save(); x.translate(view.tx, view.ty); x.scale(view.scale, view.scale);  // pan+zoom
+  drawRegions(x,P,keyRect);
+  var _home=pcHome(), _hq=null;
+  if(_home){
+    var _km=pcNearKm();
+    _hq=P(_home.lon,_home.lat);
+    var _ry=Math.abs(P(_home.lon,_home.lat+_km/111.32)[1]-_hq[1]);
+    var _rx=Math.abs(P(_home.lon+_km/(111.32*Math.cos(_home.lat*Math.PI/180)),_home.lat)[0]-_hq[0]);
+    x.beginPath(); x.ellipse(_hq[0],_hq[1],_rx,_ry,0,0,Math.PI*2);
+    x.fillStyle="rgba(94,200,255,.08)"; x.fill();
+    x.setLineDash([3/view.scale,3/view.scale]); x.strokeStyle="rgba(94,200,255,.75)";
+    x.lineWidth=1.2/view.scale; x.stroke(); x.setLineDash([]);
+  }
+  // dot SIZE and COLOUR both encode customers-off on the SAME absolute scale as the
+  // map key (radiusFor + heatRGB share the 10/50/100/500/750/1000 stops), so a dot
+  // matches the key swatch of its magnitude regardless of the day's worst cut.
+  var phase = (nowms % 1600)/1600;   // slow ~1.6s sawtooth: 0 -> 1 then reset
+  var anyPulse = false, drawn = 0;
+  incs.forEach(function(i){
+    if(i.planned ? !showPlanned : !showUnplanned) return;   // visibility toggles
+    if(i.lat==null||i.lon==null) return;
+    var q=P(i.lon,i.lat);
+    if(q[0]<0||q[0]>g.w||q[1]<0||q[1]>g.h) return;
+    drawn++;
+    // Magnitude value driving size+colour. Normally customers-off. For incidents with no
+    // customer count (e.g. SPEN, which publishes none), map the number of POSTCODE SECTORS
+    // affected onto the same bands: 1 sector -> smallest band, 2 -> next, etc. So SPEN dots
+    // use the identical colour ramp and size scale as everyone else, just keyed on sectors.
+    var off;
+    if(i.customers_off==null){
+      var nsec = Math.max(1, i.sectors||1);
+      off = SIZE_STOPS[Math.min(nsec-1, SIZE_STOPS.length-1)][0];
+    } else {
+      off = i.customers_off||0;
+    }
+    var r = radiusFor(off);                          // absolute size scale = the map key
+    var mdot = pcMutedHas(i.dno);                     // muted provider — greyed, no pulse
+    var col = mdot ? "90,100,116" : (i.planned ? "111,183,255" : heatRGB(off).join(","));   // planned = light blue
+    var seen = firstSeen[i.dno+"|"+i.id];
+    var isNew = !mdot && seen && (nowms - seen) < PULSE_MS;
+    if(isNew){
+      anyPulse = true;                                     // outward ping: grows and fades
+      x.beginPath(); x.arc(q[0],q[1], r+1+9*phase, 0,7);
+      x.strokeStyle = "rgba("+col+","+(0.55*(1-phase)).toFixed(3)+")"; x.lineWidth=1.5; x.stroke();
+    }
+    x.beginPath(); x.arc(q[0],q[1],r,0,7);
+    x.fillStyle="rgb("+col+")"; x.fill();
+    x.strokeStyle="rgba(235,244,252,.6)"; x.lineWidth=0.7; x.stroke();  // light rim pops on dark fills
+  });
+  if(_hq){                                  // home marker, drawn over the dots
+    var _s=1/view.scale;
+    x.beginPath(); x.arc(_hq[0],_hq[1],3.2*_s,0,Math.PI*2); x.fillStyle="#e6edf5"; x.fill();
+    x.strokeStyle="#5ec8ff"; x.lineWidth=1.6*_s; x.beginPath(); x.arc(_hq[0],_hq[1],5.5*_s,0,Math.PI*2); x.stroke();
+    x.font=(10*_s)+"px sans-serif"; x.fillStyle="#cfe3f2"; x.textAlign="left";
+    x.fillText("home", _hq[0]+8*_s, _hq[1]+3*_s);
+  }
+  x.restore();   // back to screen space for the fixed footer
+  x.fillStyle="#54637a"; x.textAlign="right"; x.fillText(drawn+" plotted", g.w-6, g.h-6); x.textAlign="left";
+  if(view.scale>1.01){ x.textAlign="left"; x.fillStyle="#54637a"; x.fillText("zoom "+view.scale.toFixed(1)+"× · drag to pan · dbl-click to reset", 6, g.h-6); }
+  return anyPulse;
+}
+
+// ---- history plots ----------------------------------------------------------
+function drawPlots(hist){
+  drawTotals($("totals"), hist);
+  drawRate($("rate"), hist);
+}
+// ---- shared plot framework: time x-axis (UT) + numeric y-scale --------------
+function nfmt(v){ var a=Math.abs(v);
+  if(a>=1000) return (v/1000).toFixed(a<10000?1:0).replace(/\.0$/,'')+"k";
+  if(a>0 && a<10) return (Math.round(v*10)/10).toString();
+  return ""+Math.round(v); }
+function niceMax(v){ if(!(v>0)) return 1; var p=Math.pow(10,Math.floor(Math.log10(v)));
+  var f=v/p; var nf=f<=1?1:f<=2?2:f<=5?5:10; return nf*p; }
+function fmtUT(ts,span){ var d=new Date(ts*1000);
+  function z(n){return (n<10?"0":"")+n;}
+  if(span<=2*86400) return z(d.getUTCHours())+":"+z(d.getUTCMinutes());   // <=2d: HH:MM
+  return z(d.getUTCDate())+"/"+z(d.getUTCMonth()+1); }                    // longer: DD/MM
+function mkctx(g,t0,t1,L,R){ return {L:L,R:R,T:8,B:22,t0:t0,t1:t1,w:g.w,h:g.h}; }
+function PX(c,ts){ return c.L+(c.w-c.L-c.R)*((ts-c.t0)/((c.t1-c.t0)||1)); }
+function PY(c,v,y0,y1){ return (c.h-c.B)-(c.h-c.B-c.T)*((v-y0)/((y1-y0)||1)); }
+function frameC(g,c){ var x=g.x; x.strokeStyle="#1c2836"; x.lineWidth=1;
+  x.beginPath(); x.moveTo(c.L,c.T); x.lineTo(c.L,c.h-c.B); x.lineTo(c.w-c.R,c.h-c.B); x.stroke(); }
+function yAxis(g,c,y0,y1,color,side){ var x=g.x,n=4; x.textBaseline="middle";
+  for(var k=0;k<=n;k++){ var v=y0+(y1-y0)*k/n, y=PY(c,v,y0,y1);
+    if(side==="L"){ x.strokeStyle="#161f2b"; x.beginPath();x.moveTo(c.L,y);x.lineTo(c.w-c.R,y);x.stroke(); }
+    x.fillStyle=color; x.textAlign=(side==="L")?"right":"left";
+    x.fillText(nfmt(v),(side==="L")?c.L-4:c.w-c.R+4,y); }
+  x.textBaseline="alphabetic"; x.textAlign="left"; }
+function xAxis(g,c){ var x=g.x, span=c.t1-c.t0; if(span<=0) return;
+  var N=Math.max(2,Math.min(6,Math.floor((c.w-c.L-c.R)/90)));
+  for(var k=0;k<=N;k++){ var ts=c.t0+span*k/N, px=PX(c,ts);
+    x.strokeStyle="#141d28"; x.beginPath();x.moveTo(px,c.T);x.lineTo(px,c.h-c.B);x.stroke();
+    x.fillStyle="#54637a"; x.textAlign=k===0?"left":(k===N?"right":"center");
+    x.fillText(fmtUT(ts,span),px,c.h-6); }
+  x.textAlign="right"; x.fillStyle="#3f5168"; x.fillText("UT",c.w-c.R,c.T+9); x.textAlign="left"; }
+function lineC(g,c,ts,vals,y0,y1,color){ var x=g.x; if(!ts.length) return;
+  x.strokeStyle=color; x.lineWidth=1.6; x.beginPath();
+  for(var i=0;i<ts.length;i++){ var px=PX(c,ts[i]),py=PY(c,vals[i],y0,y1); i?x.lineTo(px,py):x.moveTo(px,py); }
+  x.stroke(); }
+// step (stairstep) line: a value holds until the next sample — honest for snapshot data
+function stepC(g,c,ts,vals,y0,y1,color){ var x=g.x; if(!ts.length) return;
+  x.strokeStyle=color; x.lineWidth=1.6; x.beginPath();
+  var py=PY(c,vals[0],y0,y1); x.moveTo(PX(c,ts[0]),py);
+  for(var i=1;i<ts.length;i++){ var nx=PX(c,ts[i]); x.lineTo(nx,py); var ny=PY(c,vals[i],y0,y1); x.lineTo(nx,ny); py=ny; }
+  x.stroke(); }
+// trailing-window rate: events counted in the last ROLL_MS, divided by the span they
+// cover -> a true per-hour figure that ignores the 15-min feed-refresh quantisation.
+var ROLL_MS = 3600;   // 1 hour (seconds, matching ts units)
+function rollRate(hist){
+  var T=hist.map(function(r){return r.ts;});
+  var NW=hist.map(function(r){return (r.national||{}).new||0;});
+  var CL=hist.map(function(r){return (r.national||{}).cleared||0;});
+  var ts=[],news=[],clr=[],net=[];
+  for(var i=1;i<hist.length;i++){
+    var j=i; while(j>1 && T[i]-T[j-1] <= ROLL_MS) j--;          // first sample inside the window
+    var sn=0,sc=0; for(var k=j;k<=i;k++){ sn+=NW[k]; sc+=CL[k]; }
+    var hrs=Math.max((T[i]-T[Math.max(0,j-1)])/3600, 1/60);     // span actually covered
+    ts.push(T[i]); news.push(sn/hrs); clr.push(sc/hrs); net.push((sn-sc)/hrs);
+  }
+  return {ts:ts,news:news,clr:clr,net:net};
+}
+
+function drawTotals(cv,hist){
+  var g=fitCanvas(cv,150),x=g.x; x.clearRect(0,0,g.w,g.h);
+  if(!hist.length){ x.fillStyle="#54637a"; x.fillText("no history yet — samples accrue every ~5 min",50,78); return; }
+  var ts=hist.map(function(r){return r.ts;});
+  var off=hist.map(function(r){return (r.national||{}).off||0;});
+  var inc=hist.map(function(r){return (r.national||{}).active||0;});
+  var c=mkctx(g,ts[0],ts[ts.length-1],46,42);                 // dual axis: off (L), incidents (R)
+  var mOff=niceMax(Math.max.apply(null,off)), mInc=niceMax(Math.max.apply(null,inc));
+  yAxis(g,c,0,mOff,"#5ec8ff","L"); yAxis(g,c,0,mInc,"#ffb454","R");
+  xAxis(g,c); frameC(g,c);
+  var draw = smoothPlots ? stepC : lineC;                     // stepped snapshots vs raw line
+  draw(g,c,ts,off,0,mOff,"#5ec8ff");
+  draw(g,c,ts,inc,0,mInc,"#ffb454");
+  x.fillStyle="#5ec8ff"; x.fillText("customers off"+(smoothPlots?" · stepped":""),c.L+4,c.T+9);
+}
+function drawRate(cv,hist){
+  var g=fitCanvas(cv,150),x=g.x; x.clearRect(0,0,g.w,g.h);
+  if(hist.length<2){ x.fillStyle="#54637a"; x.fillText("need ≥2 samples for a rate",50,78); return; }
+  var ts,news,clr,net;
+  if(smoothPlots){
+    var R=rollRate(hist); ts=R.ts; news=R.news; clr=R.clr; net=R.net;
+  } else {
+    ts=[];news=[];clr=[];net=[];
+    for(var i=1;i<hist.length;i++){
+      var dth=Math.max(1/60,(hist[i].ts-hist[i-1].ts)/3600);
+      var nn=(hist[i].national||{}).new||0, cc=(hist[i].national||{}).cleared||0;
+      ts.push(hist[i].ts); news.push(nn/dth); clr.push(cc/dth); net.push((nn-cc)/dth);
+    }
+  }
+  var all=news.concat(clr).concat(net);
+  var hi=niceMax(Math.max.apply(null,all.concat([1])));
+  var mn=Math.min.apply(null,all.concat([0])); var lo=mn<0?-niceMax(-mn):0;
+  var c=mkctx(g,ts[0],ts[ts.length-1],46,10);
+  yAxis(g,c,lo,hi,"#54637a","L"); xAxis(g,c); frameC(g,c);
+  var zy=PY(c,0,lo,hi); x.strokeStyle="#26374a"; x.beginPath();x.moveTo(c.L,zy);x.lineTo(c.w-c.R,zy);x.stroke();
+  lineC(g,c,ts,news,lo,hi,"#ff5d5d");
+  lineC(g,c,ts,clr,lo,hi,"#57d38c");
+  lineC(g,c,ts,net,lo,hi,"#5ec8ff");
+  x.fillStyle="#54637a"; x.fillText(smoothPlots?"per hour · 1h rolling":"per hour",c.L+4,c.T+9);
+}
+
+// ---- map pan + wheel zoom ---------------------------------------------------
+(function(){
+  var c=$("map"); if(!c) return;
+  function pt(e){ var r=c.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; }
+  c.addEventListener("wheel", function(e){
+    e.preventDefault();
+    var p=pt(e), mx=p[0], my=p[1];
+    var s0=view.scale, s1=Math.max(1, Math.min(8, s0*Math.exp(-e.deltaY*0.0015)));
+    if(s1===s0) return;
+    view.tx = mx - (mx-view.tx)*(s1/s0);          // keep the point under the cursor fixed
+    view.ty = my - (my-view.ty)*(s1/s0);
+    view.scale = s1; clampView(lastG); redrawMap();
+  }, {passive:false});
+  // which licence area (if any) is under a canvas point — invert pan/zoom, hit-test rings
+  function areaAt(sx,sy){
+    if(!_rc||!_rc.polys) return -1;
+    var bx=(sx-view.tx)/view.scale, by=(sy-view.ty)/view.scale;
+    for(var k=0;k<_rc.polys.length;k++){ var rs=_rc.polys[k];
+      for(var r=0;r<rs.length;r++){ if(_inRing(bx,by,rs[r])) return k; } }
+    return -1;
+  }
+  var drag=null;
+  c.addEventListener("mousedown", function(e){ var p=pt(e);
+    drag={x:e.clientX,y:e.clientY,sx:p[0],sy:p[1],tx:view.tx,ty:view.ty,moved:false}; c.style.cursor="grabbing"; e.preventDefault(); });
+  window.addEventListener("mousemove", function(e){ if(!drag) return;
+    if(Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y) > 4) drag.moved=true;
+    view.tx=drag.tx+(e.clientX-drag.x); view.ty=drag.ty+(e.clientY-drag.y); clampView(lastG); redrawMap(); });
+  window.addEventListener("mouseup", function(){
+    if(drag){
+      if(!drag.moved){                                   // a click (not a pan) -> open operator map
+        var k=areaAt(drag.sx, drag.sy);
+        if(k>=0){ var url=DNO_URL[DNO_AREAS[k].dno]; if(url) window.open(url, "_blank", "noopener"); }
+      }
+      drag=null; c.style.cursor="grab";
+    }
+  });
+  // hover: pointer over a clickable region, grab over sea
+  c.addEventListener("mousemove", function(e){ if(drag) return; var p=pt(e);
+    c.style.cursor = areaAt(p[0],p[1])>=0 ? "pointer" : "grab"; });
+  c.addEventListener("dblclick", function(){ view.scale=1; view.tx=0; view.ty=0; redrawMap(); });
+  c.style.cursor="grab";
+})();
+
+// ---- toggles: graph style + map dot visibility -----------------------------
+(function(){
+  var s=$("tgSmooth"); if(s) s.addEventListener("change",function(e){
+    smoothPlots=e.target.checked; if(last) drawPlots(last.history||[]); });
+  var u=$("tgUnpl"); if(u) u.addEventListener("change",function(e){ showUnplanned=e.target.checked; redrawMap(); });
+  var p=$("tgPl");  if(p) p.addEventListener("change",function(e){ showPlanned=e.target.checked; redrawMap(); });
+  var cy=$("tgCountry"); if(cy) cy.addEventListener("change",function(e){
+    countryMode=e.target.checked;
+    var t=$("opsTitle"); if(t) t.firstChild.nodeValue = countryMode ? "By country " : "By operator ";
+    if(last) renderOps(last.operators||[]);
+  });
+})();
+
+// ---- window selector --------------------------------------------------------
+(function(){
+  var wins=[[6,"6h"],[24,"24h"],[168,"7d"],[720,"30d"]];
+  $("winsel").innerHTML = wins.map(function(w){
+    return '<button class="btn'+(w[0]===win?" on":"")+'" data-h="'+w[0]+'">'+w[1]+"</button>";
+  }).join("");
+  $("winsel").addEventListener("click",function(e){
+    var h=e.target.getAttribute&&e.target.getAttribute("data-h"); if(!h) return;
+    win=parseInt(h,10);
+    Array.prototype.forEach.call($("winsel").children,function(b){ b.classList.toggle("on", b.getAttribute("data-h")===h); });
+    load();
+  });
+})();
+
+// ---- settings modal ---------------------------------------------------------
+function openModal(){
+  var ops = (last&&last.operators)||GATED.map(function(o){return {dno:o,status:"no-key"};});
+  var byDno={}; ops.forEach(function(o){byDno[o.dno]=o;});
+  $("keyrows").innerHTML = GATED.map(function(dno){
+    var st=(byDno[dno]||{}).status||"no-key";
+    var lbl={ok:"live","stale":"stale","no-key":"key needed","no-feed":"no feed",error:"down"}[st]||st;
+    var ph=(dno==="ESB") ? "ESB PowerCheck subscription key — shared key active"
+                         : "paste OpenDataSoft API key";
+    return '<div class="keyrow"><label>'+dno+'</label>'+
+      '<input type="password" data-dno="'+dno+'" placeholder="'+ph+' ('+lbl+')">'+
+      '<a href="'+KEY_LINKS[dno]+'" target="_blank" rel="noopener">'+(dno==="ESB"?"Feed ↗":"Get a key ↗")+'</a></div>';
+  }).join("");
+  $("savemsg").textContent="";
+  $("modal").classList.add("show");
+}
+function closeModal(){ $("modal").classList.remove("show"); }
+$("cog").addEventListener("click",openModal);
+$("cancel").addEventListener("click",closeModal);
+$("save").addEventListener("click",function(){
+  var payload={};
+  Array.prototype.forEach.call(document.querySelectorAll("#keyrows input"),function(inp){
+    var v=inp.value.trim(); if(v) payload[inp.getAttribute("data-dno")]=v;
+  });
+  $("savemsg").textContent="saving…";
+  fetch("/api/powercut-keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
+    .then(function(r){return r.json();})
+    .then(function(j){ $("savemsg").textContent = j.ok? "saved — refetching…":"error: "+(j.error||"?");
+      if(j.ok){ setTimeout(function(){ closeModal(); load(); }, 800); } })
+    .catch(function(e){ $("savemsg").textContent="error: "+e.message; });
+});
+
+// ===== wind vs power-cuts correlation ========================================
+var wc=null, wcRegion="ALL", wcMetric="faults";
+function loadWind(){
+  fetch("/api/windcuts").then(function(r){return r.ok?r.json():null;})
+    .then(function(d){ if(!d||d.error) return; wc=d; renderWind(); }).catch(function(){});
+}
+function wcLabel(k){ return k==="ALL"?"UK & Ireland":k.replace("country:","").replace("area:",""); }
+function wcEntry(){ return wc&&wc.regions&&wc.regions[wcRegion]; }
+function wcUnit(){ return wcMetric==="faults"?"new faults/hr":"customers off/hr"; }
+function ensureWcRegions(){
+  var box=$("wcRegions"); if(!box||box.getAttribute("data-built")) return;
+  var keys=Object.keys((wc&&wc.regions)||{}); if(!keys.length) return;
+  box.innerHTML=keys.map(function(k){ return '<button class="btn'+(k===wcRegion?" on":"")+'" data-r="'+k+'">'+wcLabel(k)+'</button>'; }).join("");
+  box.setAttribute("data-built","1");
+  box.addEventListener("click",function(e){
+    var r=e.target.getAttribute&&e.target.getAttribute("data-r"); if(!r) return; wcRegion=r;
+    Array.prototype.forEach.call(box.children,function(b){b.classList.toggle("on",b.getAttribute("data-r")===r);});
+    renderWind();
+  });
+}
+function renderWind(){
+  if(!wc) return;
+  ensureWcRegions();
+  var mr=$("wcMiniRegion"); if(mr) mr.textContent=wcLabel(wcRegion);
+  drawWcCurve($("wcMini"), true);
+  updateWcPred($("wcMiniPred"));
+  if($("wcModal").classList.contains("show")){
+    drawWcCurve($("wcBig"), false);
+    updateWcPred($("wcBigPred"));
+    var m=wc.maturity||{}, st=wc.metar||{};
+    $("wcMaturity").innerHTML="Model: "+(m.samples||0)+" samples over "+(m.span_days||0)+" days · "+
+      (st.stations||0)+" METAR stations"+(st.error?' · <span class="err">wind feed: '+st.error+'</span>':'');
+  }
+}
+function updateWcPred(el){
+  if(!el) return; var e=wcEntry(); if(!e){ el.textContent="no data"; return; }
+  var g=(e.wind||{}).gust_kt, p=(e.predict||{})[wcMetric], gs=(g==null?"–":Math.round(g)+" kt");
+  if(!p||p.expected==null){ el.innerHTML="current gust <b>"+gs+"</b> · <span class=\"muted\">model still learning</span>"; return; }
+  el.innerHTML="at <b>"+gs+"</b> gust → ≈ <b>"+(+p.expected).toFixed(1)+"</b> "+wcUnit()+
+    ' <span class="muted">('+(+p.lo).toFixed(1)+"–"+(+p.hi).toFixed(1)+", n="+p.n+", "+p.conf+")</span>";
+}
+function drawWcCurve(cv, small){
+  if(!cv) return;
+  var H=small?150:360, g=fitCanvas(cv,H), x=g.x; x.clearRect(0,0,g.w,g.h);
+  var e=wcEntry(), cur=e&&e.curves&&e.curves[wcMetric], bins=(cur&&cur.bins)||[];
+  if(!bins.length){
+    x.fillStyle="#54637a"; x.textAlign="center"; var m=(wc&&wc.maturity)||{};
+    x.fillText("accumulating — "+(m.samples||0)+" samples, "+(m.span_days||0)+" days", g.w/2, H/2-4);
+    x.fillText("the wind→cuts curve appears after a storm or two", g.w/2, H/2+12);
+    x.textAlign="left"; return;
+  }
+  var binkt=(wc.bin_kt||5), gmax=bins[bins.length-1].g+binkt, ymax=1;
+  bins.forEach(function(b){ ymax=Math.max(ymax,b.mean+b.sd); }); ymax=niceMax(ymax);
+  var L=small?38:48, R=10, T=8, B=small?18:24;
+  function PXx(gg){ return L+(g.w-L-R)*(gg/gmax); }
+  function PYy(v){ return (H-B)-(H-B-T)*(v/ymax); }
+  x.strokeStyle="#1c2836"; x.lineWidth=1; x.beginPath(); x.moveTo(L,T); x.lineTo(L,H-B); x.lineTo(g.w-R,H-B); x.stroke();
+  var yn=small?3:4; x.textBaseline="middle";
+  for(var k=0;k<=yn;k++){ var v=ymax*k/yn, yy=PYy(v);
+    x.strokeStyle="#161f2b"; x.beginPath(); x.moveTo(L,yy); x.lineTo(g.w-R,yy); x.stroke();
+    x.fillStyle="#54637a"; x.textAlign="right"; x.fillText(nfmt(v), L-4, yy); }
+  x.textBaseline="alphabetic"; x.textAlign="center";
+  var step=(gmax>60?20:10);
+  for(var gg=0; gg<=gmax; gg+=step){ var xx=PXx(gg);
+    x.strokeStyle="#141d28"; x.beginPath(); x.moveTo(xx,T); x.lineTo(xx,H-B); x.stroke();
+    x.fillStyle="#54637a"; x.fillText(gg, xx, H-6); }
+  x.textAlign="right"; x.fillStyle="#3f5168"; x.fillText("gust kt", g.w-R, H-6); x.textAlign="left";
+  // baseline (calm background)
+  var by=PYy(cur.baseline||0); x.strokeStyle="#3a4b5f"; x.setLineDash([4,3]);
+  x.beginPath(); x.moveTo(L,by); x.lineTo(g.w-R,by); x.stroke(); x.setLineDash([]);
+  // mean line through bins
+  x.strokeStyle="#5ec8ff"; x.lineWidth=1.6; x.beginPath();
+  bins.forEach(function(b,i){ var cx=PXx(b.g+binkt/2), cy=PYy(b.mean); i?x.lineTo(cx,cy):x.moveTo(cx,cy); }); x.stroke();
+  // error bars + points (size ~ sample count = confidence)
+  bins.forEach(function(b){ var cx=PXx(b.g+binkt/2);
+    x.strokeStyle="rgba(94,200,255,.35)"; x.lineWidth=1;
+    x.beginPath(); x.moveTo(cx,PYy(Math.max(0,b.mean-b.sd))); x.lineTo(cx,PYy(b.mean+b.sd)); x.stroke();
+    var rr=Math.max(1.5,Math.min(4.5, 1.0+Math.log(b.n+1)));
+    x.beginPath(); x.arc(cx,PYy(b.mean),rr,0,7);
+    x.fillStyle=b.n>=8?"#5ec8ff":(b.n>=3?"#7bb0d0":"#4a6076"); x.fill(); });
+  // live marker: current gust + predicted point
+  var lg=(e.wind||{}).gust_kt;
+  if(lg!=null){ var lx=PXx(Math.min(lg,gmax));
+    x.strokeStyle="#ffb454"; x.lineWidth=1; x.setLineDash([3,3]);
+    x.beginPath(); x.moveTo(lx,T); x.lineTo(lx,H-B); x.stroke(); x.setLineDash([]);
+    var pp=(e.predict||{})[wcMetric];
+    if(pp&&pp.expected!=null){ x.beginPath(); x.arc(lx,PYy(Math.min(pp.expected,ymax)),3.5,0,7); x.fillStyle="#ffb454"; x.fill(); }
+    if(!small){ x.fillStyle="#ffb454"; x.textAlign="center"; x.fillText("now "+Math.round(lg)+"kt", Math.min(Math.max(lx,L+18),g.w-R-18), T+9); x.textAlign="left"; }
+  }
+  if(!small){ x.save(); x.translate(12,H/2); x.rotate(-Math.PI/2); x.fillStyle="#54637a"; x.textAlign="center"; x.fillText(wcUnit(),0,0); x.restore(); }
+}
+(function(){
+  var t=$("tgWind"); if(t) t.addEventListener("change",function(e){ var on=e.target.checked;
+    $("statsMain").style.display=on?"none":""; $("wcMiniWrap").style.display=on?"":"none";
+    if(on){ if(!wc) loadWind(); else renderWind(); } });
+  var en=$("wcEnlarge"); if(en) en.addEventListener("click",function(){ $("wcModal").classList.add("show"); renderWind(); });
+  var cl=$("wcClose"); if(cl) cl.addEventListener("click",function(){ $("wcModal").classList.remove("show"); });
+  var mm=$("wcMetric"); if(mm) mm.addEventListener("click",function(e){
+    var m=e.target.getAttribute&&e.target.getAttribute("data-m"); if(!m) return; wcMetric=m;
+    Array.prototype.forEach.call(mm.children,function(b){b.classList.toggle("on",b.getAttribute("data-m")===m);});
+    renderWind(); });
+})();
+
+// ---- go ---------------------------------------------------------------------
+load();
+loadWind();
+setInterval(load, 60000);       // refresh view every 60s (server samples every ~5 min)
+setInterval(loadWind, 60000);   // wind/correlation refresh
+window.addEventListener("resize",function(){ if(last) render(last); if(wc) renderWind(); });
+</script>
+</body>
+</html>
