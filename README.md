@@ -1,6 +1,6 @@
 # grid-monitor
 
-A dashboard for monitoring the GB electricity grid and GB gas supply in real time. It also shows rain, river levels and flood warnings for England (from the Environment Agency), and — if you're an Octopus Energy customer — your own household electricity and gas usage and cost.
+A dashboard for monitoring the GB electricity grid and GB gas supply in real time. It also shows live power cuts across the UK & Ireland, rain, river levels and flood warnings for England (from the Environment Agency), and — if you're an Octopus Energy customer — your own household electricity and gas usage and cost.
 
 **Full disclosure:** This project was vibe-coded with Claude Opus 4.8. Errors are probable, but when found they get corrected. A guiding principle throughout is *honesty over plausibility* — anything estimated, derived or out of date is labelled as such rather than presented as hard fact.
 
@@ -12,16 +12,39 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
 
 ### What you need
 - A machine running Python 3 (the server uses only Python's built-in libraries — nothing to `pip install`).
-- Four files placed together in one folder:
+- Five files placed together in one folder:
   - `grid_dashboard.html`
   - `grid_server.py`
   - `rain_probe.py`
   - `owm_onecall.py`
+  - `forecast_view.html`
 
   `rain_probe.py` and `owm_onecall.py` are companion modules that enable the
-  rainfall-alert diagnostics and the OpenWeather One Call 4.0 nowcast. The server
-  still runs without them — it just drops those features and uses the free weather
-  tier — but the standard install is all four together, in the same folder.
+  rainfall-alert diagnostics and the OpenWeather One Call 4.0 nowcast, and
+  `forecast_view.html` is the Forecast view page (the gauge radar and "under the
+  hood" on the Environment Agency page). The server still runs without them — it
+  just drops those features and uses the free weather tier — but the standard
+  install is all five together, in the same folder.
+
+  For the **UK & Ireland power-cuts** view (see *Power cuts* below), add these to
+  the same folder:
+  - `powercuts.py`
+  - `powercuts_page.html`
+  - `metar.py`
+  - `windcuts.py`
+  - `region_polys.json`
+
+  `gas_probe.py` is an optional companion too: it watches National Gas's published
+  notices and a derived gas-margin signal and logs what a gas alert would say (a
+  diagnostic — it doesn't sound an alarm of its own). Put it in the same folder to
+  enable it.
+
+  `powercuts.py` aggregates the live outage feeds and `powercuts_page.html` is its
+  map page; `metar.py` and `windcuts.py` add the optional wind vs power-cuts
+  correlation and need `region_polys.json` beside them. As with the rain modules,
+  the server runs fine without any of these — the power-cuts chip and page simply
+  don't appear — so they're optional, but the full install is all of them together
+  in the one folder.
 
 ### Running it
 1. Run `grid_server.py`.
@@ -31,10 +54,11 @@ The page refreshes itself roughly every 60 seconds, so you can leave it open.
 
 ### Updating an existing install
 When you replace any of the files with a newer version — `grid_server.py`,
-`rain_probe.py`, `owm_onecall.py`, or `grid_dashboard.html` — **stop and restart
-`grid_server.py`** afterwards. The server loads the Python modules once at startup,
-so changes to any of them (including the companion modules) only take effect on a
-restart; a browser refresh alone is not enough. After restarting, reload the page.
+`rain_probe.py`, `owm_onecall.py`, `gas_probe.py`, `powercuts.py`, `metar.py`, `windcuts.py`, or
+`grid_dashboard.html` / `powercuts_page.html` / `forecast_view.html` — **stop and restart `grid_server.py`**
+afterwards. The server loads the Python modules once at startup, so changes to any
+of them (including the companion modules) only take effect on a restart; a browser
+refresh alone is not enough. After restarting, reload the page.
 
 ### Files created automatically
 Once running, the server writes these into the same folder as needed:
@@ -43,8 +67,13 @@ Once running, the server writes these into the same folder as needed:
 - `alert_history.json` — a log of alerts, kept for up to 30 days.
 - A `logs/` folder — the interleaved 15-second data log (`grid_log-YYYY-MM-DD.jsonl`, frequency points and generation-mix rows, pruned after 30 days) and, under `logs/archive/`, the permanent weekly generation files that never expire.
 - `forecast_window.json` — your active-forecast-window setting (see *Alert system*).
-- `api_usage.json` and an API-call log — the per-UTC-day tally of upstream weather calls by source and purpose.
+- `api_usage_daily.json` and `api_calls.jsonl` — the per-UTC-day tally of upstream weather calls by source and purpose, plus a rolling event log of each real call.
+- `om_debug.jsonl` — one line per Open-Meteo HTTP attempt (outcome, HTTP status, exact rejection text, and any rate-limit / Retry-After headers). This is the evidence trail for diagnosing an "Open-Meteo down" report; run `python om_diag.py` (optionally `--hours 24` or `--today`) to reconstruct your real per-minute / per-hour / per-day call rate against the free-tier limits (600 / 5,000 / 10,000) and see which limit, if any, actually tripped — or whether a "daily / try again tomorrow" reply came despite a low real count, which points to a shared/CGNAT IP rather than this app's usage.
+- `rain_episodes-YYYY-MM.jsonl` and `rain_threats-YYYY-MM.jsonl` — the rain engine's record of each approaching-rain episode (alert, confirm, arrival or fizzle) and of every approach it weighed, alerted or not, used to tune the rain alerts.
+- `gas_probe-YYYY-MM.jsonl` (when `gas_probe.py` is installed) — the gas probe's readings and the phrase it would have spoken.
+- `ring_sample_ts.json` — the last time the OpenWeather backup gauges (see *weather API limits*) were sampled, so their sampling interval survives a server restart and doesn't re-spend the quota on every restart.
 - A `captures/` folder — PNG images you save from the frequency-history viewer's **⭳ save** button.
+- Power-cuts data (when the power-cuts files are installed): `powercut_keys.json` — the operator API keys you enter on the page (git-ignored; sent only to the operator they belong to); `powercuts-YYYY-MM.jsonl` — the outage history; `powercut_last_ids.json` — the incident IDs seen last poll, for counting new and cleared cuts; and, for the wind-correlation model, `windcuts_binstats.json` and `windcuts_state.json` plus a `windcuts-YYYY-MM.jsonl` audit log. These are written by the server's background sampler whether or not the power-cuts page is open.
 
 After you enter an OpenWeather API key:
 - `openweather_key.json`, `openweather_budget.json`, `wind_budget.json`, `weather_last_good.json`.
@@ -65,11 +94,10 @@ After you enter Octopus Energy credentials:
 
 ### Status and header
 - **Status badge (top area):** a green flashing icon and "nominal" means the server is pulling data correctly. It turns amber or red for warnings and alarms.
-- **Summary chips (top centre):** quick-glance pills for electricity, gas and floods. The electricity chip is always shown; the gas and flood chips only appear when there's something worth flagging. Click a chip to jump to the relevant page. (The gas chip is a *derived* signal, not an official National Grid Margins Notice — the tooltip says so.)
-- **history button (top right):** opens the alert history and statistics view (see *Alert system* below).
-- Alongside it are buttons to open the **gas**, **ea** (Environment Agency) and **my home** pages.
+- **Summary chips (top centre):** quick-glance pills for electricity, gas, floods and UK & Ireland power cuts. The electricity chip is always shown; the gas and flood chips only appear when there's something worth flagging; the power-cuts chip shows the live UK & Ireland customers-off total (bold, coloured by severity, with a planned/unplanned split in its tooltip) whenever the power-cuts feed is up. Click a chip to jump to the relevant page. (The gas chip is a *derived* signal, not an official National Grid Margins Notice — the tooltip says so.)
+- **Buttons (top right), left to right:** **live powercuts map** (opens the UK & Ireland power-cuts map — the same as clicking the power-cuts chip), **alarms**, **gas**, **ea** (Environment Agency), **my home**, and **history**, which opens the alert history and statistics view (see *Alert system* below).
 
-Press **Esc** to close any of the full-screen pages (generators, gas, EA, My Home, colourgramme, alert history).
+Press **Esc** to close any of the full-screen pages (generators, gas, power cuts, EA, My Home, colourgramme, alert history).
 
 ---
 
@@ -106,7 +134,9 @@ The two weather services this app uses have free-tier limits that reset daily at
 
 Because Open-Meteo's limit is per IP and has no key, that daily allowance is **shared by everyone using the same public IP**. If you are behind a **VPN**, a corporate/university network, mobile data, or an ISP that uses carrier-grade NAT (CGNAT), you may share one public IP with many other people — and their Open-Meteo usage counts against the same pool. In that case you can see Open-Meteo return "Daily API request limit exceeded — try again tomorrow" **much sooner than your own usage would suggest**, or even continuously, regardless of how few calls this app has made.
 
-**This is not a fault of the application.** The app reports Open-Meteo's own response faithfully, falls back to the OpenWeather nowcast (OC4) so the offshore watch keeps working, and re-checks Open-Meteo every 15 minutes — so it recovers on its own once the shared pool frees up, at the 00:00 UTC reset, or if your connection moves to a fresh IP (no restart needed). To confirm it's the shared-IP limit rather than the app, open this in a browser: `https://api.open-meteo.com/v1/forecast?latitude=50.37&longitude=-4.14&current=precipitation` — if you get an `error … Daily API request limit exceeded` response, the limit is being enforced on your IP by Open-Meteo, not by grid-monitor.
+**This is not a fault of the application.** The app reports Open-Meteo's own response faithfully and re-checks Open-Meteo every 15 minutes — so it recovers on its own once the shared pool frees up, at the 00:00 UTC reset, or if your connection moves to a fresh IP (no restart needed). While Open-Meteo is unavailable the offshore rain watch keeps working on the OpenWeather nowcast (OC4). If your EA rain gauges are *also* unavailable at the same time — so there is no local rain coverage at all — **eight OpenWeather/OC4 probes are placed around your home location** (at 20 km and 10 km on offset compass points) to stand in as virtual rain gauges, and they retract as soon as either your EA gauges reappear or Open-Meteo recovers. To confirm it's the shared-IP limit rather than the app, open this in a browser: `https://api.open-meteo.com/v1/forecast?latitude=50.37&longitude=-4.14&current=precipitation` — if you get an `error … Daily API request limit exceeded` response, the limit is being enforced on your IP by Open-Meteo, not by grid-monitor.
+
+**If you hit the Open-Meteo limit regularly, don't run the server behind a VPN or a shared/CGNAT connection.** Because the cap is enforced per public IP, the single most effective fix is to give the server its own lightly-used IP: run it on a **direct home broadband connection** rather than a VPN, mobile data, or a corporate/university network, and exclude the Python process from any VPN via split-tunnelling if you use one. Note that some consumer ISPs (mobile broadband especially, but also some fixed-line providers) use **CGNAT**, which shares one public IP across many customers — if yours does, ask the ISP for a non-CGNAT or static IP, as no setting in this app can change the shared pool you land in. Failing that, use the self-host option below for a private quota that no IP limit can touch.
 
 To sidestep it entirely, run your own Open-Meteo (it is free and open-source; a Docker image is provided by the project) and point the app at it by setting the `OPEN_METEO_BASE` environment variable before starting `grid_server.py`, e.g. `OPEN_METEO_BASE=http://localhost:8080/v1`. Unset, the app uses the public Open-Meteo host as normal.
 
@@ -124,6 +154,67 @@ The **balance** is the live supply−demand flow imbalance (total supply minus t
 
 ---
 
+## Power cuts (UK & Ireland)
+
+Open it from the **UK&IRL power cuts** chip or the **live powercuts map** button in the header, or go straight to
+**http://localhost:8412/powercuts**. The chip shows the live total number of
+customers currently off supply across the UK & Ireland — in bold, and coloured by
+severity using the same bands as the page itself (it climbs through yellow, red and
+hot-pink as the total rises) — and its tooltip breaks that into planned and
+unplanned (customers off and incident counts). Clicking the chip opens the full map
+page over the dashboard; the ✕ in the corner or **Esc** closes it. The page also
+works on its own at the `/powercuts` URL, independently of the dashboard.
+
+The map draws every distribution network operator's live outages in one place: the
+14 GB DNO licence areas (NGED, UKPN, Northern Powergrid, ENWL, SPEN, SSEN) plus
+**NIE Networks** (Northern Ireland) and **ESB Networks PowerCheck** (Republic of
+Ireland), all in one style and folded into a single national total. Each incident
+is a dot sized and coloured by how many customers it affects; planned and unplanned
+cuts are distinguished; and per-operator and per-country breakdowns, history plots
+over 6h/24h/7d/30d, and a statistics panel sit alongside. Where an operator
+publishes no coordinates its incidents are placed on the postcode-district centroid;
+where one publishes no customer counts (SPEN) it is counted by incident rather than
+customers-off, and the page says so.
+
+**Feed freshness.** Each operator's feed is polled independently and its state is
+shown honestly. A feed's last good reading — including a valid "no outages" reading —
+is kept visible for up to **2 hours** after it stops responding, shown as *stale*,
+before it is marked *down* and dropped from the national totals. Each region's map
+label is coloured to match: **green** live, **amber** stale, **red** down.
+
+**API keys.** ESB works out of the box (a shared default key is built in); NIE
+Networks needs your own key, entered via the ⚙ on the page. Keys are stored
+server-side in `powercut_keys.json` and are sent only to the operator they belong to.
+
+**Wind vs power cuts (optional).** With `metar.py` and `windcuts.py` installed, the
+statistics panel gains a stats/wind switch. It learns, per licence region, how the
+rate of *new* unplanned cuts responds to wind — binning cuts by the trailing-max
+gust of that region's METAR stations (keyless NOAA Aviation Weather data, so no key
+and no daily cap) and accumulating a mean-response curve over time, so an isolated
+storm only drives its own region's curve and calm periods set an honest baseline. It
+shows a mini response curve with an enlarge-to-full-page view, a region selector, a
+faults/customers-off toggle, and a live "given the current gust, expect roughly N…"
+prediction. It needs a few weeks of data to mature and says so until then. Like the
+power-cuts history, this model accumulates in the background whenever the server is
+running — it does not depend on the page being open.
+
+**Power cuts near you.** Using the location you set on the Environment Agency page, the
+dashboard watches for power cuts within a chosen radius of it — **5, 10 or 20 km**
+(10 km by default), set in the alarm panel. The power-cuts chip tooltip shows how many
+are near you and the nearest; on the map your location is marked with the radius drawn
+around it, and the By-Operator panel lists the nearby incidents first, nearest first,
+with distance, direction and the estimated restoration time. Arm the **Power cut near
+you** alarm category to hear them: a new unplanned fault is spoken as a warning ("Power
+cut near you: unplanned fault 2.3 kilometres north-east of you, about 450 customers off,
+estimated back on at 6:30 pm"), planned works as a quieter notice with their start and
+finish times, and each is announced again when it's over. Each incident is announced
+only once, even across page reloads. An incident with no coordinates counts if one of
+its postcodes is in your postcode district. Muted providers are skipped, and a cut is
+only called restored once it has actually left the operator's live feed — never because
+a feed went quiet, a provider was muted or the radius changed.
+
+---
+
 ## Environment Agency page (England)
 
 Open with the **ea** button.
@@ -134,6 +225,8 @@ Open with the **ea** button.
 - **River level as % of its range.** Each station shows its level as a percentage of its own EA typical range — 0% at the typical low, 100% at the typical high — next to the name in the list (blue below range, green to 80%, amber to 100%, red above) and on its plot, where the range max (100%) and min (0%) are marked as labelled lines.
 - **Click a river-level or rainfall gauge** to plot its history. Rainfall is shown as a **mm/h rate** — the raw 15-minute bucket total is converted and kept in the card's hover tooltip — and colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy). **Snow** is drawn in bright pink rather than on the rain scale. If a gauge stops reporting, its card **times out to 0 mm/h** and greys rather than presenting an old value as current, and its history plot runs through to the current time (a gap shows as empty) instead of freezing on the last reading. A gauge card's **border** additionally holds the highest intensity of the last two hours, so recent rain stays visible after it stops, while the number and fill reflect the current reading.
 - **Reading age.** River-level readings carry a coloured "…ago" — green up to an hour, amber to four hours, red beyond — so a stale gauge is obvious at a glance.
+- **Gauge radar.** The **◎ gauge radar** button at the top right of the plot area swaps the plot for a live radar-style plan of your area from the rain engine: EA gauges coloured by what they are doing (dry, steady, showery, wet), modelled sea points, tracked rain cells with their direction, speed and expected arrival, and your home at the centre. Hover over any marker for its details — a gauge shows its place, grid reference and EA reference, and how far away it is and in which direction from home. Click the button again (or pick a gauge) to go back to the plot.
+- **Under the hood.** The **⚙ under the hood** button in the top bar opens the full **Forecast view** in a new browser tab for your location and radius (see *Forecast view* below).
 - **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
 
 ### Rainfall nowcast (optional — One Call 4.0)
@@ -156,6 +249,17 @@ detections; without it they fall back to the free model. When the rain clears th
 trackers retreat back offshore and fade, leaving the sentinels watching. Snow is
 shown in bright pink throughout, never on the rain scale.
 
+If the free Open-Meteo feed becomes unreachable (see *weather API limits* above) at
+the same time as your EA rain gauges, there is no local rain coverage — so **eight
+OpenWeather/OC4 probes are placed around your home location** (at 20 km and 10 km on
+offset compass points) to stand in as virtual rain gauges, so you still get a working
+local picture. They show on the rain-gauge page with their readings, work even for an
+inland location with no sea nearby, and are metered against your OpenWeather budget
+like the trackers. They retract automatically as soon as **either** your EA gauges
+reappear **or** Open-Meteo recovers; while the offshore net is down but your EA gauges
+are still reporting, the backup isn't deployed. Like everything modelled, their cards
+are labelled as such (and never as "sea", since they can sit over land).
+
 Alongside this the server runs a background rain-alert assessment that combines
 your real gauges, OpenWeather's minute-by-minute precipitation forecast for the
 next hour, and local pressure and visibility trends — building a picture of what
@@ -174,6 +278,24 @@ confirmed gauge reading (honesty over plausibility). The whole feature is
 throttled to your daily OpenWeather call budget, and if the key isn't subscribed
 to One Call 4.0 it simply doesn't appear — the standard rainfall panel keeps
 working on the free tier.
+
+### Forecast view
+
+**http://localhost:8412/forecast** (or **⚙ under the hood** on the Environment Agency
+page) shows the rain engine's full picture: the same radar plan as the gauge radar,
+plus the current situation (for example *approaching · moderate · west*), coverage and
+wet-gauge counts, the steering wind it is using, any gauges it has flagged as
+stationary or suspect, each tracked rain cell with its speed and arrival estimate, and
+what the rain alerts would say. It uses the location saved on the Environment Agency
+page (or the location in the link), refreshes on its own, and **demo** shows an example
+scene. Nothing here is a forecast service of its own — it shows exactly what drives the
+rain alerts.
+
+Gauges wet for hours in one place are ringed and left out of approach tracking:
+**amber** = stationary (the weather model agrees it's drizzling there), **red** = suspect
+(the model is dry — possibly a faulty gauge). A tracked cell's speed is only shown once
+rain has actually moved from gauge to gauge and the speed fits the wind that steers
+showers (the ~1.5 km-high "850 hPa" wind); otherwise it reads *speed unverified*.
 
 ---
 
@@ -261,9 +383,27 @@ The page retries every 60 seconds, so once the server is running and you're on t
 **The page loads but a panel is blank or a source shows "failed".**
 Individual data feeds (grid, gas, flood, weather) come from separate public services and can occasionally be slow or unavailable. The dashboard flags a failed feed in the status strip at the bottom rather than blanking the whole page, and retries automatically. A single failing feed doesn't mean the app is broken.
 
+**The Environment Agency (rivers / rainfall) calls keep timing out.**
+The EA real-time flood-monitoring API is a public Beta service that is occasionally slow or unresponsive for everyone — its calls can time out server-side regardless of your connection. The dashboard keeps the last good data, flags "retrying automatically", and recovers on its own when the API responds again; a single bad cycle is not a fault in the app. To check whether it's the EA API rather than your machine, open `https://environment.data.gov.uk/flood-monitoring/id/floods` in a browser — if that hangs or errors, the API itself is down.
+
+**A power-cuts operator shows "stale" or "down".**
+Each operator feed is independent and public, and some go quiet from time to time (ESB in particular). A feed's last good data stays on the map as *stale* for up to two hours before it's marked *down* and dropped from the totals, and the region's map label is coloured green/amber/red to match — so a brief outage of one feed doesn't blank the map or the total. NIE Networks needs your own API key (entered via the ⚙ on the page); without it that region simply reads "key needed".
+
+**The offshore rain watch shows "Open-Meteo daily limit exceeded".**
+See *A note on weather API limits (shared IPs / VPNs)* above — this is almost always a shared/VPN/CGNAT public IP hitting Open-Meteo's per-IP cap, not your own usage or a fault in the app. The offshore watch keeps working on the OpenWeather (One Call 4.0) fallback meanwhile, reading a few sea points per sample — those nearest the wind's direction first.
+
 **The weather panel asks for a key / My Home asks for credentials.**
 Those features need their own credentials (OpenWeather for weather; Octopus Energy for My Home). See the relevant sections above. Both are optional — the core grid, gas and environment pages work without them.
 
 ---
 
-*README build 260904.3*
+## Other files in this repository
+
+- `CHANGELOG.md` — what changed and when, with each file's own build history at the end.
+- `WEATHER_ALERT_DESIGN.md` — how the rain engine works: gauges, sea points, tracking, the approach alert and its tuning values.
+- `KNOWN_ISSUES.md` — known issues and open questions.
+- `LICENSE` — MIT licence.
+
+---
+
+*README build 260926.1*
