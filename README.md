@@ -2,7 +2,7 @@
 
 A dashboard for monitoring the GB electricity grid and GB gas supply in real time. It also shows live power cuts across the UK & Ireland, rain, river levels and flood warnings for England (from the Environment Agency), and — if you're an Octopus Energy customer — your own household electricity and gas usage and cost.
 
-**Full disclosure:** This project was vibe-coded with Claude Opus 4.8. Errors are probable, but when found they get corrected. A guiding principle throughout is *honesty over plausibility* — anything estimated, derived or out of date is labelled as such rather than presented as hard fact.
+**Full disclosure:** This project was vibe-coded with Claude Opus 4.8 and Opus 5.5. Errors are probable, but when found they get corrected. A guiding principle throughout is *honesty over plausibility* — anything estimated, derived or out of date is labelled as such rather than presented as hard fact.
 
 **For educational and hobby purposes only. Not to be used for operational or safety of life decisions.**
 
