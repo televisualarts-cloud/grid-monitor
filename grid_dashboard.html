@@ -998,6 +998,7 @@
   .ea-fc.sev1{border-color:rgba(255,92,108,.5);background:rgba(255,92,108,.10);color:var(--crit)}
   .ea-fc.sev2{border-color:rgba(245,140,66,.5);background:rgba(245,140,66,.10);color:#f5934a}
   .ea-fc.sev3{border-color:rgba(245,185,66,.5);background:rgba(245,185,66,.10);color:var(--warn)}
+  .ea-fc.stale{border-style:dashed;border-color:var(--line2);background:transparent;color:var(--ink-dim);align-self:center}
   .ea-fc.none{color:var(--ok);border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.08)}
   .ea-flood-list{margin:0 auto 22px;display:flex;flex-direction:column;gap:7px}
   .ea-flood-list.scroll{max-height:min(600px,70vh);overflow-y:auto;padding-right:4px}
@@ -2000,7 +2001,23 @@ async function tick(){
    early-warning proxy), NOT an official Margins Notice, and is labelled so. */
 let elecSummary={level:"ok",count:0,title:null};
 let gasSummary=null;      // {level,text} or null when clear/unknown
-let floodSummary=null;    // {sev,text} or null when clear
+let floodSummary=null;
+// Minutes since EA's flood service last answered (null if unknown).
+function eaFloodDownMin(goodTs){ return goodTs ? Math.max(1, Math.round((Date.now()/1000-goodTs)/60)) : null; }
+// EA page: "Backend unreadable for N minutes" next to the flood counts while they are held.
+function eaFloodStaleHtml(f){
+  const d=eaData||{};
+  const nat=!!(f&&f.stale), loc=!!d.local_floods_stale;
+  if(!nat && !loc) return "";
+  const ts=Math.min(nat&&f.good_ts?f.good_ts:Infinity, loc&&d.local_floods_good_ts?d.local_floods_good_ts:Infinity);
+  const m=isFinite(ts)?eaFloodDownMin(ts):null;
+  return "Backend unreadable"+(m!=null?(" for "+m+" minute"+(m===1?"":"s")):"")+
+         " — showing the last good flood data"+(loc&&!nat?" for your area":"");
+}
+function eaFloodStaleNote(f){
+  const el=document.getElementById("eaFloodStale"); if(!el) return;
+  const t=eaFloodStaleHtml(f); el.textContent=t; el.style.display=t?"":"none";
+}    // {sev,text} or null when clear
 let rainSummary=null;     // {cls,text,badge,flash} or null — set by the rain alarm engine
 let pcSummary=null;       // {off,unOff,unInc,plOff,plInc,…} or null — UK & Ireland power cuts
 // Power-cut totals/alerts mode: false = unplanned only (default), true = include planned.
@@ -2149,8 +2166,9 @@ async function refreshUtilData(){
       if(W && A) text=n+" flood warnings & alerts";
       else if(W) text=W+" "+(c2?"":"severe ")+"flood warning"+(W>1?"s":"");
       else text=A+" flood alert"+(A>1?"s":"");
-      floodSummary={sev, text, stale:!!f.stale, staleAge:f.stale_age_s};
+      floodSummary={sev, text, stale:!!f.stale, goodTs:f.good_ts||null};
     }
+    eaFloodStaleNote(f);                      // keep the EA page's note current between its own refreshes
     Alarm.evaluateFloods(c, (eaData&&eaData.local_floods)||[],
       {stale:!!f.stale, localStale:!!(eaData&&eaData.local_floods_stale), localKnown:!!eaData});
   }catch(e){ /* leave floodSummary as-is */ }
@@ -2264,12 +2282,15 @@ function buildHeaderSummaries(){
   }
   // Flood — only when EA warnings are in force.
   if(floodSummary){
-    const fst=floodSummary.stale;
+    // held count (EA not answering): a "*" in the chip's own alert-level colour; the
+    // plain-words explanation is on the EA page and in the tooltip
+    const fst=floodSummary.stale, fmin=eaFloodDownMin(floodSummary.goodTs);
     chips.push('<div class="hdr-sum sev'+floodSummary.sev+'" data-act="ea" title="'+
-      (fst?('EA flood feed not responding — showing the last good count'+
-        (floodSummary.staleAge!=null?(' from '+Math.round(floodSummary.staleAge/60)+' min ago'):'')+'. '):'')+
+      (fst?('* EA flood backend unreadable'+(fmin!=null?(' for '+fmin+' minute'+(fmin===1?'':'s')):'')+
+        ' — showing the last good count. '):'')+
       'Open Environment Agency page">'+
-      '<span class="ic">💧</span><span><b>'+floodSummary.text+'</b>'+(fst?' <span style="opacity:.7">(stale)</span>':'')+'</span></div>');
+      '<span class="ic">💧</span><span><b>'+floodSummary.text+'</b>'+
+      (fst?'<b style="color:'+({1:"var(--crit)",2:"#f5934a",3:"var(--warn)"}[floodSummary.sev]||"inherit")+'">*</b>':'')+'</span></div>');
   }
   // Rainfall — set by the armed rain alarm engine (only shows while armed).
   if(rainSummary){
@@ -6585,6 +6606,8 @@ function eaRender(){
   // rain alert chip sits to the RIGHT of the flood banner, in the same row
   // (mirrors the main-page header chip; same rainSummary state drives both)
   html+='<span class="ea-rainchip" id="eaRainChip">'+(rainSummary?rainChipHtml().replace(' data-act="ea"',''):'')+'</span>';
+  { const st=eaFloodStaleHtml(eaFloods);
+    html+='<div class="ea-fc stale" id="eaFloodStale"'+(st?'':' style="display:none"')+'>'+st+'</div>'; }
   html+='</div>';
 
   // ---- per-endpoint diagnostics banner ----

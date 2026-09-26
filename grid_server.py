@@ -4830,7 +4830,8 @@ def get_ea_floods():
             # A failed EA call is "unknown", never "no floods": keep serving the last good
             # counts, marked stale with their age, so a feed blip can't end a flood episode
             # (the dashboard would otherwise re-announce the same alert when EA recovers).
-            out = dict(g["data"], stale=True, error=err, stale_age_s=int(time.time() - g["ts"]))
+            out = dict(g["data"], stale=True, error=err, stale_age_s=int(time.time() - g["ts"]),
+                       good_ts=round(g["ts"]))           # when EA last answered (epoch s)
         else:
             out["error"] = err
             out["stale"] = False
@@ -4958,6 +4959,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
                 _g = _ea_local_floods_good.get(_lk)
                 out["local_floods"] = _g[1] if _g else []
                 out["local_floods_stale"] = True
+                out["local_floods_good_ts"] = round(_g[0]) if _g else None
             else:
                 out["local_floods"] = _lf
                 _ea_local_floods_good[_lk] = (time.time(), _lf)
