@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260927.3  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -156,6 +156,30 @@ ARC_WEAKEN_MMH    = 0.5               # sea edge intensity drop that counts as "
 # (e.g. a self-hosted Open-Meteo: http://localhost:8080/v1) to use a private quota instead.
 OM_BASE = os.environ.get("OPEN_METEO_BASE", "https://api.open-meteo.com/v1").rstrip("/")
 OPEN_METEO_URL = OM_BASE + "/forecast"
+# OPEN_METEO_MODELS (optional, e.g. icon_eu) pins every request to a named model. A
+# self-hosted instance only holds the models you synced, and its default best_match
+# picks others, returning all-null values -- so set this when self-hosting. Unset =
+# no models= parameter (public host behaviour unchanged).
+OM_MODELS = os.environ.get("OPEN_METEO_MODELS", "").strip()
+# LOCAL-FIRST with automatic fallback. When OPEN_METEO_BASE points somewhere other than
+# the public host, every request tries that local instance first (short timeout, with
+# OPEN_METEO_MODELS). If it is unreachable, errors, or answers with nothing but nulls,
+# the SAME request goes to the public host instead (no models= -- exactly the old
+# behaviour), local is marked down for OM_LOCAL_RETRY_S, then retried; it recovers on
+# its own. OPEN_METEO_BASE unset = public only, and none of this runs.
+OM_PUBLIC_BASE = "https://api.open-meteo.com/v1"
+OM_PUBLIC_URL = OM_PUBLIC_BASE + "/forecast"
+OM_LOCAL = OM_BASE != OM_PUBLIC_BASE
+OM_LOCAL_TIMEOUT_S = 3.0         # a dead local server must never stall a refresh
+OM_LOCAL_RETRY_S = 300           # after a local failure, go straight to public this long
+_om_local = {"down_until": 0.0, "reason": None, "since": None,
+             "last_host": None, "last_ts": None}
+_om_local_lock = threading.Lock()
+_om_tls = threading.local()      # host that served THIS thread's last OM request (metering)
+
+
+class OMBackoff(Exception):
+    """Public Open-Meteo needed but still cooling down after a rate-limit."""
 
 
 # ───────────────────────── API call metering (diagnostic) ───────────────────
@@ -198,6 +222,8 @@ def meter_api(api, tag, n=1, note=""):
     JSONL event and bumps the per-UTC-day tally. Never raises; safe from many threads."""
     if not METER_ENABLED or not n or n <= 0:
         return
+    if api == "OM" and getattr(_om_tls, "host", None) == "local":
+        api = "OM-local"         # served by the self-hosted instance: not public budget
     try:
         with _meter_lock:
             _meter_load_day()
@@ -776,6 +802,132 @@ def _om_backoff_for(reason, now):
     else:
         _om_backoff_until = now + OM_BACKOFF_S
 
+
+def _om_local_ready(now):
+    """True when a local instance is configured and not in its post-failure cooldown."""
+    return OM_LOCAL and now >= _om_local["down_until"]
+
+
+def _om_all_null(d):
+    """True if an OM response carries values but every one of them is null -- a local
+    instance that is up but holds no data for the request (sync stopped, wrong model)."""
+    seen = False
+    for b in (d if isinstance(d, list) else [d]):
+        if not isinstance(b, dict):
+            continue
+        for sec in ("current", "hourly", "minutely_15", "daily"):
+            blk = b.get(sec)
+            if not isinstance(blk, dict):
+                continue
+            for k, v in blk.items():
+                if k in ("time", "interval"):
+                    continue
+                for x in (v if isinstance(v, list) else [v]):
+                    seen = True
+                    if x is not None:
+                        return False
+    return seen
+
+
+def _om_mark_local(ok, reason=None, now=None):
+    """Record a local success/failure; logs only the up/down TRANSITIONS to om_debug."""
+    now = now or time.time()
+    with _om_local_lock:
+        if ok:
+            if _om_local["reason"] is not None:
+                _om_debug({"outcome": "local_up", "host": "local",
+                           "was_down_s": round(now - (_om_local["since"] or now)),
+                           "reason": "recovered (was: " + str(_om_local["reason"]) + ")"})
+            _om_local.update(down_until=0.0, reason=None, since=None)
+        else:
+            if _om_local["reason"] is None:
+                _om_debug({"outcome": "local_down", "host": "local", "reason": reason,
+                           "retry_in_s": OM_LOCAL_RETRY_S})
+                _om_local["since"] = now
+            _om_local.update(down_until=now + OM_LOCAL_RETRY_S, reason=reason)
+
+
+def _om_request(q, timeout):
+    """One Open-Meteo forecast GET, local-first. Returns (http_code, headers, raw, host)
+    with host "local" or "public". Raises OMBackoff if public is needed but cooling
+    down; public HTTPError / network errors propagate unchanged so callers' existing
+    rate-limit handling still applies. Local failures never raise -- they fall through."""
+    now = time.time()
+    if _om_local_ready(now):
+        lq = dict(q)
+        if OM_MODELS:
+            lq["models"] = OM_MODELS
+        reason = None
+        try:
+            req = urllib.request.Request(OPEN_METEO_URL + "?" + urllib.parse.urlencode(lq),
+                                         headers={"User-Agent": "uk-grid-monitor/1.0"})
+            resp = urllib.request.urlopen(req, timeout=min(timeout, OM_LOCAL_TIMEOUT_S))
+            raw = resp.read()
+            code = getattr(resp, "status", None) or getattr(resp, "code", None) or 200
+            d = json.loads(raw)
+            if isinstance(d, dict) and d.get("error"):
+                reason = "error: " + str(d.get("reason") or "?")[:100]
+            elif _om_all_null(d):
+                reason = "no data (all values null) - sync stopped or OPEN_METEO_MODELS wrong?"
+            else:
+                _om_mark_local(True, now=now)
+                _om_tls.host = "local"
+                _om_local.update(last_host="local", last_ts=time.time())
+                return code, _om_pick_headers(getattr(resp, "headers", None)), raw, "local"
+        except urllib.error.HTTPError as e:
+            reason = "HTTP " + str(e.code)
+        except Exception as e:
+            reason = "unreachable: " + str(e)[:100]
+        _om_mark_local(False, reason, now)
+    _om_tls.host = "public"
+    if now < _om_backoff_until:
+        raise OMBackoff("public Open-Meteo backing off")
+    pq = dict(q)
+    if OM_MODELS and not OM_LOCAL:
+        pq["models"] = OM_MODELS           # explicitly pinned public use (no local configured)
+    req = urllib.request.Request((OM_PUBLIC_URL if OM_LOCAL else OPEN_METEO_URL)
+                                 + "?" + urllib.parse.urlencode(pq),
+                                 headers={"User-Agent": "uk-grid-monitor/1.0"})
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    raw = resp.read()
+    code = getattr(resp, "status", None) or getattr(resp, "code", None) or 200
+    _om_local.update(last_host="public", last_ts=time.time())
+    return code, _om_pick_headers(getattr(resp, "headers", None)), raw, "public"
+
+
+def om_get_json(q, timeout=12):
+    """Local-first Open-Meteo GET for other modules (grid_server's cloud read).
+    Returns (data, host). Raises on any failure, including OMBackoff and an error body
+    (a public rate-limit body also trips the shared public backoff)."""
+    code, hdrs, raw, host = _om_request(q, timeout)
+    d = json.loads(raw)
+    if isinstance(d, dict) and d.get("error"):
+        reason = str(d.get("reason") or "Open-Meteo error")
+        if host == "public" and _om_is_ratelimit(reason):
+            _om_backoff_for(reason, time.time())
+        raise RuntimeError(reason)
+    return d, host
+
+
+def om_status(now=None):
+    """Which Open-Meteo is serving, for the dashboard footer. mode: "local" (self-hosted,
+    healthy), "public_fallback" (local configured but down -> public), or "public"."""
+    now = now or time.time()
+    st = {"configured_local": OM_LOCAL, "last_host": _om_local["last_host"],
+          "last_ts": _om_local["last_ts"],
+          "public_backoff": now < _om_backoff_until,
+          "public_daily_limit": now < _om_daily_until}
+    if not OM_LOCAL:
+        st["mode"] = "public"
+    elif _om_local["reason"] is not None:
+        st.update(mode="public_fallback", reason=_om_local["reason"],
+                  down_since=_om_local["since"],
+                  retry_in_s=max(0, round(_om_local["down_until"] - now)))
+    else:
+        st["mode"] = "local"
+    return st
+
+
 def fetch_om_precip(points, timeout=8):
     """Batched Open-Meteo current precipitation (mm) for many coords in ONE call.
     Modelled. Never raises — returns rates aligned to points (None on failure). A
@@ -788,7 +940,7 @@ def fetch_om_precip(points, timeout=8):
     if not points:
         return []
     now = time.time()
-    if now < _om_backoff_until:
+    if now < _om_backoff_until and not _om_local_ready(now):
         daily = now < _om_daily_until
         msg = ("daily limit reached — backing off until it resets"
                if daily else "rate-limited, backing off")
@@ -804,12 +956,8 @@ def fetch_om_precip(points, timeout=8):
         q = {"latitude": ",".join(f"{p['lat']:.4f}" for p in points),
              "longitude": ",".join(f"{p['lon']:.4f}" for p in points),
              "current": "precipitation,rain,showers"}
-        url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
-        req = urllib.request.Request(url, headers={"User-Agent": "uk-grid-monitor/1.0"})
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        raw = resp.read()
-        hdrs = _om_pick_headers(getattr(resp, "headers", None))
-        code = getattr(resp, "status", None) or getattr(resp, "code", None) or 200
+        code, hdrs, raw, host = _om_request(q, timeout)
+        base["host"] = host
         d = json.loads(raw)
         if isinstance(d, dict) and d.get("error"):
             # Open-Meteo signals failures (limit exceeded etc.) as a 200 body with
@@ -837,6 +985,14 @@ def fetch_om_precip(points, timeout=8):
             out.append({"mm": tot, "snow": bool(snow_we > 0.05 and snow_we >= rain),
                         "src": "OM", "sent": True})
         return out
+    except OMBackoff:
+        # local was tried and failed, and public is still cooling down
+        daily = now < _om_daily_until
+        _om_debug({**base, "outcome": "backoff_skip", "daily": bool(daily),
+                   "resume_in_s": round(_om_backoff_until - now)})
+        return [{"mm": None, "snow": False, "src": "OM", "backoff": True,
+                 "err": ("daily limit reached — backing off until it resets"
+                         if daily else "rate-limited, backing off")}] * len(points)
     except urllib.error.HTTPError as e:
         reason = None
         body = b""
@@ -1103,7 +1259,7 @@ def fetch_om_steering(home, timeout=8, now=None):
     om_debug.jsonl, like the net. Never raises."""
     now = now or time.time()
     base = {"n_points": 1, "tag": "steering"}
-    if now < _om_backoff_until:
+    if now < _om_backoff_until and not _om_local_ready(now):
         _om_debug({**base, "outcome": "backoff_skip", "daily": bool(now < _om_daily_until),
                    "resume_in_s": round(_om_backoff_until - now)})
         return {"err": "Open-Meteo backing off", "sent": False}
@@ -1112,12 +1268,9 @@ def fetch_om_steering(home, timeout=8, now=None):
         q = {"latitude": f"{home[0]:.4f}", "longitude": f"{home[1]:.4f}",
              "hourly": "wind_speed_850hPa,wind_direction_850hPa",
              "wind_speed_unit": "kmh", "forecast_days": 1, "timezone": "GMT"}
-        url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
-        req = urllib.request.Request(url, headers={"User-Agent": "uk-grid-monitor/1.0"})
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        hdrs = _om_pick_headers(getattr(resp, "headers", None))
-        code = getattr(resp, "status", None) or 200
-        d = json.loads(resp.read())
+        code, hdrs, raw, host = _om_request(q, timeout)
+        base["host"] = host
+        d = json.loads(raw)
         if isinstance(d, dict) and d.get("error"):
             reason = str(d.get("reason") or "Open-Meteo error")
             _om_debug({**base, "outcome": "error_body", "http": code, "reason": reason,
@@ -1141,6 +1294,10 @@ def fetch_om_steering(home, timeout=8, now=None):
         _om_debug({**base, "outcome": "ok", "http": code, "headers": hdrs,
                    "elapsed_ms": round((time.time() - t0) * 1000)})
         return {"from_deg": float(drn) % 360.0, "kmh": float(spd), "sent": True}
+    except OMBackoff:
+        _om_debug({**base, "outcome": "backoff_skip", "daily": bool(now < _om_daily_until),
+                   "resume_in_s": round(_om_backoff_until - now)})
+        return {"err": "Open-Meteo backing off", "sent": False}
     except urllib.error.HTTPError as e:
         reason = None
         try:
@@ -2103,6 +2260,14 @@ SIT_PROBE_EPISODE_CAP = 8            # hard cap on probe SAMPLES per showery epi
 SIT_PROBE_EPISODE_S   = 90 * 60      # a showery episode stays "live" this long after the last showery read
 SIT_PROBE_FRESH_S     = 30 * 60      # a probe reading older than this can't confirm anything
 SIT_PROBE_WET_MMH     = ARC_DETECT_MMH
+# Relaxed limits while a SELF-HOSTED Open-Meteo is serving (no quota to protect). They
+# change only how often / how far the probes sample, never what a reading means
+# (SIT_PROBE_FRESH_S, the wet threshold and the episode gating are unchanged). The
+# moment requests fall back to the public host, the frugal limits above apply again.
+SIT_PROBE_UPWIND_KM_LOCAL  = [9.0, 16.0, 25.0]   # 25 km bridges the inland gap to the 30 km net ring
+SIT_PROBE_INTERVAL_LOCAL_S = 15 * 60             # heartbeat: as often as the model's values change
+SIT_PROBE_CLEAR_LOCAL_S    = 15 * 60             # clear-check spacing
+SIT_PROBE_FAN_DEG          = [0.0, 8.0, -8.0]    # bearing offsets per point: keep points distinct
 
 def _probe_offshore_cap(home, bearing, want_km, seaset, off=SIT_PROBE_OFFSHORE_MAX):
     """If the upwind point is over sea, cap its distance so it sits at most `off` km
@@ -2119,7 +2284,7 @@ def _probe_offshore_cap(home, bearing, want_km, seaset, off=SIT_PROBE_OFFSHORE_M
     coast = max(0.0, first_sea - 2.5)       # rough coastline
     return max(3.0, min(want_km, coast + off))
 
-def _land_probe_points(home, centroid, wind_from, seaset=None, phase=0):
+def _land_probe_points(home, centroid, wind_from, seaset=None, phase=0, ranges=None):
     """Home-relevant probe placement: sample the approach corridor UPWIND OF HOME (the
     direction weather arrives from) so a probe sees rain that is about to reach you. If
     the upwind corridor is over water it is allowed up to SIT_PROBE_OFFSHORE_MAX offshore
@@ -2134,10 +2299,12 @@ def _land_probe_points(home, centroid, wind_from, seaset=None, phase=0):
         return []
     jit = ((phase % 3) - 1) * SIT_PROBE_JITTER_DEG    # -12, 0, +12 rotating
     pts = []
-    for i, want in enumerate(SIT_PROBE_UPWIND_KM[:SIT_PROBE_MAX]):
-        # keep the pair distinct even when both are offshore-capped: the near point sits
-        # centred and closer to the coast, the far point is fanned and reaches further.
-        brg = (base_brg + jit + (0.0 if i == 0 else 8.0)) % 360
+    if ranges is None:
+        ranges = SIT_PROBE_UPWIND_KM[:SIT_PROBE_MAX]
+    for i, want in enumerate(ranges):
+        # keep the points distinct even when offshore-capped: the near point sits centred
+        # and closer to the coast, further points are fanned (+8, then -8) and reach further.
+        brg = (base_brg + jit + SIT_PROBE_FAN_DEG[i % len(SIT_PROBE_FAN_DEG)]) % 360
         off = SIT_PROBE_OFFSHORE_MAX * (0.5 if i == 0 else 1.0)
         d = _probe_offshore_cap(home, brg, want, seaset, off)
         la, lo = offset_latlon(home[0], home[1], brg, d)
@@ -2157,7 +2324,11 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
       * slow heartbeat — while gauges are still wet, an occasional SINGLE upwind look for
         what is next (the gauges already confirm the current rain, so this is light).
     A per-episode sample budget (SIT_PROBE_EPISODE_CAP) caps the spend, the bearing
-    rotates each deployment, and probing stops entirely outside a showery episode."""
+    rotates each deployment, and probing stops entirely outside a showery episode.
+
+    While a self-hosted Open-Meteo is serving (_om_local_ready) there is no quota to
+    save: no episode cap, 15-min heartbeat and clear-check, every heartbeat uses all
+    points, three ranges (9/16/25 km), and the quiet-hours cadence stretch is ignored."""
     if sit["base_state"] in ("isolated_showers", "widespread_showers"):
         state.sit_last_showery_ts = now
         ib, idm = sit["intensity"]["bearing"], sit["intensity"]["dist_km"]
@@ -2172,12 +2343,22 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
         state.sit_probe_used = 0
     gauges_wet = sit["n_wet"] > 0
     since = now - (state.sit_probe_ts or 0)
-    clear_check = (not gauges_wet) and since >= SIT_PROBE_FRESH_S
-    heartbeat = gauges_wet and since >= SIT_PROBE_INTERVAL_S * max(1.0, cadence_mult)
-    if (clear_check or heartbeat) and state.sit_probe_used < SIT_PROBE_EPISODE_CAP:
-        pts = _land_probe_points(home, state.sit_last_centroid, wind_from, seaset, state.sit_probe_phase)
-        if heartbeat and not clear_check:
-            pts = pts[:1]                       # a heartbeat needs only one upwind look
+    local = _om_local_ready(now)            # self-hosted OM serving -> relaxed limits
+    if local:
+        clear_gap, beat_gap, ranges = SIT_PROBE_CLEAR_LOCAL_S, SIT_PROBE_INTERVAL_LOCAL_S, SIT_PROBE_UPWIND_KM_LOCAL
+        within_cap = True
+    else:
+        clear_gap = SIT_PROBE_FRESH_S
+        beat_gap = SIT_PROBE_INTERVAL_S * max(1.0, cadence_mult)
+        ranges = SIT_PROBE_UPWIND_KM[:SIT_PROBE_MAX]
+        within_cap = state.sit_probe_used < SIT_PROBE_EPISODE_CAP
+    clear_check = (not gauges_wet) and since >= clear_gap
+    heartbeat = gauges_wet and since >= beat_gap
+    if (clear_check or heartbeat) and within_cap:
+        pts = _land_probe_points(home, state.sit_last_centroid, wind_from, seaset,
+                                 state.sit_probe_phase, ranges=ranges)
+        if heartbeat and not clear_check and not local:
+            pts = pts[:1]                       # public: a heartbeat needs only one upwind look
         rates = sampler(pts) if pts else []
         # Count locations Open-Meteo charged for (sent), not just the ones that returned data.
         meter_api("OM", "land_probe", sum(1 for rt in rates if isinstance(rt, dict)
@@ -2195,7 +2376,8 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
     recent = [pr for pr in state.sit_probes if now - pr["ts"] <= SIT_PROBE_FRESH_S]
     active = any((pr["mm"] or 0) >= SIT_PROBE_WET_MMH for pr in recent)
     fresh_clear = bool(recent) and not active
-    return {"active": active, "fresh_clear": fresh_clear, "probes": state.sit_probes}
+    return {"active": active, "fresh_clear": fresh_clear, "probes": state.sit_probes,
+            "limits": "local" if local else "public"}
 
 
 # ---- phase (c): cadence + wording, one voice for the situation state ----
@@ -3033,7 +3215,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     _probe = run_land_probes(state, situational, home, _wf, now, net_sample_fn,
                              cadence_mult=sampling_mult, seaset=_sea_set(state))
     situational["probe"] = {"active": _probe["active"], "fresh_clear": _probe["fresh_clear"],
-                            "n": len(_probe["probes"])}
+                            "n": len(_probe["probes"]), "limits": _probe.get("limits")}
     situational["probe_points"] = _probe["probes"]
     if situational["base_state"] == "clear" and (now - (state.sit_last_showery_ts or 0)) <= SIT_PROBE_EPISODE_S:
         if _probe["active"]:

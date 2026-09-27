@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260927.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260926.1"
+SERVER_BUILD = "260927.2"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -5009,8 +5009,9 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
                     _wind_budget_spend(len(pts))
                     _meter("OWM", "oc4_sea", len(pts))
                     return rates
-                _meter("OM", "net_fallback", len(pts))
-                return _rain_probe.fetch_om_precip(pts)   # free Open-Meteo fallback
+                _r = _rain_probe.fetch_om_precip(pts)   # free Open-Meteo fallback
+                _meter("OM", "net_fallback", len(pts))  # after the call: attributed to the host that served it
+                return _r
             _res = _rain_probe.run_probe(
                 _RAIN_PROBE_STATE, home=(lat, lon),
                 rain_mm_h=_cond.get("rain_1h") or 0.0,
@@ -5233,6 +5234,25 @@ def _ea_collect_rainfall(out, lat, lon, dist, latest):
 # (e.g. a self-hosted instance: http://localhost:8080/v1) to use a private quota instead.
 OM_BASE = os.environ.get("OPEN_METEO_BASE", "https://api.open-meteo.com/v1").rstrip("/")
 OPEN_METEO_URL = OM_BASE + "/forecast"
+# OPEN_METEO_MODELS (optional, e.g. icon_eu) pins every request to a named model. A
+# self-hosted instance only holds the models you synced, and its default best_match
+# picks others, returning all-null values -- so set this when self-hosting. Unset =
+# no models= parameter (public host behaviour unchanged).
+OM_MODELS = os.environ.get("OPEN_METEO_MODELS", "").strip()
+OM_MODELS_QS = ("&models=" + urllib.parse.quote(OM_MODELS, safe=",")) if OM_MODELS else ""
+# Local-first + automatic public fallback lives in rain_probe (single source of truth);
+# the direct OPEN_METEO_URL path below is used only when rain_probe.py is absent.
+
+
+def _om_status_safe():
+    """Which Open-Meteo is serving (for the dashboard footer). Never raises."""
+    if _rain_probe is not None and hasattr(_rain_probe, "om_status"):
+        try:
+            return _rain_probe.om_status()
+        except Exception:
+            pass
+    local = OM_BASE != "https://api.open-meteo.com/v1"
+    return {"configured_local": local, "mode": "local" if local else "public"}
 WIND_RING_KM = 18.0        # outer sample points ~15-20 km from home
 # 8 compass bearings for the outer ring (home is the 9th, central point).
 WIND_BEARINGS = [("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
@@ -5318,10 +5338,17 @@ def _openmeteo_cloud(lat, lon, timeout=12):
     if c and time.time() - c["ts"] < OM_CLOUD_TTL:
         return c["data"]
     try:
-        url = (OPEN_METEO_URL
-               + f"?latitude={lat}&longitude={lon}"
-               "&current=cloud_cover,weather_code")
-        d = fetch_json(url, timeout=timeout)
+        if _rain_probe is not None and hasattr(_rain_probe, "om_get_json"):
+            d, om_host = _rain_probe.om_get_json(
+                {"latitude": lat, "longitude": lon,
+                 "current": "cloud_cover,weather_code"}, timeout=timeout)
+        else:
+            url = (OPEN_METEO_URL
+                   + f"?latitude={lat}&longitude={lon}"
+                   "&current=cloud_cover,weather_code"
+                   + OM_MODELS_QS)
+            d = fetch_json(url, timeout=timeout)
+            om_host = "public" if OM_BASE == "https://api.open-meteo.com/v1" else "local"
         _meter("OM", "cloud", 1)     # count this Open-Meteo call against the shared daily budget
         cur = (d or {}).get("current") or {}
         pct = cur.get("cloud_cover")
@@ -5335,7 +5362,7 @@ def _openmeteo_cloud(lat, lon, timeout=12):
         else:
             desc = wdesc
         data = {"clouds_pct": pct, "cond_main": main, "cond_desc": desc,
-                "source": "Open-Meteo"}
+                "source": "Open-Meteo (local)" if om_host == "local" else "Open-Meteo"}
         _om_cloud_cache[key] = {"data": data, "ts": time.time()}
         return data
     except Exception as e:
@@ -5432,7 +5459,7 @@ def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
             cond["clouds_pct"] = om["clouds_pct"]
             cond["cond_main"] = om["cond_main"]
             cond["cond_desc"] = om["cond_desc"]
-            cond["cloud_source"] = "Open-Meteo"
+            cond["cloud_source"] = om.get("source") or "Open-Meteo"
         else:
             cond["cloud_source"] = "OpenWeather (Open-Meteo unavailable)"
         # 3-hour pressure tendency (persisted per location so it survives refresh)
@@ -6646,6 +6673,7 @@ def build_snapshot():
     snap = {"generated": datetime.now(timezone.utc).isoformat(),
             "backend_version": "2026-08-07a",   # bump when adding data fields
             "server_build": SERVER_BUILD,       # shown in the dashboard footer
+            "open_meteo": _om_status_safe(),    # local vs public Open-Meteo (footer chip)
             "features": ["solar", "freq_trace_points", "weather_batch",
                          "operating_reserve", "supply_stack", "weather_openweather",
                          "weather_resource_sites", "generator_units"],

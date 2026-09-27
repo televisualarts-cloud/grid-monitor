@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260927.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1210,6 +1210,8 @@
   .srcstatus .s.bad i{background:var(--crit)}
   .srcstatus .s.bad{color:var(--crit)}
   .srcstatus .s .why{color:var(--ink-faint)}
+  .srcstatus .s.warn i{background:var(--warn)}
+  .srcstatus .s.warn{color:var(--warn)}
   .stale{color:var(--warn)}
   .fresh{color:var(--ok)}
   .age-amber{color:var(--warn)}
@@ -1465,7 +1467,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260926.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260927.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -2698,12 +2700,30 @@ function render(d){
     const good=ok[k];
     const why=(k==="weather"&&wErr)?`<span class="why">— ${wErr}</span>`:"";
     return `<span class="s ${good?'ok':'bad'}"><i></i>${labels[k]}${good?'':' failed'}${why}</span>`;
-  }).join("");
+  }).join("") + omChip(d.open_meteo);
 
   // ---- alarms: evaluate the live grid signals this cycle ----
   Alarm.evaluate(d);
 
   resetCountdown();
+}
+
+// Which Open-Meteo is serving: self-hosted (local) or the public online API. Amber when
+// a configured local instance is down and the public host is standing in, or when the
+// public host is rate-limiting. Older servers don't send open_meteo -> no chip.
+function omChip(om){
+  if(!om || !om.mode) return "";
+  const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  let cls="ok", txt, why="";
+  if(om.mode==="local"){ txt="Open-Meteo: local"; }
+  else if(om.mode==="public_fallback"){
+    cls="warn"; txt="Open-Meteo: online";
+    why=`<span class="why">— local unavailable${om.reason?": "+esc(om.reason):""}${om.retry_in_s!=null?" · retry in "+Math.ceil(om.retry_in_s/60)+" min":""}</span>`;
+  } else { txt="Open-Meteo: online"; }
+  if(om.mode!=="local" && om.public_backoff){
+    cls="warn"; why+=`<span class="why">— ${om.public_daily_limit?"daily limit reached":"rate-limited"}</span>`;
+  }
+  return `<span class="s ${cls}"><i></i>${txt}${why}</span>`;
 }
 
 function tempBand(t){
