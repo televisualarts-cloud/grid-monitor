@@ -138,7 +138,60 @@ Because Open-Meteo's limit is per IP and has no key, that daily allowance is **s
 
 **If you hit the Open-Meteo limit regularly, don't run the server behind a VPN or a shared/CGNAT connection.** Because the cap is enforced per public IP, the single most effective fix is to give the server its own lightly-used IP: run it on a **direct home broadband connection** rather than a VPN, mobile data, or a corporate/university network, and exclude the Python process from any VPN via split-tunnelling if you use one. Note that some consumer ISPs (mobile broadband especially, but also some fixed-line providers) use **CGNAT**, which shares one public IP across many customers — if yours does, ask the ISP for a non-CGNAT or static IP, as no setting in this app can change the shared pool you land in. Failing that, use the self-host option below for a private quota that no IP limit can touch.
 
-To sidestep it entirely, run your own Open-Meteo (it is free and open-source; a Docker image is provided by the project) and point the app at it by setting the `OPEN_METEO_BASE` environment variable before starting `grid_server.py`, e.g. `OPEN_METEO_BASE=http://localhost:8080/v1`. Unset, the app uses the public Open-Meteo host as normal.
+To sidestep it entirely, run your own Open-Meteo (see below). This is optional: without it the app uses the public Open-Meteo host as normal.
+
+### Optional: self-hosted Open-Meteo
+
+Open-Meteo is free and open-source and can run on your own PC in Docker, giving a private instance that no shared-IP limit can touch. The app uses it first and falls back to the public host automatically, so a stopped or broken local instance never blanks the dashboard.
+
+**Set up (Windows, Docker Desktop with the WSL 2 backend).** In Docker Desktop's settings, tick *Start Docker Desktop when you sign in*, and under *Resources → WSL integration* turn on your Ubuntu. Then in an Ubuntu window:
+
+```
+docker volume create open-meteo-data
+docker run --rm -v open-meteo-data:/app/data ghcr.io/open-meteo/open-meteo sync copernicus_dem90 static
+docker run --rm -v open-meteo-data:/app/data ghcr.io/open-meteo/open-meteo sync dwd_icon_eu temperature_2m,cloud_cover,weather_code,precipitation,rain,showers,wind_u_component_850hPa,wind_v_component_850hPa --past-days 1
+docker run -d --name om-sync --restart unless-stopped -v open-meteo-data:/app/data ghcr.io/open-meteo/open-meteo sync dwd_icon_eu temperature_2m,cloud_cover,weather_code,precipitation,rain,showers,wind_u_component_850hPa,wind_v_component_850hPa --past-days 1 --repeat-interval 5
+docker run -d --name open-meteo --restart unless-stopped -v open-meteo-data:/app/data -p 8765:8080 ghcr.io/open-meteo/open-meteo
+```
+
+The terrain data (`copernicus_dem90`) is about 10 GB and is a one-off; the ICON-EU model (covers the UK and Ireland) is under 1 GB. `om-sync` keeps the model up to date every 5 minutes. Both containers restart with Docker Desktop.
+
+Check it in a browser — the values should be numbers, not `null`:
+`http://localhost:8765/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover,precipitation&models=icon_eu`
+
+**Point the app at it.** In PowerShell, then close all terminal windows and restart `grid_server.py`:
+
+```
+setx OPEN_METEO_BASE "http://localhost:8765/v1"
+setx OPEN_METEO_MODELS "icon_eu"
+```
+
+`OPEN_METEO_MODELS` is required for a self-hosted instance: it holds only the models you synced, and without a `models=` parameter it picks others and returns all-null values. To go back to public only, remove both settings (`[Environment]::SetEnvironmentVariable("OPEN_METEO_BASE",$null,"User")`, likewise for `OPEN_METEO_MODELS`).
+
+**Choosing a port.** 8765 is only an example; any free port works, as long as the number before the colon in `-p` and the one in `OPEN_METEO_BASE` match (the `:8080` after it is inside the container — leave that alone). Before starting, check the port in PowerShell:
+
+```
+netstat -ano | findstr :8765
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+The first should print nothing (nothing is listening on it). The second lists port ranges Windows has reserved for Hyper-V/WSL — these can't be used even though `netstat` shows them free — so make sure your port isn't inside any range listed. (A browser connecting *to* a `:8080` address doesn't occupy that port on your PC; only a program *listening* on it does.)
+
+**If the port is blocked — changing it.** Signs: `docker run` fails with "port is already allocated" or "ports are not available", or the footer shows **Open-Meteo: online — local unavailable: unreachable**. To move to another port (8766 here):
+
+1. Remove the container: `docker rm -f open-meteo` (the downloaded weather data is kept — it lives in the `open-meteo-data` volume).
+2. Start it on the new port: `docker run -d --name open-meteo --restart unless-stopped -v open-meteo-data:/app/data -p 8766:8080 ghcr.io/open-meteo/open-meteo`
+3. Check it: `http://localhost:8766/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover&models=icon_eu` should show a number, not `null`.
+4. Update the app's setting in PowerShell: `setx OPEN_METEO_BASE "http://localhost:8766/v1"`
+5. Close all terminal windows, restart `grid_server.py`, and confirm the footer shows **Open-Meteo: local**.
+
+The `om-sync` container uses no port and doesn't need changing. Until the app points at a working port it falls back to the public host, so nothing stops working in the meantime.
+
+**"ports are not available … /forwards/expose returned unexpected status: 500".** Docker Desktop can give this on Windows even when the port is free. What cleared it here: publish the port as `-p 8765:8080` (not `-p 127.0.0.1:8765:8080`) and click OK on the Windows prompt that Docker Desktop then shows. Remove the failed container (`docker rm open-meteo`) before each retry. If Windows Firewall asks whether to allow Docker on your network, you can decline — the app reaches it from the same PC regardless.
+
+**How the fallback works.** With `OPEN_METEO_BASE` set, each Open-Meteo request tries the local instance first (3 s timeout). If it is unreachable, returns an error, or has no data (all values null — e.g. `om-sync` stopped), the same request goes to the public host, and local is skipped for 5 minutes and then retried; it recovers by itself. Public rate limits never block local requests. Local calls are counted as `OM-local` in `api_usage_daily.json`, public ones as `OM`, and each switch is logged in `om_debug.jsonl` (`local_down` / `local_up`).
+
+**Which one is running** is shown in the source status strip at the bottom of the main page: **Open-Meteo: local** or **Open-Meteo: online** (green); amber **Open-Meteo: online — local unavailable: *reason* · retry in N min** when your local instance is down; amber *rate-limited* / *daily limit reached* when the public host is refusing requests.
 
 ---
 

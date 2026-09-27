@@ -16,6 +16,15 @@ exact tag.
 
 ---
 
+## 2026-09-27
+
+- **Self-hosted Open-Meteo, with automatic fallback.** When `OPEN_METEO_BASE` points to a self-hosted Open-Meteo, every Open-Meteo request (cloud, offshore/land rain net, 850 hPa steering wind) tries it first with a 3 s timeout. If it is unreachable, returns an error, or answers with only null values, the same request goes to the public host instead, without `models=` (the previous behaviour). Local is then skipped for 5 minutes and retried; it recovers without a restart. Up/down transitions are logged once each to `om_debug.jsonl` (`local_down`, `local_up`, with the reason). `OPEN_METEO_BASE` unset: public host only, unchanged. (`rain_probe.py`, `grid_server.py` 260927.2)
+- **`OPEN_METEO_MODELS`.** Optional setting (e.g. `icon_eu`) sent as `models=` to the self-hosted instance. Needed because a self-hosted instance holds only the models you synced, and its default model choice returns all-null values. (`rain_probe.py`, `grid_server.py` 260927.1)
+- **Separate public/local rate-limit handling and metering.** The public-host rate-limit backoff now applies only to public requests, so a public daily cap never blocks the local instance. Local calls are metered as `OM-local`, public as `OM`, in `api_usage_daily.json`. The cloud read now honours the public backoff (previously it called regardless) and a public rate-limit error body on it trips the shared backoff. (`rain_probe.py`, `grid_server.py` 260927.2)
+- **Open-Meteo source label.** The snapshot carries `open_meteo` (mode `local`, `public_fallback` or `public`, with reason and retry time). The footer status strip shows **Open-Meteo: local** or **Open-Meteo: online** (green), amber with "local unavailable: <reason> · retry in N min" when a configured local instance is down, and amber "rate-limited" / "daily limit reached" when the public host is refusing. The EA page cloud source reads "Open-Meteo (local)" when the local instance supplied it. (`grid_dashboard.html` 260927.1, `grid_server.py` 260927.2)
+- **Land probes unthrottled on self-hosted Open-Meteo.** While the local instance is serving, the land probes have no per-episode sample cap (public: 8), sample every 15 min while gauges are wet (public: 30 min, stretched in quiet hours) with all points (public: 1), run the clear-check 15 min apart (public: 30), and use three upwind ranges, 9/16/25 km (public: 9/16). Reading freshness, the wet threshold and episode gating are unchanged. On fallback to the public host the public limits apply again, and the episode's samples so far count towards its cap. The probe summary carries `limits` (`local`/`public`). (`rain_probe.py` 260927.3)
+- **README.** Self-hosting Open-Meteo documented: setup, `OPEN_METEO_MODELS`, choosing and changing a port, the Docker Desktop port-forwarding error, fallback behaviour and the footer label.
+
 ## 2026-09-26
 
 - **Build history moved out of file headers.** Header changelogs removed; each file now carries only its current build and a pointer to this file. Dashboard footer build label corrected (was 260918.4). (`grid_dashboard.html`, `powercuts_page.html`, `powercuts.py`, `windcuts.py` 260926.1)
@@ -218,6 +227,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260923.2** (2026-09-23) — Dial excursion arrow no longer bobs — chevrons only light in sequence.
 - **260923.3** (2026-09-23) — Nowcast channel no longer repeats the approach-episode lines (alert / confirm / fizzle) when the Rainfall category is armed — RAIN voices them once.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md; footer build label corrected (it still read 260918.4). "Swap panels" removed; gauge radar toggle in the EA plot area; "under the hood" button (Forecast view in a new tab); header "live powercuts map" button, history moved right of my home. "Power cut near you" alarm category with radius selector; chip tooltip "near you" line. Flood alarm holds its episode through EA outages and brief lifts (no repeat announcements); flood chip marks held counts with a "*"; EA page shows how long the EA backend has been unreadable.
+- **260927.1** (2026-09-27) — Footer status strip gains an Open-Meteo chip: local / online (green), online with "local unavailable" reason and retry time, or rate-limited / daily limit (amber).
 
 ### `powercuts_page.html`
 
@@ -262,6 +272,9 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260923.1** (2026-09-23) — Approach episode: one approach voice, reading-based timing, episode and shadow-threat logs.
 - **260923.2** (2026-09-23) — Steering wind, speed gate, hand-over tracks, gauge flags. Never deployed (file lost); rebuilt as 260926.1.
 - **260926.1** (2026-09-26) — Stage 2 rebuilt: steering flow used throughout, speed gate, hand-over tracks from wet-now gauges, stale tracks, stationary/suspect gauge flags, shadow-log steering fields; sea-net OC4 fallback reads upwind-first with rotation, keeps last readings with ages, labels the real source. Unused local removed from `select()`. Header tidied to the current build + CHANGELOG pointer. Gauges keyed by EA reference and named by place (else grid reference); points carry id/ref/grid/place.
+- **260927.1** (2026-09-27) — `OPEN_METEO_MODELS` sent as `models=` on the rain-net and steering requests.
+- **260927.2** (2026-09-27) — Local-first Open-Meteo with automatic public fallback (`_om_request`), 5-min local cooldown and retry, all-null detection, `local_down`/`local_up` logging; public-only backoff; `OM-local` metering; `om_get_json()` and `om_status()` for the server.
+- **260927.3** (2026-09-27) — Land-probe limits relaxed while self-hosted Open-Meteo is serving: no episode cap, 15-min heartbeat/clear-check, all points per heartbeat, third range at 25 km, quiet-hours stretch ignored.
 
 ### `forecast_view.html`
 
