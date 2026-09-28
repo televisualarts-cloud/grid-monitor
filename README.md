@@ -118,7 +118,7 @@ Press **Esc** to close any of the full-screen pages (generators, gas, power cuts
 - **Immediate Operating Reserve** — how much reserve is instantly available if a generating unit trips off. Shows spinning reserve, the largest single unit (infeed), and whether reserve covers it — with a warning if it doesn't.
 - **How Demand Is Being Met Now** — the split between domestic generation and imports, plus a 12-hour wholesale electricity price graph.
 - **Interconnector Flows** — which interconnectors are importing and which are exporting; direction is detected live and recolours if a link reverses.
-- **System Warnings** — official System Operator messages.
+- **System Warnings** — official NESO notices from the last 48 hours. Notices in force are listed first with their severity; recent ones that were cancelled, replaced by a newer notice, have ended, or are operational (IT, trades, tests) follow, dimmed. Severity follows the notice type: demand control is critical; high risk of demand reduction, a Capacity Market Notice or risk of system disturbance is a warning; an Electricity Margin Notice and other advisory notices are a notice. An Electricity Margin Notice is a market signal, not a sign that power cuts are expected.
 
 A row of small status indicators along the bottom shows the health of each data source.
 

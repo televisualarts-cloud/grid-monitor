@@ -16,6 +16,14 @@ exact tag.
 
 ---
 
+## 2026-09-28
+
+- **NESO notices tiered by type.** An Electricity Margin Notice was raised as a critical alert and spoken as critical, because the classifier matched words anywhere in the text and every margin notice's body mentions "Demand Control". Tier now comes from the notice type (Elexon `warningType`, or the notice's heading for type OTHER), never the body: demand control is critical; high risk of demand reduction (critical from 2 h before its window), Capacity Market Notice and risk of system disturbance are warnings; Electricity Margin Notice, NRAPM, Demand Flexibility Service, emergency instruction to a single unit, interconnector emergency assistance, geomagnetic notices and unrecognised types are notices; IT, SO-SO trades, tests (including demand control by voltage reduction tests) and manifest-error claims raise nothing. Checked against every SYSWARN notice since 2023: none reaches critical. (`grid_server.py` 260928.1)
+- **Cancellations, updates and expiry.** The server reads the last 48 h of SYSWARN (was only the latest notice). A cancellation or newer notice of the same kind for an overlapping window cancels or replaces the older one; a notice whose window has ended drops out (a Capacity Market Notice, which states no end, 6 h after it commences; a notice with no window, 24 h after publication). Windows are read in UK local time. Each notice carries `kind`, `tier`, `status`, `name` and `when`. (`grid_server.py` 260928.1)
+- **Alert text.** NESO alerts are titled by type and window (e.g. "NESO: Electricity Margin Notice · 16:00–19:00 Mon 28 Sep") with a plain-words line on what the notice means. "System nominal" says when an advisory NESO notice is in force. (`grid_server.py` 260928.1)
+- **Dashboard.** The system-warnings alarm uses the server's tier and speaks the notice type and window instead of the raw text; notices are a soft blip, cancelled/ended/operational ones are silent. A critical system warning that clears now stops the critical repeat (it previously kept running). The System Warnings panel lists notices in force with a severity chip, then up to three recent ones not in force, dimmed, with their status. The alarm panel description and test phrase updated. (`grid_dashboard.html` 260928.1)
+- **README.** System Warnings panel description updated.
+
 ## 2026-09-27
 
 - **Self-hosted Open-Meteo, with automatic fallback.** When `OPEN_METEO_BASE` points to a self-hosted Open-Meteo, every Open-Meteo request (cloud, offshore/land rain net, 850 hPa steering wind) tries it first with a 3 s timeout. If it is unreachable, returns an error, or answers with only null values, the same request goes to the public host instead, without `models=` (the previous behaviour). Local is then skipped for 5 minutes and retried; it recovers without a restart. Up/down transitions are logged once each to `om_debug.jsonl` (`local_down`, `local_up`, with the reason). `OPEN_METEO_BASE` unset: public host only, unchanged. (`rain_probe.py`, `grid_server.py` 260927.2)
@@ -228,6 +236,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260923.3** (2026-09-23) — Nowcast channel no longer repeats the approach-episode lines (alert / confirm / fizzle) when the Rainfall category is armed — RAIN voices them once.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md; footer build label corrected (it still read 260918.4). "Swap panels" removed; gauge radar toggle in the EA plot area; "under the hood" button (Forecast view in a new tab); header "live powercuts map" button, history moved right of my home. "Power cut near you" alarm category with radius selector; chip tooltip "near you" line. Flood alarm holds its episode through EA outages and brief lifts (no repeat announcements); flood chip marks held counts with a "*"; EA page shows how long the EA backend has been unreadable.
 - **260927.1** (2026-09-27) — Footer status strip gains an Open-Meteo chip: local / online (green), online with "local unavailable" reason and retry time, or rate-limited / daily limit (amber).
+- **260928.1** (2026-09-28) — System-warnings alarm takes its tier from the server and speaks type and window; critical system warnings release the critical repeat when they clear; System Warnings panel shows notices in force with a severity chip plus recent ones not in force.
 
 ### `powercuts_page.html`
 
