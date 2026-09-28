@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260927.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260928.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260927.2"
+SERVER_BUILD = "260928.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -1647,16 +1647,286 @@ def get_battery():
     return result
 
 
+# ---- NESO system warnings (SYSWARN): classification --------------------------
+# Tier comes from the notice TYPE (Elexon's warningType), with the notice's own
+# heading as a fallback for the catch-all "OTHER" type. The body is never used to
+# set the tier: every margin notice carries boilerplate ("advise ... additional
+# Demand Control available", "Maximum Generation Service may be instructed") that
+# made a routine Electricity Margin Notice read as critical.
+#   critical  demand control imminent / instructed
+#   warning   high risk of demand reduction (critical within 2 h of its window),
+#             Capacity Market Notice, risk of system disturbance
+#   notice    Electricity Margin Notice, NRAPM, Demand Flexibility Service,
+#             emergency instruction to a single unit, interconnector emergency
+#             assistance, geomagnetic notices, anything unrecognised
+#   None      IT / BM systems, SO-SO trades, tests, manifest-error claims
+# A notice stops being in force when it is cancelled, superseded by a newer
+# notice of the same kind for an overlapping window, or its window has ended.
+def _rx(*ps):
+    return tuple(re.compile(p, re.IGNORECASE) for p in ps)
+
+
+# warningType -> kind. Types seen in SYSWARN 2023-2026: ELECTRICITY MARGIN NOTICE,
+# CAPACITY MARKET NOTICE, NEGATIVE RESERVE ACTIVE POWER MARGIN, DEMAND FLEXIBILITY
+# SERVICE, IT SYSTEMS OUTAGE, SO-SO TRADES, OTHER. The stress types never issued in
+# that period are matched by pattern so a variant spelling still lands.
+NESO_TYPE_KINDS = (
+    ("DEMAND_CONTROL", _rx(r"\bDEMAND CONTROL\b", r"\bDEMAND DISCONNECTION\b")),
+    ("HRDR",           _rx(r"\bHIGH RISK OF DEMAND\b")),
+    ("DISTURBANCE",    _rx(r"\bRISK OF SYSTEM DISTURBANCE")),
+    ("CMN",            _rx(r"\bCAPACITY MARKET NOTICE")),
+    ("EMN",            _rx(r"\bELECTRICITY MARGIN NOTICE", r"\bINADEQUATE SYSTEM MARGIN\b",
+                           r"\bNISM\b")),
+    ("NRAPM",          _rx(r"\bNEGATIVE RESERVE\b", r"\bNRAPM\b")),
+    ("DFS",            _rx(r"\bDEMAND FLEXIBILITY\b")),
+    ("INFO",           _rx(r"\bIT SYSTEMS?\b", r"\bSO-SO\b")),
+)
+# Heading patterns for the "OTHER" type (and any unrecognised type). Order matters:
+# tests and operational chatter first, so "DEMAND CONTROL BY VR TEST" and
+# "Emergency Instruction to a BM Participant" never read as demand control.
+NESO_HEAD_KINDS = (
+    ("INFO",           _rx(r"\bTEST(?:S|ING)?\b", r"\bIT SYSTEMS?\b", r"\bBMRA\b", r"\bDATA TRANSFER\b",
+                           r"\bMANIFEST ERROR\b", r"\bBSAD\b", r"\bWIDER ACCESS\b",
+                           r"\bPLANNED OUTAGE\b")),
+    ("EI",             _rx(r"\bEMERGENCY INSTRUCTION TO A BM PARTICIPANT\b")),
+    ("ASSIST",         _rx(r"\bEMERGENCY ASSISTANCE\b")),
+    ("GEOMAG",         _rx(r"\bGEOMAGNETIC\b")),
+    ("DEMAND_CONTROL", _rx(r"\bDEMAND CONTROL IMMINENT\b", r"\bINSTRUCTION OF DEMAND CONTROL\b",
+                           r"\bDEMAND DISCONNECTION\b")),
+    ("HRDR",           _rx(r"\bHIGH RISK OF DEMAND\b")),
+    ("DISTURBANCE",    _rx(r"\bRISK OF SYSTEM DISTURBANCE")),
+    ("CMN",            _rx(r"\bCAPACITY MARKET NOTICE")),
+    ("EMN",            _rx(r"\bELECTRICITY MARGIN NOTICE", r"\bINADEQUATE SYSTEM MARGIN\b")),
+    ("NRAPM",          _rx(r"\bNEGATIVE RESERVE\b")),
+    ("DFS",            _rx(r"\bDEMAND FLEXIBIL")),
+)
+NESO_KIND_TIER = {"DEMAND_CONTROL": "critical", "HRDR": "warning", "DISTURBANCE": "warning",
+                  "CMN": "warning", "EMN": "notice", "NRAPM": "notice", "DFS": "notice",
+                  "EI": "notice", "ASSIST": "notice", "GEOMAG": "notice",
+                  "UNKNOWN": "notice", "INFO": None}
+NESO_KIND_NAME = {"DEMAND_CONTROL": "Demand control", "HRDR": "High risk of demand reduction",
+                  "DISTURBANCE": "Risk of system disturbance", "CMN": "Capacity Market Notice",
+                  "EMN": "Electricity Margin Notice", "NRAPM": "Negative reserve margin notice",
+                  "DFS": "Demand Flexibility Service", "EI": "Emergency instruction to a unit",
+                  "ASSIST": "Interconnector emergency assistance", "GEOMAG": "Geomagnetic activity notice",
+                  "UNKNOWN": "Unrecognised notice type", "INFO": "Operational notice"}
+# What each kind means, for the alert detail (plain words, no alarmism).
+NESO_KIND_MEANING = {
+    "DEMAND_CONTROL": "NESO expects to disconnect or reduce demand.",
+    "HRDR": "NESO sees a high risk that demand will have to be reduced.",
+    "DISTURBANCE": "NESO warns of an elevated risk of a system disturbance.",
+    "CMN": "Issued automatically when the forecast de-rated margin falls below the Capacity Market threshold.",
+    "EMN": "A market signal asking for more generation or demand reduction to widen the safety margin. "
+           "It does not mean power cuts are expected.",
+    "NRAPM": "Too little downward flexibility (usually low demand); generation may be curtailed.",
+    "DFS": "A Demand Flexibility Service event or test.",
+    "EI": "An emergency instruction to a single unit or interconnector.",
+    "ASSIST": "Emergency assistance agreed over an interconnector.",
+    "GEOMAG": "Geomagnetic activity notice.",
+    "UNKNOWN": "A notice type this dashboard does not recognise.",
+}
+NESO_CANCEL_RX = re.compile(r"\b(CANCELL?ATION|CANCELL?ED|WITHDRAWN|WITHDRAWAL|"
+                            r"CEASED|NO LONGER (REQUIRED|IN FORCE))\b", re.IGNORECASE)
+_NESO_D = r"(\d{1,2})/(\d{1,2})/(\d{4})"
+# EMN:   "from 16:00 hrs to 19:00 hrs on Monday 28/09/2026"
+NESO_WIN_SAMEDAY = re.compile(r"\bFROM\s+(\d{1,2}):(\d{2})\s*HRS?\s+TO\s+(\d{1,2}):(\d{2})\s*HRS?"
+                              r"\s+ON\s+(?:[A-Z]+\s+)?" + _NESO_D, re.IGNORECASE)
+# NRAPM: "from 16:47 hrs on 03/08/2023 to 20:00 hrs on 03/08/2023"
+NESO_WIN_TWODAY = re.compile(r"\bFROM\s+(\d{1,2}):(\d{2})\s*HRS?\s+ON\s+(?:[A-Z]+\s+)?" + _NESO_D +
+                             r"\W+TO\s+(\d{1,2}):(\d{2})\s*HRS?\s+ON\s+(?:[A-Z]+\s+)?" + _NESO_D,
+                             re.IGNORECASE)
+# CMN:   "Commencement time of notice : 15:30 on 14/10/2024" / "originally active from 15:30 on ..."
+NESO_WIN_START = re.compile(r"(?:COMMENCEMENT TIME OF NOTICE\s*:|ACTIVE FROM)\s*(\d{1,2}):(\d{2})"
+                            r"\s+ON\s+" + _NESO_D, re.IGNORECASE)
+NESO_LOOKBACK_H = 48          # SYSWARN history fetched each cycle (cancellations, updates)
+NESO_CMN_MAX_S = 6 * 3600     # a CMN states no end: treat as ended 6 h after it commences
+NESO_NOWIN_MAX_S = 24 * 3600  # a notice with no stated window: ended 24 h after publication
+HRDR_ESCALATE_S = 2 * 3600    # HRDR is critical from 2 h before its window
+
+
+def _uk_offset_h(dt):
+    """UK clock offset (h) at a UTC instant: BST from 01:00 UTC on the last Sunday
+    of March to 01:00 UTC on the last Sunday of October, else GMT. Stdlib-only
+    (Windows Python has no tz database without the tzdata package)."""
+    def last_sun(y, mo):
+        d = datetime(y, mo, 31, 1, tzinfo=timezone.utc)
+        return d - timedelta(days=(d.weekday() + 1) % 7)
+    return 1 if last_sun(dt.year, 3) <= dt < last_sun(dt.year, 10) else 0
+
+
+def _uk_local_to_utc(y, mo, d, hh, mm):
+    """UK wall-clock time -> UTC datetime (None if invalid). 24:00 is next day's 00:00."""
+    try:
+        t = datetime(y, mo, d, 0, 0, tzinfo=timezone.utc) + timedelta(hours=hh, minutes=mm)
+    except ValueError:
+        return None
+    return t - timedelta(hours=_uk_offset_h(t))
+
+
+def _neso_window(txt):
+    """(start, end) UTC datetimes from a notice's stated period (UK local times), or
+    None for either part that isn't stated."""
+    t = txt or ""
+    m = NESO_WIN_TWODAY.search(t)
+    if m:
+        h1, m1, d1, mo1, y1, h2, m2, d2, mo2, y2 = (int(x) for x in m.groups())
+        return _uk_local_to_utc(y1, mo1, d1, h1, m1), _uk_local_to_utc(y2, mo2, d2, h2, m2)
+    m = NESO_WIN_SAMEDAY.search(t)
+    if m:
+        h1, m1, h2, m2, d, mo, y = (int(x) for x in m.groups())
+        s, e = _uk_local_to_utc(y, mo, d, h1, m1), _uk_local_to_utc(y, mo, d, h2, m2)
+        if s and e and e <= s:
+            e += timedelta(days=1)            # period runs past midnight
+        return s, e
+    m = NESO_WIN_START.search(t)
+    if m:
+        h1, m1, d, mo, y = (int(x) for x in m.groups())
+        return _uk_local_to_utc(y, mo, d, h1, m1), None
+    return None, None
+
+
+def _neso_heading(txt):
+    """The notice's opening words, clear of the 'From : Power System Manager ...'
+    line: enough to hold its title and any CANCELLATION marker, never the body."""
+    t = " ".join((txt or "").split())
+    t = re.sub(r"^FROM\s*:\s*POWER SYSTEM MANAGER.{0,80}?CENTRE\.?\s*", "", t, flags=re.IGNORECASE)
+    # the generic "NATIONAL ... NOTIFICATION / Nature of Notification" preamble,
+    # sometimes repeated, carries nothing; drop it so the real title fits
+    t = re.sub(r"^(?:(?:NATIONAL (?:GRID|ENERGY SYSTEM OPERATOR) NOTIFICATION|NATURE OF NOTIFICATION)"
+               r"[\s:.\-]*)+", "", t, flags=re.IGNORECASE)
+    return t[:160]
+
+
+def classify_warning(wt, txt):
+    """-> {kind, tier, cancel, start, end} for one SYSWARN row. tier is 'critical',
+    'warning', 'notice', or None (operational chatter, never an alert)."""
+    head = _neso_heading(txt)
+    kind = None
+    wtu = (wt or "").strip().upper()
+    if wtu and wtu != "OTHER":
+        for k, pats in NESO_TYPE_KINDS:
+            if any(p.search(wtu) for p in pats):
+                kind = k
+                break
+    if kind is None:
+        for k, pats in NESO_HEAD_KINDS:
+            if any(p.search(head) for p in pats):
+                kind = k
+                break
+    if kind is None and re.search(r"\bTHIS IS A TEST MESSAGE\b", txt or "", re.IGNORECASE):
+        kind = "INFO"
+    kind = kind or "UNKNOWN"
+    start, end = _neso_window(txt)
+    return {"kind": kind, "tier": NESO_KIND_TIER[kind],
+            "cancel": bool(NESO_CANCEL_RX.search(head)), "start": start, "end": end}
+
+
+def _neso_span(r):
+    """(start, end) epoch seconds a notice covers, for overlap tests. A missing end
+    is open-ended; a missing window is its publication time onward."""
+    s = _parse_iso(r["window_start"]) if r.get("window_start") else None
+    e = _parse_iso(r["window_end"]) if r.get("window_end") else None
+    if s is None:
+        s = _parse_iso(r.get("time") or "")
+    s = s.timestamp() if s else 0.0
+    return s, (e.timestamp() if e else float("inf"))
+
+
+def neso_resolve(rows, now=None):
+    """Mark each classified row with 'status' and a final 'tier', newest first.
+    status: 'in force' | 'cancelled' | 'superseded' | 'ended' | 'cancellation'
+    | 'info'. A cancellation or newer notice of the same kind cancels/supersedes an
+    older one whose window overlaps its own (either without a window = all older of
+    that kind). HRDR is raised to critical within 2 h of its window starting."""
+    now = now or datetime.now(timezone.utc)
+    nts = now.timestamp()
+    rows = sorted(rows, key=lambda r: r.get("time") or "", reverse=True)
+    for i, r in enumerate(rows):
+        if r["tier"] is None:
+            r["status"] = "info"
+            continue
+        if r["cancel"]:
+            r["status"] = "cancellation"
+            r["tier"] = None
+            continue
+        rs, re_ = _neso_span(r)
+        has_win = bool(r.get("window_start"))
+        status = "in force"
+        for n in rows[:i]:                       # newer rows only
+            if n["kind"] != r["kind"]:
+                continue
+            ns, ne = _neso_span(n)
+            n_win = bool(n.get("window_start"))
+            if (has_win and n_win) and not (ns < re_ and rs < ne):
+                continue                         # different window: both stand
+            status = "cancelled" if n["cancel"] else "superseded"
+            break
+        if status == "in force":
+            pub = _parse_iso(r.get("time") or "")
+            if r.get("window_end"):
+                if re_ <= nts:
+                    status = "ended"
+            elif r["kind"] == "CMN" and has_win:
+                if rs + NESO_CMN_MAX_S <= nts:
+                    status = "ended"
+            elif pub and pub.timestamp() + NESO_NOWIN_MAX_S <= nts:
+                status = "ended"
+        r["status"] = status
+        if status != "in force":
+            continue
+        if r["kind"] == "HRDR" and has_win and rs - nts < HRDR_ESCALATE_S:
+            r["tier"] = "critical"
+    return rows
+
+
+def _neso_when(r):
+    """Short UK-local description of a notice's window: '16:00–19:00 Mon 28 Sep'."""
+    s = _parse_iso(r["window_start"]) if r.get("window_start") else None
+    if not s:
+        return ""
+    e = _parse_iso(r["window_end"]) if r.get("window_end") else None
+    ls = s + timedelta(hours=_uk_offset_h(s))
+    txt = ls.strftime("%H:%M")
+    if e:
+        le = e + timedelta(hours=_uk_offset_h(e))
+        txt += "–" + le.strftime("%H:%M")
+        if le.date() != ls.date():
+            txt += " (next day)"
+    else:
+        txt = "from " + txt
+    return txt + " " + ls.strftime("%a %d %b")
+
+
 def get_warnings():
-    """Official NESO system warnings (SYSWARN)."""
-    d = _rows(fetch_json(f"{BMRS}/datasets/SYSWARN?format=json"))
-    out = []
+    """Official NESO system warnings (SYSWARN): the last NESO_LOOKBACK_H hours,
+    newest first, each classified (kind, tier) and resolved (status). Only rows
+    with status 'in force' and a tier raise alerts; the rest are shown for context.
+    History is needed so cancellations and updated notices can be matched to the
+    notice they replace; the plain endpoint returns only the single latest row."""
+    now = datetime.now(timezone.utc)
+    frm = (now - timedelta(hours=NESO_LOOKBACK_H)).strftime("%Y-%m-%dT%H:%MZ")
+    to = (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%MZ")
+    try:
+        d = fetch_json(f"{BMRS}/datasets/SYSWARN/stream?publishDateTimeFrom={frm}"
+                       f"&publishDateTimeTo={to}")
+        d = d if isinstance(d, list) else _rows(d)
+    except Exception:
+        d = _rows(fetch_json(f"{BMRS}/datasets/SYSWARN?format=json"))   # latest only
+    rows = []
     for r in (d or []):
         text = (r.get("warningText") or "").replace("\r", " ").replace("\\n", " ").strip()
-        out.append({"type": r.get("warningType"),
-                    "time": r.get("publishTime"),
-                    "text": text[:600]})
-    return out
+        c = classify_warning(r.get("warningType"), text)
+        rows.append({"type": r.get("warningType"),
+                     "time": r.get("publishTime"),
+                     "text": text[:600],
+                     "kind": c["kind"], "tier": c["tier"], "cancel": c["cancel"],
+                     "window_start": c["start"].isoformat() if c["start"] else None,
+                     "window_end": c["end"].isoformat() if c["end"] else None})
+    rows = neso_resolve(rows, now)
+    for r in rows:
+        r["name"] = NESO_KIND_NAME.get(r["kind"], r.get("type") or "NESO notice")
+        r["when"] = _neso_when(r)
+    return rows
 
 
 # Solar is not centrally metered, so it never appears in Elexon's FUELINST feed
@@ -5625,29 +5895,6 @@ EXPORT_SHARE_ALERT = 35.0   # >35% = losing export capability sheds a large surp
 # list is triaged. Higher = more urgent.
 _SEV = {"critical": 3, "warning": 2, "notice": 1, "ok": 0}
 
-# Warning-type keywords that indicate genuine capacity/supply stress.
-# Matched on WORD BOUNDARIES, not as bare substrings: a naive substring test
-# fired "NISM" (Notification of Inadequate System Margin) on the "nism" inside
-# "Balancing Mechanism", promoting a routine IT-outage notice to a critical
-# alert. "MARGIN" likewise must not match "marginal". A trailing plural "s" is
-# allowed so "DISCONNECTION" still catches "disconnections".
-STRESS_KEYWORDS = ("CAPACITY MARKET", "MARGIN", "ELECTRICITY MARGIN", "NISM",
-                   "NEGATIVE RESERVE", "DEMAND CONTROL", "EMERGENCY", "HIGH RISK",
-                   "INADEQUATE", "DEMAND REDUCTION", "VOLTAGE REDUCTION",
-                   "DISCONNECTION", "LOSS OF SUPPLY")
-STRESS_PATTERNS = tuple(
-    re.compile(r"\b" + re.escape(k) + r"S?\b", re.IGNORECASE)
-    for k in STRESS_KEYWORDS)
-
-
-def _is_stress_warning(wt, txt):
-    """True if a NESO warning's type or text signals genuine capacity/supply
-    stress, matching keywords on word boundaries to avoid false positives like
-    'mechaNISM' or 'MARGINal'."""
-    hay = f"{wt}\n{txt}"
-    return any(p.search(hay) for p in STRESS_PATTERNS)
-
-
 def _a(level, title, detail, tag=None):
     a = {"level": level, "title": title, "detail": detail}
     if tag:
@@ -5903,13 +6150,19 @@ def build_alerts(snap):
                 f"({exp_mw:,} MW).", tag="EXPORT"))
 
     # ---- 6. Official NESO system warnings (layered on top) ------------------
+    # Tier set by get_warnings (classify_warning / neso_resolve): only notices
+    # still in force raise an alert. The window goes in the title so two
+    # concurrent notices of one kind don't de-dupe into one.
     for w in (snap.get("warnings") or []):
-        wt = (w.get("type") or "").upper()
-        txt = (w.get("text") or "").upper()
-        if _is_stress_warning(wt, txt):
-            alerts.append(_a("critical", f"NESO warning: {w.get('type')}",
-                             w.get("text") or "NESO system warning in force.",
-                             tag="NESO"))
+        if w.get("status") != "in force" or not w.get("tier"):
+            continue
+        when = w.get("when") or ""
+        title = "NESO: " + (w.get("name") or w.get("type") or "system warning") +                 (" · " + when if when else "")
+        detail = NESO_KIND_MEANING.get(w.get("kind"), "")
+        if w.get("text"):
+            detail = (detail + " " if detail else "") + "Notice: " + w["text"]
+        alerts.append(_a(w["tier"], title, detail or "NESO system warning in force.",
+                         tag="NESO"))
 
     # De-dupe by (level,title), then order worst-first for an alarm-list feel.
     seen, uniq = set(), []
@@ -5923,9 +6176,12 @@ def build_alerts(snap):
     # items (e.g. import dependence, stale caches) alongside the reassurance,
     # rather than suppressing them.
     if not any(a["level"] in ("critical", "warning") for a in uniq):
+        neso_up = any(a.get("tag") == "NESO" for a in uniq)
         uniq.insert(0, _a("ok", "System nominal",
-            "No frequency, reserve, margin or warning triggers active. Grid "
-            "operating within normal parameters.", tag="OK"))
+            ("No frequency, reserve or margin triggers active. A NESO advisory "
+             "notice is in force (below)." if neso_up else
+             "No frequency, reserve, margin or warning triggers active. Grid "
+             "operating within normal parameters."), tag="OK"))
     return uniq
 
 

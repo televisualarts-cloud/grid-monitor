@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260927.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260928.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -437,6 +437,12 @@
     text-transform:uppercase}
   .wn .x{font-size:12px;color:var(--ink-dim);margin-top:5px;line-height:1.5}
   .wn .tm{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-top:6px}
+  .wn .wn-chip{float:right;font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+    padding:1px 6px;border-radius:5px;border:1px solid var(--line2);color:var(--ink-dim)}
+  .wn.wn-crit{border-color:rgba(255,92,108,.5)} .wn.wn-crit .wn-chip{color:var(--crit);border-color:rgba(255,92,108,.5)}
+  .wn.wn-warn{border-color:rgba(245,185,66,.5)} .wn.wn-warn .wn-chip{color:var(--warn);border-color:rgba(245,185,66,.5)}
+  .wn.wn-note .wn-chip{color:var(--accent2);border-color:rgba(91,141,239,.45)}
+  .wn.wn-past{opacity:.6}
 
   /* resource-conditions panel */
   .keybtn{float:right;font-family:var(--mono);font-size:10px;letter-spacing:.08em;
@@ -1467,7 +1473,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260927.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260928.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -2669,13 +2675,29 @@ function render(d){
   }
 
   // ---- warnings ----
+  // The server sends the last 48 h of SYSWARN, classified and resolved. Notices
+  // in force come first; up to 3 recent others follow, dimmed, with their status
+  // (cancelled / superseded / ended / operational) so the panel explains itself.
   const w=d.warnings||[];
-  $("#warnList").innerHTML = w.length? w.map(x=>`
-    <div class="wn"><div class="t">${x.type||'notice'}</div>
-      <div class="x">${(x.text||'').replace(/</g,'&lt;')}</div>
-      <div class="tm">${x.time?timeAgo(x.time):''}</div>
-      <a class="alert-src" href="https://bmrs.elexon.co.uk/events" target="_blank" rel="noopener">View on NESO events ↗</a></div>`).join("")
-    : `<div class="sub-line">No active system warnings.</div>`;
+  const wEsc=s=>String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const wLive=w.filter(x=>x.status==="in force" && x.tier);
+  const wPast=w.filter(x=>!(x.status==="in force" && x.tier)).slice(0,3);
+  const wCard=(x,live)=>{
+    const lvl=live?(x.tier==="critical"?"crit":x.tier==="warning"?"warn":"note"):"past";
+    const chip=live?({critical:"critical",warning:"warning",notice:"advisory"}[x.tier]||"notice")
+                   :(x.status||"");
+    const head=x.name||x.type||"notice";
+    return `<div class="wn wn-${lvl}"><div class="t">${wEsc(head)}${x.when?" · "+wEsc(x.when):""}
+        <span class="wn-chip">${wEsc(chip)}</span></div>
+      <div class="x">${wEsc(x.text)}</div>
+      <div class="tm">${x.time?timeAgo(x.time):""}</div>
+      <a class="alert-src" href="https://bmrs.elexon.co.uk/events" target="_blank" rel="noopener">View on NESO events ↗</a></div>`;
+  };
+  $("#warnList").innerHTML =
+    (wLive.length? wLive.map(x=>wCard(x,true)).join("")
+                 : `<div class="sub-line">No NESO system warnings in force.</div>`)+
+    (wPast.length? `<div class="sub-line" style="margin-top:4px">Recent (last 48 h), not in force:</div>`+
+                   wPast.map(x=>wCard(x,false)).join("") : "");
 
   // ---- resource conditions by location (OpenWeather) ----
   renderResources(d);
@@ -7148,7 +7170,7 @@ const Alarm = (function(){
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
-            desc:"Speaks new NESO SYSWARN messages as they arrive; margin notices are critical."},
+            desc:"NESO system warnings in force, by severity: demand control is critical; high risk of demand reduction, a Capacity Market Notice or risk of system disturbance is a spoken warning; Electricity Margin Notices and other advisory notices are a soft blip only. Operational and IT notices are silent."},
     flood: {name:"Flood warnings", tier:"crit", on:false,
             desc:"Severe flood warning = critical; ordinary flood warning = warning."},
     river: {name:"River level high", tier:"crit", on:false,
@@ -7800,29 +7822,29 @@ const Alarm = (function(){
         "Critical. Operating reserve is below the largest single infeed.");
     }
 
-    // SYSWARN — speak new warnings. Margin-notice types are critical; routine
-    // IT / operational / test notices are downgraded to a silent NOTICE (blip
-    // only, no speech) rather than read aloud as warnings.
+    // SYSWARN — tier comes from the server (classify_warning / neso_resolve), so
+    // the alarm always agrees with the alert list. Only notices still in force
+    // count; cancelled, superseded, ended and operational ones never sound.
+    // Spoken as the notice's name and window, not the raw NESO text.
     const w=d.warnings||[];
     const seen=new Set();
+    const SYS_TIER={critical:"crit", warning:"warn", notice:"notice"};
     w.forEach(x=>{
-      const txt=(x.text||"").trim(); if(!txt) return;
-      const key="sys-"+txt.slice(0,80);
+      if(x.status!=="in force" || !x.tier) return;
+      const tier=SYS_TIER[x.tier]||"notice";
+      const key="sys-"+(x.kind||"")+"-"+(x.window_start||x.time||"")+"-"+tier;
       seen.add(key);
-      const isMargin=/margin notice|capacity market notice|electricity margin|demand control|deman flexibility|insufficient/i.test(txt);
-      // Operational / IT / administrative chatter — not a grid condition.
-      const isInfo=/it system|systems outage|api|edl|edt|wider access|maintenance|planned outage|scheduled|test message|this is a test|reminder|no longer required|cancellation|withdrawn|issued by/i.test(txt);
-      let tier, prefix;
-      if(isMargin){ tier="crit"; prefix="Critical. System warning. "; }
-      else if(isInfo){ tier="notice"; prefix=""; }   // blip only, not spoken
-      else { tier="warn"; prefix="Warning. System warning. "; }
-      // Speak the whole message up to a sentence boundary near the limit, so it
-      // never cuts off mid-word. (notice tier isn't spoken, so text is moot.)
-      set("sys",key, true, tier, prefix + _clipSentence(txt, 220));
+      const what=(x.name||x.type||"system warning")+(x.when?", "+x.when:"");
+      const prefix = tier==="crit" ? "Critical. NESO system warning. "
+                   : tier==="warn" ? "Warning. NESO system warning. " : "";
+      set("sys",key, true, tier, prefix + what + ".");
     });
     // clear SYSWARN latches no longer present
+    // (a critical one also releases the critical-repeat timer, which the old
+    // plain delete left running)
     Object.keys(active).filter(k=>k.startsWith("sys-")&&!seen.has(k)).forEach(k=>{
       delete active[k];
+      if(k.endsWith("-crit")){ critActiveCount=Math.max(0,critActiveCount-1); stopCritRepeat(); }
     });
 
     if(!baselined) baselined=true;   // first pass established the baseline
@@ -8189,6 +8211,7 @@ const Alarm = (function(){
       testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
         if(cat==="rain") say("Isolated heavy showers to the north-west, which may be with you soon. Test.");
         else if(cat==="nowcast") say("Weather nowcast: Rain is approaching from the south west and may arrive in twenty to thirty minutes. Test.");
+        else if(cat==="sys") say("Warning. NESO system warning. Capacity Market Notice, from 16:30 Wed 08 Jan. Test.");
         else if(cat==="pcnear") say("Warning. Power cut near you: unplanned fault 2.3 kilometres north-east of you, about 450 customers off, estimated back on at 6:30 pm. Test.");
         else if(cat==="powercuts") say("Warning. Unplanned power cuts have passed one hundred thousand customers off across the UK and Ireland and are still climbing, around three thousand new cuts in the last hour, fastest in northern Scotland and southern England. Gale-force gusts of sixty knots in North Scotland suggest a weather cause. Test.");
         else if(c.tier!=="notice") say((c.tier==="crit"?"Critical. ":"Warning. ")+c.name+" test."); };
