@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260928.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260928.3  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260928.2"
+SERVER_BUILD = "260928.3"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -614,7 +614,8 @@ def compute_system_risk(gen, freq, gen_loss=None):
 # One time-ordered JSONL per UTC day (logs/grid_log-YYYY-MM-DD.jsonl). Interleaved
 # event rows so a later graph can merge them on a single time axis:
 #   {"t":iso,"k":"f","hz":50.02}                               — every 15s freq point
-#   {"t":iso,"k":"m","gen":{...},"demand":{...},"risk":{...}}  — each FUELINST (~5min)
+#   {"t":iso,"k":"m","gen":{...},"demand":{...},"risk":{...}}  — each FUELINST (~5min);
+#     t = the batch's publishTime, "logged" = when it was written
 # Frequency arrives in ~2min bursts; every distinct 15s point is logged once (deduped)
 # as it appears. Daily files keep it bounded and archivable; retention is a tunable, so
 # this extends to long-term storage later without a format change.
@@ -660,17 +661,66 @@ def log_freq_points(ordered):
         _data_log_write({"t": t, "k": "f", "hz": round(hz, 3)})
     _freq_log_last_ts = ordered[-1][0]
 
+MIX_LOG_FRESH_S = 900      # only log a FUELINST batch published within this long
+
+
+def _mix_last_pub_from_log():
+    """Newest batch time already in the log (its 'pub', else its 't'), as an aware
+    datetime, so a restart doesn't write the current batch again. None if none."""
+    try:
+        files = sorted(LOG_DIR.glob("grid_log-*.jsonl"))[-2:]
+    except Exception:
+        return None
+    best = None
+    for p in files:
+        try:
+            with open(p, "rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 262144))
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+        except Exception:
+            continue
+        for ln in lines:
+            if '"k":"m"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except Exception:
+                continue
+            d = _parse_iso(r.get("pub") or r.get("t") or "")
+            if d and (best is None or d > best):
+                best = d
+    return best
+
+
 def log_mix(snap):
     """Append one 'm' row per new FUELINST publish: generation mix, derived demand
-    split, and the risk summary; then opportunistically prune old day files."""
+    split, and the risk summary; then opportunistically prune old day files.
+
+    The row is stamped with the batch's own publishTime ('t'; 'logged' is when it
+    was written), so it lands at the time it describes. Only a FRESH batch (published
+    within MIX_LOG_FRESH_S) is logged: after an Elexon outage the backlog is replayed
+    batch by batch, and those old batches would be logged next to CURRENT solar,
+    battery, demand and risk figures. Skipping them leaves the hole empty for the
+    BMRS gap-fill, which rebuilds it properly (with PVLive solar of the right time).
+    A batch no newer than the last one logged (e.g. the same batch after a restart)
+    is never written again."""
     global _mix_log_last_pub
     gen = snap.get("generation")
     if not gen or not gen.get("fuels"):
         return
     pub = gen.get("publishTime")
-    if pub and pub == _mix_log_last_pub:
+    pub_d = _parse_iso(pub or "")
+    if pub_d is None:
         return
-    _mix_log_last_pub = pub
+    if _mix_log_last_pub is None:
+        _mix_log_last_pub = _mix_last_pub_from_log() or False
+    if _mix_log_last_pub and pub_d <= _mix_log_last_pub:
+        return                                   # already logged (or older)
+    if (datetime.now(timezone.utc) - pub_d).total_seconds() > MIX_LOG_FRESH_S:
+        return                                   # replayed backlog: leave for BMRS gap-fill
+    _mix_log_last_pub = pub_d
     per = {fu.get("code"): round(fu.get("mw") or 0) for fu in gen["fuels"]}
     ic_exp = sum(-v for c, v in per.items() if c and c.startswith("INT") and v < 0)
     ic_imp = sum(v for c, v in per.items() if c and c.startswith("INT") and v > 0)
@@ -679,7 +729,7 @@ def log_mix(snap):
     dem = snap.get("demand") or {}
     sr = snap.get("system_risk") or {}
     _data_log_write({
-        "t": snap.get("generated"), "k": "m", "gen": per,
+        "t": pub, "logged": snap.get("generated"), "k": "m", "gen": per,
         "total_mw": gen.get("generation_total_mw"), "ic_net_mw": gen.get("interconnector_net_mw"),
         "demand": {"national_mw": dem.get("national_mw"), "transmission_mw": dem.get("transmission_mw"),
                    "ic_export_mw": round(ic_exp), "ic_import_mw": round(ic_imp),
