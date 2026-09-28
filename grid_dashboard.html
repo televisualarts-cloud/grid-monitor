@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260928.2  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260928.3  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1194,6 +1194,22 @@
   /* stale reading (>4h): grey the text only — never recolour the border, which
      carries the rainfall intensity band. */
   .rn.rn-stale, .rn.rn-stale b{color:var(--ink-faint)}
+  /* rain-alert mute dot in the name row (card size unchanged): green = alerts use the
+     gauge, amber = readings under the threshold ignored, red = ignored entirely */
+  .rn-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:var(--ok)}
+  .rn-dot.partial{background:var(--warn)}
+  .rn-dot.full{background:var(--crit)}
+  /* no report for over 3 h: dim the gauge name */
+  .rn .rn-nm.rn-gone{color:var(--ink-dim)}
+  /* rain-alert mute switch in the gauge plot header */
+  .gm-seg{float:right;display:inline-flex;gap:3px;align-items:center;color:var(--ink-faint)}
+  .gm-seg.busy{opacity:.5;pointer-events:none}
+  .gm-seg button{font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:var(--panel);
+    border:1px solid var(--line);border-radius:5px;padding:1px 7px;cursor:pointer}
+  .gm-seg button:hover{color:var(--ink);border-color:var(--accent)}
+  .gm-seg button.on[data-gm="normal"]{color:#04210f;background:var(--ok);border-color:var(--ok);font-weight:600}
+  .gm-seg button.on[data-gm="partial"]{color:#2a1c00;background:var(--warn);border-color:var(--warn);font-weight:600}
+  .gm-seg button.on[data-gm="full"]{color:#2a0006;background:var(--crit);border-color:var(--crit);font-weight:600}
 
 
   .cg-tip{position:fixed;z-index:250;pointer-events:none;opacity:0;transition:opacity .1s;
@@ -1473,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260928.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260928.3 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -5944,6 +5960,7 @@ async function eaWatchTick(){
     if(to) clearTimeout(to);
     eaLastFetchTs=Date.now();
     rainWatchFails=0;
+    gaugeMutesAdopt(ov);
     if(doFull){
       riverWatchLast=Date.now();
       // adopt the full overview (unless the panel is open with its own copy)
@@ -6028,6 +6045,7 @@ async function eaFetch(){
       fetch(q).then(r=>r.json()),
       fetch("/api/ea-floods").then(r=>r.json()),
     ]);
+    gaugeMutesAdopt(ov);
     eaData=ov; eaFloods=fl; eaRender();
     eaLastFetchTs=Date.now();   // let the background watcher skip a redundant poll
     // river + rainfall alarms can only run while EA station data is loaded
@@ -6063,6 +6081,72 @@ function eaRainBand(mm){
 }
 
 // Rainfall view: "list" (nearest-first grid) or "map" (rough directional grid).
+// Rain-alert mutes per gauge, held by the server (/api/gauge-mute) so the rain engine
+// uses them too. Cards and plots always show the raw readings; only the rain popup
+// reads through gaugeAlertRainfall(). "partial" = readings under the threshold count
+// as dry; "full" = gauge ignored by the alerts.
+var gaugeMutes={}, gaugeMutePartialMmh=0.3;
+const GAUGE_GONE_MS=3*3600*1000;       // no report for this long: dim the gauge name
+function gaugeMutesAdopt(d){
+  if(d && d.gauge_mutes && typeof d.gauge_mutes==="object"){
+    gaugeMutes=d.gauge_mutes;
+    if(d.gauge_mute_partial_mmh!=null) gaugeMutePartialMmh=+d.gauge_mute_partial_mmh;
+  }
+}
+function gaugeMuteOf(ref){ const m=ref&&gaugeMutes[ref]; return (m==="partial"||m==="full")?m:null; }
+function gaugeMuteLabel(m){
+  return m==="full" ? "rain alerts: gauge muted"
+       : m==="partial" ? "rain alerts: readings under "+gaugeMutePartialMmh+" mm/h ignored"
+       : "rain alerts: normal";
+}
+function gaugeAlertRainfall(list){
+  if(!Array.isArray(list)) return list;
+  const out=[];
+  list.forEach(r=>{
+    const m=gaugeMuteOf(r&&r.ref);
+    if(m==="full") return;
+    if(m==="partial"){
+      const v=(r.mm_h!=null?r.mm_h:r.mm);
+      if(v!=null && v<gaugeMutePartialMmh){ out.push({...r, mm:0, mm_h:0}); return; }
+    }
+    out.push(r);
+  });
+  return out;
+}
+function gaugeMuteSegHtml(ref){
+  const m=gaugeMuteOf(ref)||"normal", safe=String(ref).replace(/[^A-Za-z0-9_.-]/g,"");
+  const b=(k,lbl,tip)=>'<button data-gm="'+k+'"'+(m===k?' class="on"':'')+' title="'+tip+'">'+lbl+'</button>';
+  return '<span class="gm-seg" data-gmref="'+safe+'" title="Rain alerts for this gauge. The cards and this plot always show the raw readings.">alerts '+
+    b("normal","normal","Rain alerts use this gauge normally")+
+    b("partial","&lt;"+gaugeMutePartialMmh,"Rain alerts ignore readings under "+gaugeMutePartialMmh+" mm/h from this gauge")+
+    b("full","mute","Rain alerts ignore this gauge entirely")+'</span>';
+}
+function gaugeMuteRefreshUi(ref){
+  const m=gaugeMuteOf(ref);
+  document.querySelectorAll('.gm-seg[data-gmref="'+ref+'"] button[data-gm]')
+    .forEach(b=>b.classList.toggle("on", b.dataset.gm===(m||"normal")));
+  document.querySelectorAll('.rn[data-rainref="'+ref+'"] .rn-dot')
+    .forEach(d=>{ d.className="rn-dot"+(m?" "+m:""); d.title=gaugeMuteLabel(m); });
+}
+function gaugeMuteWire(host){
+  const seg=host && host.querySelector(".gm-seg"); if(!seg) return;
+  const ref=seg.dataset.gmref;
+  seg.querySelectorAll("button[data-gm]").forEach(btn=>btn.onclick=async()=>{
+    const mode=btn.dataset.gm;
+    if(mode===(gaugeMuteOf(ref)||"normal")) return;
+    seg.classList.add("busy");
+    try{
+      const d=await fetch("/api/gauge-mute",{method:"POST",headers:{"Content-Type":"application/json"},
+                                              body:JSON.stringify({ref, mode})}).then(r=>r.json());
+      if(!d.ok) throw new Error(d.error||"save failed");
+      gaugeMutesAdopt(d);
+      gaugeMuteRefreshUi(ref);
+    }catch(e){ seg.title="Could not save: "+e.message; }
+    finally{ seg.classList.remove("busy"); }
+  });
+}
+fetch("/api/gauge-mutes").then(r=>r.json()).then(gaugeMutesAdopt).catch(()=>{});
+
 let eaRainView = (function(){ try{ return localStorage.getItem("eaRainView")||"list"; }catch(e){ return "list"; } })();
 // "gauge radar": when on, the plot area shows the Forecast view's radar (radar-only mode)
 // instead of a gauge trace. Toggled by the button pinned top-right of the plot area.
@@ -6154,7 +6238,11 @@ function eaRainCard(r, near){
   const peak=(r.mm_h_max2h!=null?Math.max(r.mm_h_max2h,rate):rate);
   const cardTitle=((r.dt?'last reported '+hhmm(r.dt)+' ('+agePlain(r.dt)+')':'no reading time')
                    +(rawTip?' · '+rawTip:'')).replace(/"/g,'&quot;');
-  const nm='<span class="rn-nm" title="'+loc.replace(/"/g,'&quot;')+'">'+loc+'</span>';
+  // no report for over 3 h (or no reading time at all): dim the name — still shown
+  const gone=(ageMs==null || ageMs>GAUGE_GONE_MS);
+  const mute=gaugeMuteOf(r.ref);
+  const nm='<div class="rn-hdr"><span class="rn-dot'+(mute?' '+mute:'')+'" title="'+gaugeMuteLabel(mute)+'"></span>'+
+    '<span class="rn-nm'+(gone?' rn-gone':'')+'" title="'+loc.replace(/"/g,'&quot;')+(gone?' · no report for over 3 h':'')+'">'+loc+'</span></div>';
   const cls=eaRainBand(rate)+' '+rnbBand(peak)+(near?' rn-here':'')+(r.ref===eaSelRef?' sel':'')+(stale?' rn-stale':'');
   return '<div class="rn '+cls+'" data-rainref="'+(r.ref||'')+'" data-rainloc="'+loc.replace(/"/g,'')+'" title="'+cardTitle+'">'+nm+
     '<span class="rn-val"><span class="rn-mm"><b>'+(rate!=null?rate.toFixed(1):'\u2014')+'</b> mm/h</span>'+
@@ -7064,10 +7152,11 @@ async function eaLoadRain(ref, loc){
     host.innerHTML='<div class="ea-detail-card"><h3>'+
       '<button class="ea-clearsel" data-act="clearsel" title="Clear selection">✕</button>'+
       loc+' <span class="ea-badge">rain</span></h3>'+
-      '<div class="meta">15-min rainfall · last 24h total '+total24.toFixed(1)+' mm</div>'+
+      '<div class="meta">15-min rainfall · last 24h total '+total24.toFixed(1)+' mm'+gaugeMuteSegHtml(ref)+'</div>'+
       '<canvas id="eaRainChart"></canvas></div>';
     eaDrawRain(series);
     eaWireClearSel();
+    gaugeMuteWire(host);
   }catch(e){ host.innerHTML='<div class="ea-detail-empty">'+e.message+'</div>'; }
 }
 
@@ -8104,6 +8193,7 @@ const Alarm = (function(){
   }
   function evaluateRainfall(rainfall){
     if(!Array.isArray(rainfall)){ return; }
+    rainfall=gaugeAlertRainfall(rainfall);   // per-gauge alert mutes (display unaffected)
     // A gauge counts as "raining now" only while its reading is fresh by the SAME
     // timeout the cards use (~2 publications, min 30 min) — NOT the 2 h river window.
     // Otherwise the alarm fires "light rain nearby" on an hours-old reading that the

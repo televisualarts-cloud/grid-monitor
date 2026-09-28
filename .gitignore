@@ -19,6 +19,7 @@ openweather_budget.json
 weather_last_good.json
 bmu_locations.json
 bmu_registry.json
+gauge_mutes.json
 
 # ── Logs / accumulating history ──
 margin_history.json

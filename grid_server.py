@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260928.3  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260928.4  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260928.3"
+SERVER_BUILD = "260928.4"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -4787,6 +4787,66 @@ def _save_forecast_window(cfg):
     FORECAST_WINDOW_FILE.write_text(json.dumps(cur))
     return cur
 
+# ---- Rain-gauge alert mutes -------------------------------------------------
+# Manual per-gauge mute for the RAIN ALERTS only (a ratty or stuck gauge). Cards
+# and plots keep showing the raw readings; only the rain engine's input (and the
+# page's rain popup, which applies the same rule) see the muted value. Keyed by
+# EA station reference; persisted so it survives restarts; set via /api/gauge-mute.
+#   "partial": readings below GAUGE_MUTE_PARTIAL_MMH count as dry
+#   "full":    the gauge is left out of the rain alerts entirely
+GAUGE_MUTES_FILE = Path(__file__).with_name("gauge_mutes.json")
+GAUGE_MUTE_PARTIAL_MMH = 0.3
+_GAUGE_MUTE_MODES = ("partial", "full")
+_gauge_mutes_lock = threading.Lock()
+
+def _load_gauge_mutes():
+    try:
+        d = json.loads(GAUGE_MUTES_FILE.read_text())
+    except Exception:
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return {str(k): v for k, v in d.items() if v in _GAUGE_MUTE_MODES}
+
+_gauge_mutes = _load_gauge_mutes()
+
+def _save_gauge_mute(ref, mode):
+    """Set one gauge's mode ("normal" clears it). Returns the full mute map, or None
+    for an empty reference."""
+    global _gauge_mutes
+    ref = str(ref or "").strip()[:40]
+    if not ref:
+        return None
+    with _gauge_mutes_lock:
+        cur = dict(_gauge_mutes)
+        if mode in _GAUGE_MUTE_MODES:
+            cur[ref] = mode
+        else:
+            cur.pop(ref, None)
+        GAUGE_MUTES_FILE.write_text(json.dumps(cur, indent=1, sort_keys=True))
+        _gauge_mutes = cur
+    return dict(cur)
+
+def _gauges_for_alerts(gauges):
+    """The gauge list as the rain engine should see it: fully muted gauges dropped,
+    partially muted ones read as dry below the threshold. Copies — never mutates the
+    displayed list."""
+    mutes = _gauge_mutes
+    if not mutes:
+        return gauges
+    out = []
+    for g in gauges:
+        m = mutes.get(str(g.get("ref") or ""))
+        if m == "full":
+            continue
+        if m == "partial":
+            r = g.get("mm_h")
+            r = r if r is not None else g.get("mm")
+            if r is not None and r < GAUGE_MUTE_PARTIAL_MMH:
+                g = dict(g, mm=0.0, mm_h=0.0)
+        out.append(g)
+    return out
+
 def _hhmm_min(hhmm):
     try:
         h, m = str(hhmm).split(":"); h, m = int(h), int(m)
@@ -5422,7 +5482,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
                 visibility_m=_cond.get("visibility_m"),
                 wind_from=_hm.get("dir_deg"),
                 wind_kmh=(_spd * 3.6) if _spd is not None else None,
-                gauges=out.get("rainfall") or [],
+                gauges=_gauges_for_alerts(out.get("rainfall") or []),
                 flood_active=False,          # floods come from a separate endpoint
                 feed_stale=bool(_w.get("stale")),
                 forward_precip=out.get("_owm_minute"),
@@ -7390,6 +7450,23 @@ class Handler(BaseHTTPRequestHandler):
                     payload = {}
                 saved = _save_forecast_window(payload)
                 self._send_json({"ok": True, "config": saved})
+            elif self.path.startswith("/api/gauge-mute"):
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                mode = payload.get("mode")
+                if mode not in ("normal",) + _GAUGE_MUTE_MODES:
+                    self._send_json({"ok": False, "error": "mode must be normal, partial or full"}, 400)
+                    return
+                cur = _save_gauge_mute(payload.get("ref"), mode)
+                if cur is None:
+                    self._send_json({"ok": False, "error": "missing gauge ref"}, 400)
+                    return
+                self._send_json({"ok": True, "gauge_mutes": cur,
+                                 "gauge_mute_partial_mmh": GAUGE_MUTE_PARTIAL_MMH})
             elif self.path.startswith("/api/save-capture"):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(n) if n else b""
@@ -7541,6 +7618,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_freq_history(days=int(days) if days else 30))
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "mn": [], "mx": [], "mean": []}, 500)
+        elif self.path.startswith("/api/gauge-mutes"):
+            self._send_json({"gauge_mutes": dict(_gauge_mutes),
+                             "gauge_mute_partial_mmh": GAUGE_MUTE_PARTIAL_MMH})
         elif self.path.startswith("/api/ea-floods"):
             try:
                 self._send_json(get_ea_floods())
@@ -7556,11 +7636,15 @@ class Handler(BaseHTTPRequestHandler):
                 rain_only = qs.get("rain", ["0"])[0] in ("1", "true", "yes")
                 cad = 2.0 if qs.get("cadence", ["normal"])[0] == "low" else 1.0
                 smult = _forecast_sampling_mult()
-                self._send_json(get_ea(
+                d = get_ea(
                     float(lat) if lat else None,
                     float(lon) if lon else None,
                     float(dist) if dist else None,
-                    rain_only=rain_only, cadence_mult=cad, sampling_mult=smult))
+                    rain_only=rain_only, cadence_mult=cad, sampling_mult=smult)
+                if isinstance(d, dict):     # current mutes, never cached with the data
+                    d = dict(d, gauge_mutes=dict(_gauge_mutes),
+                             gauge_mute_partial_mmh=GAUGE_MUTE_PARTIAL_MMH)
+                self._send_json(d)
             except Exception as e:
                 # get_ea is internally resilient (returns partial data with a
                 # soft 'error' field); this outer guard only trips on a total
