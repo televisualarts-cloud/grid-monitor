@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260928.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260928.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260928.1"
+SERVER_BUILD = "260928.2"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -425,6 +425,7 @@ FUEL_INERTIA_H = {
 # (Previous seeds 1.4/30 under-read by ~35%, MAE 53 -> over-stated RoCoF ~1.5x -> false alerts.)
 INERTIA_LOAD_UPLIFT  = 1.69   # output -> synchronised-rating proxy (NESO-fitted slope)
 INERTIA_BASELINE_GWS = 69.0   # always-on stability inertia (NESO-fitted intercept, GVA.s)
+GEN_STALE_S        = 900      # FUELINST publishes every 5 min; older than this = stale mix
 GEN_LOSS_MW        = 400.0    # an infeed drop bigger than this in one interval = flagged
 GEN_LOSS_SEVERE_MW = 800.0    # ...this much = severe (pushes risk to RED)
 GEN_HIST_KEEP_S    = 30 * 60
@@ -552,6 +553,8 @@ def compute_system_risk(gen, freq, gen_loss=None):
     """Inertia proxy + CGRI from the live mix and frequency. Read-only."""
     if not gen or not gen.get("fuels"):
         return None
+    _gp = _parse_iso(gen.get("publishTime") or "")
+    gen_stale = _gp is None or (datetime.now(timezone.utc) - _gp).total_seconds() > GEN_STALE_S
     E_mws = 0.0; sync_mw = 0.0
     for fu in gen["fuels"]:
         code = fu.get("code", ""); mw = fu.get("mw") or 0
@@ -563,11 +566,13 @@ def compute_system_risk(gen, freq, gen_loss=None):
     # calibrate the output-weighted proxy toward synchronised-rating inertia
     E_mws = E_mws * INERTIA_LOAD_UPLIFT + INERTIA_BASELINE_GWS * 1000.0 if E_mws > 0 else 0.0
     npf = round((LARGEST_INFEED_LOSS_MW * NOMINAL_HZ) / (2 * E_mws), 3) if E_mws > 0 else None
+    if gen_stale:        # a stale mix is not a current inertia figure
+        E_mws = None; npf = None
     if npf is None:      inertia_band = "unknown"
     elif npf < ROCOF_AMBER: inertia_band = "green"
     elif npf < ROCOF_RED:   inertia_band = "amber"
     else:                   inertia_band = "red"
-    V = round(npf / ROCOF_VULN_REF, 2) if npf is not None else 0.0
+    V = round(npf / ROCOF_VULN_REF, 2) if npf is not None else None
     hz = (freq or {}).get("hz")                    # newest sample ("now")
     rocof = (freq or {}).get("rocof_hz_s")
     # Judge on the WORST point of the latest publish burst, not just the newest one
@@ -575,21 +580,28 @@ def compute_system_risk(gen, freq, gen_loss=None):
     hz_min, hz_max, hz_judge = _freq_extremes(freq)
     dev = round(abs(hz_judge - NOMINAL_HZ), 3) if hz_judge is not None else None
     cgri = None
-    if dev is not None:
+    if dev is not None and V is not None:
         m_inertia = 1.0 + CGRI_ALPHA * max(0.0, V)
         m_rocof = 1.0 + CGRI_BETA * (abs(rocof) / ROCOF_OBS_REF if rocof else 0.0)
         cgri = round(dev * m_inertia * m_rocof, 3)
-    raw = _risk_level_ext(hz_min, hz_max, cgri, gen_loss)
-    level = ["green", "amber", "red"][_risk_hysteresis(raw, time.time())]
+    if hz is None:
+        # No current frequency: no level either (the badge shows '—'); the
+        # hysteresis state is left untouched so it resumes cleanly on recovery.
+        raw = None
+        level = None
+    else:
+        raw = _risk_level_ext(hz_min, hz_max, cgri, gen_loss)
+        level = ["green", "amber", "red"][_risk_hysteresis(raw, time.time())]
     return {
-        "inertia_gws": round(E_mws / 1000.0, 1), "sync_mw": round(sync_mw),
+        "inertia_gws": round(E_mws / 1000.0, 1) if E_mws is not None else None,
+        "sync_mw": round(sync_mw), "gen_stale": gen_stale,
         "inertia_band": inertia_band, "notional_rocof": npf,
         "largest_loss_mw": LARGEST_INFEED_LOSS_MW, "rocof_obs": rocof,
         "vulnerability": V, "hz": hz, "dev": dev, "cgri": cgri,
         # hz = newest sample; hz_judge = burst point furthest from nominal (what dev,
         # CGRI and level are judged on); hz_min/hz_max = the burst's extremes.
         "hz_judge": hz_judge, "hz_min": hz_min, "hz_max": hz_max,
-        "level": level, "level_raw": ["green", "amber", "red"][raw],
+        "level": level, "level_raw": ["green", "amber", "red"][raw] if raw is not None else None,
         "gen_loss": gen_loss,
         "params": {"op_lo": FREQ_OP_LO, "op_hi": FREQ_OP_HI, "stat_lo": FREQ_STAT_LO,
                    "stat_hi": FREQ_STAT_HI, "lfdd_hz": LFDD_HZ, "rocof_vuln_ref": ROCOF_VULN_REF,
@@ -680,30 +692,89 @@ def log_mix(snap):
     _data_log_prune()
 
 
+# Newest frequency sample ever seen, so an outage can report WHEN the last reading
+# was even after the 2 h query window has emptied. Seeded from the 15 s data log on
+# first use, so a restart during an outage still knows.
+_freq_last = {"t": None, "hz": None, "seeded": False}
+
+
+def _freq_last_from_log():
+    """(iso, hz) of the newest 'f' row in the two newest day logs, or None."""
+    try:
+        files = sorted(LOG_DIR.glob("grid_log-*.jsonl"))[-2:]
+    except Exception:
+        return None
+    for p in reversed(files):
+        try:
+            with open(p, "rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 262144))
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+        except Exception:
+            continue
+        # newest by TIMESTAMP, not by file position: an older server build could
+        # append a stale archive point (e.g. 00:00) after the real last reading
+        best = None
+        for ln in lines:
+            if '"k":"f"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except Exception:
+                continue
+            if r.get("t") and (best is None or r["t"] > best[0]):
+                best = (r["t"], r.get("hz"))
+        if best:
+            return best
+    return None
+
+
+def _freq_note_last(t, hz):
+    if t and (_freq_last["t"] is None or t > _freq_last["t"]):
+        _freq_last["t"], _freq_last["hz"] = t, hz
+
+
+def _freq_down(now, reason):
+    """Frequency payload for a feed with no fresh reading: no value (the dashboard
+    shows '—'), plus when the last reading was, so the stale alert can say so."""
+    if not _freq_last["seeded"]:
+        _freq_last["seeded"] = True
+        lg = _freq_last_from_log()
+        if lg:
+            _freq_note_last(*lg)
+    lt = _freq_last["t"]
+    ltd = _parse_iso(lt) if lt else None
+    return {"time": lt, "hz": None, "down": True, "down_reason": reason,
+            "last_time": lt, "last_hz": _freq_last["hz"],
+            "age_s": round((now - ltd).total_seconds()) if ltd else None,
+            "burst_min": None, "burst_max": None, "burst_window_s": FREQ_BURST_WINDOW_S,
+            "rocof_hz_s": None, "trace": [], "trace_points": [],
+            "window_start": None, "window_end": lt}
+
+
 def get_frequency():
-    """Latest grid frequency (Hz) plus a recent history trace.
-    Uses the near-real-time system/frequency endpoint (15-second cadence,
-    ~1-2 minute latency) with an explicit recent window. The older
-    datasets/FREQ archive feed lags to the previous midnight, so it is only
-    a fallback if the live endpoint returns nothing."""
+    """Latest grid frequency (Hz) plus a recent history trace, from the
+    near-real-time system/frequency endpoint (15-second cadence, ~1-2 minute
+    latency) over the last 2 h. There is deliberately no fallback to the
+    datasets/FREQ archive: it lags to the previous midnight, so during an
+    outage it could only ever supply an old reading. When the newest sample is
+    older than FREQ_STALE_S (or there is none) the payload has hz=None and
+    down=True; the trace is kept, since that history is real."""
     now = datetime.now(timezone.utc)
     frm = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     to = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    rows = []
-    for url in (f"{BMRS}/system/frequency?format=json&from={frm}&to={to}",
-                f"{BMRS}/datasets/FREQ?format=json"):   # fallback only
-        try:
-            rows += _rows(fetch_json(url))
-            if rows:
-                break     # prefer the live endpoint; skip the laggy fallback
-        except Exception:
-            pass
-    if not rows:
-        return None
+    try:
+        rows = _rows(fetch_json(f"{BMRS}/system/frequency?format=json&from={frm}&to={to}")) or []
+    except Exception as e:
+        return _freq_down(now, f"fetch failed: {type(e).__name__}")
     # de-dup on measurementTime, sort ascending
     uniq = {r["measurementTime"]: r["frequency"] for r in rows if r.get("frequency") is not None}
+    if not uniq:
+        return _freq_down(now, "no readings in the last 2 h")
     ordered = sorted(uniq.items())
     latest_t, latest_hz = ordered[-1]
+    _freq_note_last(latest_t, latest_hz)
     # Down-sample the last window for the trace using MIN/MAX-envelope decimation:
     # within each bucket keep BOTH the lowest and highest point (in time order), not
     # a single stride sample. Plain stride sampling (tail[::stepn]) could step right
@@ -748,7 +819,7 @@ def get_frequency():
             hi_t, hi_hz = max(win, key=lambda th: th[1])
             burst_min = {"t": lo_t, "hz": round(lo_hz, 3)}
             burst_max = {"t": hi_t, "hz": round(hi_hz, 3)}
-    return {"time": latest_t, "hz": latest_hz,
+    out = {"time": latest_t, "hz": latest_hz, "down": False,
             "burst_min": burst_min,          # lowest point of the latest publish window
             "burst_max": burst_max,          # highest point of the latest publish window
             "burst_window_s": FREQ_BURST_WINDOW_S,
@@ -757,6 +828,14 @@ def get_frequency():
             "trace_points": trace_points,   # timestamped, for axis labels
             "window_start": sampled[0][0] if sampled else latest_t,
             "window_end": latest_t}
+    age = (now - lt_dt).total_seconds() if lt_dt is not None else None
+    if age is None or age > FREQ_STALE_S:
+        # Stale: keep the real history for the plot, but give no current value.
+        out.update({"hz": None, "down": True, "down_reason": "no fresh reading",
+                    "last_time": latest_t, "last_hz": latest_hz,
+                    "age_s": round(age) if age is not None else None,
+                    "burst_min": None, "burst_max": None, "rocof_hz_s": None})
+    return out
 
 
 # ---- Fast frequency feed (phase-learned burst rhythm) ----------------------
@@ -796,7 +875,10 @@ def get_frequency_fast():
     newest_epoch = _ea_parse_dt(freq.get("time"))
     # Attach a FULL-RESOLUTION recent tail (undecimated 15s points) so the client
     # can sweep the dial through the last couple of minutes of real movement.
+    # Nothing to sweep while the feed is down.
     try:
+        if freq.get("down"):
+            raise LookupError("feed down")
         now2 = datetime.now(timezone.utc)
         frm2 = (now2 - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         to2 = now2.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -5981,12 +6063,20 @@ def build_alerts(snap):
     freq = snap.get("frequency")
     sr = snap.get("system_risk")
     dyn = _freq_dynamics(freq) if (freq and freq.get("hz") is not None) else {}
-    if freq and freq.get("hz") is not None:          # feed staleness (data quality)
-        age = dyn.get("age_s")
-        if age is not None and age > FREQ_STALE_S:
-            alerts.append(_a("warning", "Frequency feed stale",
-                f"No fresh frequency reading for {int(age//60)} min (last {freq['hz']:.3f} Hz). "
-                "Frequency-based alerting is running blind until the feed recovers.", tag="DATA"))
+    if not freq or freq.get("down"):                 # feed staleness (data quality)
+        lt = _parse_iso((freq or {}).get("last_time") or "")
+        if lt:
+            now_utc = datetime.now(timezone.utc)
+            mins = int((now_utc - lt).total_seconds() // 60)
+            dur = f"{mins // 60} h {mins % 60:02d} min" if mins >= 60 else f"{mins} min"
+            when = lt.strftime("%H:%M UT") + ("" if lt.date() == now_utc.date()
+                                              else lt.strftime(" %a %d %b"))
+            msg = f"No frequency data since {when} ({dur})."
+        else:
+            msg = "No frequency data available."
+        alerts.append(_a("warning", "Frequency feed stale",
+            msg + " Frequency figures show — and frequency alarms are paused until the "
+            "feed recovers.", tag="DATA"))
     if sr and sr.get("hz") is not None:
         # Judge on the burst's worst point (hz_judge), not just the newest sample, so a
         # mid-burst excursion that recovered by the last 15s point still raises the card.
@@ -7136,6 +7226,8 @@ def build_snapshot():
     except Exception as e:
         snap["system_risk"] = None
         snap["errors"].append("system_risk: " + str(e))
+    if (snap.get("frequency") or {}).get("down"):
+        snap["sources_ok"]["frequency"] = False     # footer: no current reading
     try:
         log_mix(snap)
     except Exception as e:

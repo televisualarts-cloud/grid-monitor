@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260928.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260928.2  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1473,7 +1473,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260928.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260928.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1845,6 +1845,10 @@ let freqLastAdvance = 0;     // wall-clock ms of the last step
 let freqSeenMaxT = 0;        // newest timestamp we've ever queued (burst detector)
 let freqStepMs = 15000;      // step interval, gently retuned to the pull cadence
 let freqLastPullWall = 0;    // wall-clock of the last new-burst arrival
+// Feed down (server says no reading within FREQ_STALE_S): {last:iso|null} or null.
+// While set, every frequency figure shows "—" and the age line says when the last
+// reading was; the trace keeps its real history but nothing is replayed.
+let freqDown=null;
 
 // Merge a frequency payload. When a pull brings NEW points (a fresh burst), load
 // them as the playlist d1..dN and restart the sweep at d1 — exactly the spec:
@@ -1858,7 +1862,9 @@ function freqMerge(fq){
     const t=new Date(p.t).getTime(); if(!isNaN(t)&&p.hz!=null) rows.push({t,hz:p.hz}); }); };
   push(fq.recent_points); push(fq.trace_points);
   if(!rows.length && fq.hz!=null && fq.time){ const t=new Date(fq.time).getTime(); if(!isNaN(t)) rows.push({t,hz:fq.hz}); }
-  if(!rows.length) return;
+  if(fq.down){ freqDown={last:fq.last_time||null}; }
+  else if(freqDown){ freqDown=null; freqPlaylist=[]; }   // recovered: replay from fresh points
+  if(!rows.length){ if(freqDown){ drawFreq(); drawFreqAxis(); freqPaintDown(); } return; }
 
   // On the very first pull, seed the "seen" marker to just before the latest
   // burst (~one burst back from newest) so the opening playlist is the freshest
@@ -1887,6 +1893,12 @@ function freqMerge(fq){
   // high.) If somehow only 1 new point arrived, still show it.
   const prevMax = freqSeenMaxT;
   const newestT = Math.max(...rows.map(p=>p.t));
+  if(freqDown){
+    // Plot keeps the real history; nothing is played on the dial.
+    freqPlaylist=[]; if(newestT>freqSeenMaxT) freqSeenMaxT=newestT;
+    if(!addedAny){ drawFreq(); drawFreqAxis(); }
+    freqPaintDown(); return;
+  }
   if(newestT > prevMax){
     const nowWall=Date.now();
     // the new points this burst delivered, in time order
@@ -1917,6 +1929,7 @@ function freqMerge(fq){
 // the playlist. Repaints every second so the age stamp is live. Honest: each
 // shown point carries its own true measured age.
 function freqTick(){
+  if(freqDown){ freqPaintDown(); return; }
   if(!freqPlaylist.length) return;
   const now=Date.now();
   if(freqPlayIdx < freqPlaylist.length-1 && (now-freqLastAdvance)>=freqStepMs){
@@ -1924,6 +1937,24 @@ function freqTick(){
     freqLastAdvance=now;
   }
   freqPaint(freqPlaylist[freqPlayIdx]);
+}
+
+// Feed down: "—" everywhere, and when the last reading was (UT, with its age).
+function freqPaintDown(){
+  $("#freqVal").textContent="—";
+  const del=$("#freqDelta"); if(del){ del.textContent=""; del.className="delta"; }
+  let msg="no frequency data";
+  if(freqDown && freqDown.last){
+    const t=new Date(freqDown.last), mins=Math.max(0,Math.floor((Date.now()-t)/60000));
+    const dur = mins>=60 ? Math.floor(mins/60)+" h "+String(mins%60).padStart(2,"0")+" min" : mins+" min";
+    const sameDay = t.toISOString().slice(0,10)===new Date().toISOString().slice(0,10);
+    msg="no data since "+t.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",timeZone:"UTC"})+" UT"+
+        (sameDay?"":" "+t.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",timeZone:"UTC"}))+
+        " ("+dur+")";
+  }
+  $("#freqTime").innerHTML='<span class="stale">'+msg+'</span>';
+  drawFreqDial(null, freqDevHist);
+  const rEl=$("#freqDialRocof"); if(rEl) rEl.textContent="";
 }
 
 // Paint one sample onto value, delta, age stamp, dial and drift.
@@ -2987,7 +3018,12 @@ function drawFreq(){
     g.fillText(v.toFixed(1), padL-5, y(v));
   });
   g.setLineDash([]);
-  const data=freqHistory; if(data.length<2){plotDot(g,y,X,data);return;}
+  const data=freqHistory;
+  if(!data.length){                                  // feed down, no history in the window
+    g.fillStyle="#566277"; g.font="11px ui-monospace,monospace"; g.textAlign="center";
+    g.fillText("no frequency data in the last 2 h", padL+plotW/2, h/2-10); return;
+  }
+  if(data.length<2){plotDot(g,y,X,data);return;}
   // area
   const grad=g.createLinearGradient(0,0,0,h);
   grad.addColorStop(0,"rgba(63,182,201,.35)"); grad.addColorStop(1,"rgba(63,182,201,0)");
@@ -3140,11 +3176,15 @@ function drawFreqDial(dev, devHist){
     g.lineCap="butt";
   }
   // marker at the live reading — white dot, outlined in the reading's zone colour
-  const a=Math.abs(dev);
-  const col = a<=0.2?"#39d98a":a<=0.3?"#f5b942":"#ff5c6c";
-  const ma=A(dev), mx=cx+Math.cos(ma)*r, my=cy+Math.sin(ma)*r;
-  g.beginPath(); g.arc(mx,my,5,0,7); g.fillStyle="#eafcff"; g.fill();
-  g.beginPath(); g.arc(mx,my,5,0,7); g.strokeStyle=col; g.lineWidth=2; g.stroke();
+  // (none while the feed is down: dev is null)
+  const has=dev!=null && !isNaN(dev);
+  const a=has?Math.abs(dev):0;
+  const col = !has?"#566277":a<=0.2?"#39d98a":a<=0.3?"#f5b942":"#ff5c6c";
+  if(has){
+    const ma=A(dev), mx=cx+Math.cos(ma)*r, my=cy+Math.sin(ma)*r;
+    g.beginPath(); g.arc(mx,my,5,0,7); g.fillStyle="#eafcff"; g.fill();
+    g.beginPath(); g.arc(mx,my,5,0,7); g.strokeStyle=col; g.lineWidth=2; g.stroke();
+  }
   // scale numbers OUTSIDE the arc — label radius clears the arc's outer edge.
   const labR = r + lw/2 + 9;
   g.fillStyle="#8595a8"; g.font="8.5px ui-monospace,monospace";
@@ -3159,8 +3199,8 @@ function drawFreqDial(dev, devHist){
   g.fillText("Hz dev", cx, cy+r-2);
   // readout beside the dial
   const rv=$("#freqDialVal");
-  if(rv){ rv.textContent=(dev>=0?"+":"")+dev.toFixed(3);
-    rv.style.color = col; }
+  if(rv){ rv.textContent= has ? (dev>=0?"+":"")+dev.toFixed(3) : "—";
+    rv.style.color = has ? col : ""; }
   const rr=$("#freqDialRange");
   if(rr){
     if(devHist && devHist.length){
