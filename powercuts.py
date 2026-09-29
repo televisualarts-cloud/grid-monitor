@@ -29,11 +29,11 @@
 #
 # Python 3, stdlib only. No import of the live server.
 #
-# Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 
 from __future__ import annotations
-import json, csv, io, os, re, time, threading, datetime
+import json, csv, io, os, re, time, threading, datetime, gzip
 import concurrent.futures
 import urllib.request, urllib.parse, urllib.error
 
@@ -138,7 +138,12 @@ def _get(url, headers=None, timeout=FETCH_TIMEOUT):
         h.update(headers)
     req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        body = r.read()
+        # Some feeds (ESB list, since late Sep 2026) gzip the body without being asked;
+        # unpack on the header or the gzip magic bytes so callers always get plain bytes.
+        if (r.headers.get("Content-Encoding") or "").lower() == "gzip" or body[:2] == b"\x1f\x8b":
+            body = gzip.decompress(body)
+        return body
 
 
 def _ods_records(host, dataset, apikey=None, timeout=FETCH_TIMEOUT):

@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 260929.6  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -75,6 +75,13 @@
   .legend b{color:var(--ink)}
   /* map + top-right key overlay */
   .mapwrap{position:relative}
+  .opkey span.k{white-space:nowrap;margin-right:10px}
+  /* hover card for an incident dot (positioned by JS inside .mapwrap) */
+  .maptip{position:absolute;display:none;pointer-events:none;z-index:5;max-width:300px;
+    background:rgba(9,13,18,.94);border:1px solid var(--line);border-radius:6px;padding:6px 8px;
+    font-size:11px;line-height:1.45;color:var(--ink);box-shadow:0 4px 14px rgba(0,0,0,.45)}
+  .maptip b{color:#e6edf5} .maptip .mt-u{color:var(--bad)} .maptip .mt-p{color:var(--plan)}
+  .maptip .mt-d{color:var(--dim)} .maptip .mt-w{color:var(--warn)}
   /* default: key sits in normal flow beneath the map (narrow screens). JS adds
      .floating to overlay it top-right only when the canvas is wide enough that the
      box clears the landmass. */
@@ -160,6 +167,7 @@
         </h2>
         <div class="mapwrap">
           <canvas id="map" height="840"></canvas>
+          <div class="maptip" id="maptip"></div>
           <div class="mapkey" id="mapkey">
             <div class="mk-ops">
               <div><b>NGED</b> National Grid Elec. Distribution</div>
@@ -230,10 +238,16 @@
 
       <div class="panel" style="margin-top:14px">
         <h2>Customers off / active incidents
-          <label class="sw" title="1-hour rolling rate + stepped counts vs raw per-sample"><input type="checkbox" id="tgSmooth" checked><span></span>smoothed</label>
+          <span class="mtogs">
+            <button class="btn" id="opOpen" title="Customers off stacked by operator, in a pop-up" style="padding:1px 8px;font-size:11px">⤢ by operator</button>
+            <label class="sw" title="1-hour rolling rate + stepped counts vs raw per-sample"><input type="checkbox" id="tgSmooth" checked><span></span>smoothed</label>
+          </span>
         </h2>
         <div class="win" id="winsel" style="margin:2px 0 8px"></div>
         <canvas id="totals" height="150"></canvas>
+        <div class="legend evkey">Strip under each plot: grid events from the dashboard's alert log —
+          <span class="dot" style="background:#ff5d5d"></span> critical / severe
+          <span class="dot" style="background:#ffb454"></span> warning. Hover for details.</div>
       </div>
       <div class="panel" style="margin-top:14px">
         <h2>Rate — cuts/hr · restorations/hr · net</h2>
@@ -269,6 +283,22 @@
       (~1&nbsp;h) of the region's METAR stations, so a flat low-wind end is the calm baseline, not a signal.</div>
     <div class="row" style="margin-top:12px;justify-content:flex-end">
       <button class="btn" id="wcClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- customers off by operator (pop-up) -->
+<div class="modal wide" id="opModal">
+  <div class="card">
+    <h2>Customers off by operator <span class="muted" id="opWin"></span></h2>
+    <canvas id="opBig" height="360"></canvas>
+    <div class="legend opkey" id="opkey"></div>
+    <div class="wc-note">Stacked bands: the top edge is the national total. Largest operator over the window
+      at the bottom. A band stops where that operator's feed was down — nothing is filled in; hover shows
+      "no data". SPEN publishes no customer counts, so it has no band. Strip under the plot: grid events
+      (red critical/severe, amber warning). Window and stepped/raw follow the main page.</div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn" id="opClose">Close</button>
     </div>
   </div>
 </div>
@@ -1188,6 +1218,79 @@ function clampView(g){
 }
 function redrawMap(){ if(lastIncs) paintMap(lastIncs); }
 
+// ---- map hover card ---------------------------------------------------------
+var _mapHits = [];          // dots drawn last paint, in screen px: {i, x, y, r, isNew, muted}
+var _mapMouse = null;       // last pointer position over the map (screen px), null when off
+function esc(t){ return String(t==null?"":t).replace(/[&<>"]/g,function(c){
+  return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+// Shorten operator prose at a sentence end: the last full sentence that fits in n chars;
+// failing that the first sentence if it isn't far over (<= 1.6n); only then a word-boundary cut + "…".
+function clipSentence(t,n){ t=String(t||"").replace(/\s+/g," ").trim(); if(t.length<=n) return t;
+  var re=/[.!?](?=\s|$)/g, m, lastFit=-1, first=-1;
+  while((m=re.exec(t))){ var e=m.index+1; if(first<0) first=e; if(e<=n) lastFit=e; else break; }
+  if(lastFit>0) return t.slice(0,lastFit);
+  if(first>0 && first<=n*1.6) return t.slice(0,first);
+  var cut=t.slice(0,n-1), sp=cut.lastIndexOf(" "); return (sp>n*0.6? cut.slice(0,sp) : cut).replace(/[\s,;:–-]+$/,"")+"…"; }
+function clip(t,n){ t=String(t||"").replace(/\s+/g," ").trim(); return t.length>n? t.slice(0,n-1)+"…" : t; }
+// Operator time strings, as published: ISO with Z/offset -> viewer local; ISO without a
+// zone, or ESB "dd/mm/yyyy HH:MM", are operator local time (UK/IE clocks) and shown as-is;
+// anything else is shown raw rather than guessed at.
+function pcWhenAny(v){ var t=String(v||"").trim(); if(!t) return null;
+  if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*(Z|[+-]\d{2}:?\d{2})$/.test(t)){ var d=new Date(t);
+    if(!isNaN(d)){ var n=new Date(); n.setHours(0,0,0,0); var d0=new Date(d); d0.setHours(0,0,0,0);
+      return (d0.getTime()===n.getTime()?"":["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" ")+
+        d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false}); } }
+  var w=pcWhenShort(t); if(w) return w;
+  var m=/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/.exec(t);
+  if(m) return pcWhenShort(m[3]+"-"+m[2]+"-"+m[1]+"T"+m[4]+":"+m[5]);
+  return clip(t,24); }
+function mapTipHtml(h, others){
+  var i=h.i, L=[];
+  L.push("<b>"+esc(i.dno)+(i.region && i.region!==i.dno? " · "+esc(i.region):"")+"</b>");
+  var kind = i.planned===true? '<span class="mt-p">planned</span>' :
+             i.planned===false? '<span class="mt-u">unplanned</span>' : '<span class="mt-d">type not stated</span>';
+  var cat = i.category && !/^(planned|fault|lv|hv|ehv)$/i.test(i.category)? " · "+esc(clip(i.category,60)) : "";
+  L.push(kind+(i.voltage? " · "+esc(i.voltage):"")+cat);
+  if(i.customers_off!=null) L.push("<b>"+fmt(i.customers_off)+"</b> customers off"+
+      (i.customers_predicted!=null? ' <span class="mt-d">('+fmt(i.customers_predicted)+" predicted)</span>":""));
+  else L.push('<span class="mt-d">no customer count published'+(i.sectors? " · "+i.sectors+" postcode sector"+(i.sectors>1?"s":""):"")+"</span>");
+  if(i.psr_customers) L.push(fmt(i.psr_customers)+" on the Priority Services Register");
+  var st=pcWhenAny(i.start_ts), et=pcWhenAny(i.etr);
+  if(st||et) L.push((st? "started "+esc(st):"")+(st&&et?" · ":"")+(et? (i.planned?"until ":"est. restore ")+esc(et):""));
+  if(i.status){                        // ESB's stock apology: keep it whole up to "as quickly as possible", drop the rest
+    var aq=/^([\s\S]*?as quickly as possible)/i.exec(String(i.status).replace(/\s+/g," "));
+    L.push('<span class="mt-d">'+esc(aq? aq[1].trim()+"." : clipSentence(i.status,160))+"</span>"); }
+  if(i.postcodes) L.push('<span class="mt-d">'+esc(clip(i.postcodes,80))+"</span>");
+  var home=pcHome();
+  if(home && i.lat!=null && i.lon!=null){ var d=pcKm(home.lat,home.lon,i.lat,i.lon);
+    L.push('<span class="mt-d">'+(d<1?"<1":d<10?d.toFixed(1):Math.round(d))+" km "+
+      PC_ABBR[Math.round(pcBearing(home.lat,home.lon,i.lat,i.lon)/45)%8]+" of home</span>"); }
+  if(h.isNew){ var fs=firstSeen[i.dno+"|"+i.id];
+    L.push('<span class="mt-w">new — first seen '+Math.max(1,Math.round((Date.now()-fs)/60000))+" min ago</span>"); }
+  if(h.muted) L.push('<span class="mt-w">provider muted — not counted in totals</span>');
+  if(others>0) L.push('<span class="mt-d">+'+others+" more here — zoom in to separate</span>");
+  return L.join("<br>");
+}
+function mapHitAt(px,py){
+  var best=null, bd=1e9, near=0;
+  for(var k=0;k<_mapHits.length;k++){ var h=_mapHits[k], d=Math.hypot(h.x-px,h.y-py), R=Math.max(h.r+3,6);
+    if(d<=R){ near++; if(d<bd){ bd=d; best=h; } } }
+  return best? {h:best, others:near-1} : null;
+}
+function mapTipUpdate(){
+  var tip=$("maptip"), c=$("map"); if(!tip||!c) return false;
+  var hit=_mapMouse? mapHitAt(_mapMouse[0],_mapMouse[1]) : null;
+  if(!hit){ if(tip.style.display!=="none") tip.style.display="none"; return false; }
+  var html=mapTipHtml(hit.h, hit.others);
+  if(tip._html!==html){ tip.innerHTML=html; tip._html=html; }
+  tip.style.display="block";
+  var W=c.clientWidth, H=c.clientHeight, tw=tip.offsetWidth, th=tip.offsetHeight;
+  var lx=hit.h.x+12, ly=hit.h.y+12;                   // right/below the dot; flip at the edges
+  if(lx+tw>W-4) lx=hit.h.x-12-tw; if(ly+th>H-4) ly=hit.h.y-12-th;
+  tip.style.left=Math.max(4,lx)+"px"; tip.style.top=Math.max(4,ly)+"px";
+  return true;
+}
+
 function noteIncidents(incs){
   var nowms = Date.now(), present = {};
   incs.forEach(function(i){
@@ -1315,20 +1418,26 @@ function drawRegions(x,P,keyRect){
       ring.forEach(function(q,i){ i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1]); });
       x.closePath();
       x.fillStyle=hexA(DNO_AREAS[idx].b,0.5); x.fill();
-      x.strokeStyle="rgba(150,180,210,0.4)"; x.lineWidth=1; x.stroke();
+      x.strokeStyle="rgba(150,180,210,0.4)"; x.lineWidth=1/view.scale; x.stroke();   // 1 screen px at any zoom
     });
   });
+  // Labels are drawn in SCREEN space so pills, text and leaders stay one size at any zoom;
+  // only their anchor points follow the zoomed geography.
+  var vs=view.scale, sx=function(v){ return v*vs+view.tx; }, sy=function(v){ return v*vs+view.ty; };
+  x.save(); x.scale(1/vs,1/vs); x.translate(-view.tx,-view.ty);
   x.font="bold 13px ui-monospace,Menlo,Consolas,monospace"; x.textBaseline="middle";
   L.labels.forEach(function(o){
+    var cx=sx(o.cx), cy=sy(o.cy);
     x.strokeStyle="rgba(150,180,210,0.6)"; x.lineWidth=1;   // leader to the region's near edge (no end dot)
-    x.beginPath(); x.moveTo(o.cx,o.cy); x.lineTo(o.ex,o.ey); x.stroke();
+    x.beginPath(); x.moveTo(cx,cy); x.lineTo(sx(o.ex),sy(o.ey)); x.stroke();
     x.fillStyle="rgba(9,13,18,0.86)"; x.strokeStyle="rgba(150,180,210,0.5)"; x.lineWidth=1;
-    x.beginPath(); x.rect(o.cx-o.pw/2, o.cy-o.ph/2, o.pw, o.ph); x.fill(); x.stroke();
+    x.beginPath(); x.rect(cx-o.pw/2, cy-o.ph/2, o.pw, o.ph); x.fill(); x.stroke();
     // label ink tracks feed freshness: green live, amber stale, red down; grey when a key's
     // needed or there's no feed; default ink until the first snapshot arrives
     x.fillStyle=pcMutedHas(o.a.a) ? "#55617a" : (LABEL_COL[statusByDno[o.a.a]] || "#dbe7f3"); x.textAlign="center";
-    x.fillText(o.a.a, o.cx, o.cy);
+    x.fillText(o.a.a, cx, cy);
   });
+  x.restore();
   x.textAlign="left"; x.textBaseline="alphabetic";
 }
 
@@ -1371,6 +1480,10 @@ function paintMap(incs){
   // matches the key swatch of its magnitude regardless of the day's worst cut.
   var phase = (nowms % 1600)/1600;   // slow ~1.6s sawtooth: 0 -> 1 then reset
   var anyPulse = false, drawn = 0;
+  // Zoom grows dots only gently (sqrt) and keeps rims/pulse rings at fixed screen width, so
+  // zooming separates dots instead of inflating them. ds = world units per screen px.
+  var ds = 1/view.scale, dk = Math.sqrt(view.scale)*ds;
+  _mapHits = [];
   incs.forEach(function(i){
     if(i.planned ? !showPlanned : !showUnplanned) return;   // visibility toggles
     if(i.lat==null||i.lon==null) return;
@@ -1388,19 +1501,20 @@ function paintMap(incs){
     } else {
       off = i.customers_off||0;
     }
-    var r = radiusFor(off);                          // absolute size scale = the map key
+    var r = radiusFor(off)*dk;                       // absolute size scale = the map key
     var mdot = pcMutedHas(i.dno);                     // muted provider — greyed, no pulse
     var col = mdot ? "90,100,116" : (i.planned ? "111,183,255" : heatRGB(off).join(","));   // planned = light blue
     var seen = firstSeen[i.dno+"|"+i.id];
     var isNew = !mdot && seen && (nowms - seen) < PULSE_MS;
     if(isNew){
       anyPulse = true;                                     // outward ping: grows and fades
-      x.beginPath(); x.arc(q[0],q[1], r+1+9*phase, 0,7);
-      x.strokeStyle = "rgba("+col+","+(0.55*(1-phase)).toFixed(3)+")"; x.lineWidth=1.5; x.stroke();
+      x.beginPath(); x.arc(q[0],q[1], r+(1+9*phase)*ds, 0,7);
+      x.strokeStyle = "rgba("+col+","+(0.55*(1-phase)).toFixed(3)+")"; x.lineWidth=1.5*ds; x.stroke();
     }
     x.beginPath(); x.arc(q[0],q[1],r,0,7);
     x.fillStyle="rgb("+col+")"; x.fill();
-    x.strokeStyle="rgba(235,244,252,.6)"; x.lineWidth=0.7; x.stroke();  // light rim pops on dark fills
+    x.strokeStyle="rgba(235,244,252,.6)"; x.lineWidth=0.7*ds; x.stroke();  // light rim pops on dark fills
+    _mapHits.push({i:i, x:q[0]*view.scale+view.tx, y:q[1]*view.scale+view.ty, r:r*view.scale, isNew:isNew, muted:mdot});
   });
   if(_hq){                                  // home marker, drawn over the dots
     var _s=1/view.scale;
@@ -1412,12 +1526,97 @@ function paintMap(incs){
   x.restore();   // back to screen space for the fixed footer
   x.fillStyle="#54637a"; x.textAlign="right"; x.fillText(drawn+" plotted", g.w-6, g.h-6); x.textAlign="left";
   if(view.scale>1.01){ x.textAlign="left"; x.fillStyle="#54637a"; x.fillText("zoom "+view.scale.toFixed(1)+"× · drag to pan · dbl-click to reset", 6, g.h-6); }
+  mapTipUpdate();                           // keep an open hover card in step with the redraw
   return anyPulse;
 }
 
 // ---- history plots ----------------------------------------------------------
+// Customers-off-by-operator: stacked bands in a fixed colour per operator. SPEN publishes
+// no customer counts, so it can never have a band (the key says so).
+var OP_COL = {NGED:"#5ec8ff", UKPN:"#b48cff", NPg:"#57d38c", ENWL:"#ffd166",
+              SSEN:"#ff7aa2", NIE:"#4dd0c8", ESB:"#aab6c4"};
+function opOff(r,d){ var o=(r.operators||{})[d];            // null = no reading this sample
+  if(!o || !(o.status==="ok"||o.status==="stale") || o.off==null) return null; return o.off; }
+
+// Grid events: raised->cleared spans from the server's alert journal (/api/alert-history),
+// warning level and above, feed-data notices excluded. Re-read every 5 minutes.
+var gridEvents = [];            // {t0, t1, level, tag, titles[], active}
+var EV_LEVEL_RANK = {severe:3, critical:3, warning:2};
+function evCol(e){ return EV_LEVEL_RANK[e.level]>=3 ? "#ff5d5d" : "#ffb454"; }
+function loadEvents(){
+  fetch("/api/alert-history?limit=5000").then(function(r){ return r.ok?r.json():null; }).then(function(d){
+    if(!d || !d.events) return;
+    var now=Date.now()/1000, open={}, spans=[];
+    function tsOf(iso){ var v=Date.parse(iso); return isNaN(v)? null : v/1000; }
+    d.events.slice().sort(function(a,b){ return (a.time||"")<(b.time||"")?-1:1; }).forEach(function(e){
+      if(!EV_LEVEL_RANK[e.level] || e.tag==="DATA" || e.tag==="OK") return;
+      var key=e.level+"|"+e.title, t=tsOf(e.time); if(t==null) return;
+      if(e.event==="raised") open[key]={t0:t, level:e.level, tag:e.tag, title:e.title};
+      else if(e.event==="cleared"){ var t0=open[key]? open[key].t0 : tsOf(e.raised);
+        delete open[key]; if(t0!=null) spans.push({t0:t0, t1:t, level:e.level, tag:e.tag, title:e.title}); }
+    });
+    Object.keys(open).forEach(function(k){ var o=open[k];
+      spans.push({t0:o.t0, t1:now, level:o.level, tag:o.tag, title:o.title, active:true}); });
+    // merge overlapping spans of the same kind (tag + level) so a flapping alert is one mark
+    spans.sort(function(a,b){ return a.t0-b.t0; });
+    var merged=[], lastBy={};
+    spans.forEach(function(sp){ var k=sp.tag+"|"+sp.level, m=lastBy[k];
+      if(m && sp.t0<=m.t1+60){ m.t1=Math.max(m.t1,sp.t1); m.active=m.active||sp.active;
+        if(m.titles.indexOf(sp.title)<0) m.titles.push(sp.title); }
+      else { m={t0:sp.t0, t1:sp.t1, level:sp.level, tag:sp.tag, titles:[sp.title], active:!!sp.active};
+        merged.push(m); lastBy[k]=m; } });
+    gridEvents=merged;
+    if(last) drawPlots(last.history||[]);
+  }).catch(function(){});
+}
+// Events in this plot's window. Past EV_MAX marks, warnings are dropped (critical only).
+var EV_MAX = 40;
+function eventsIn(c){ var L=gridEvents.filter(function(e){ return e.t1>=c.t0 && e.t0<=c.t1; }), thin=false;
+  if(L.length>EV_MAX){ L=L.filter(function(e){ return EV_LEVEL_RANK[e.level]>=3; }); thin=true; }
+  return {list:L, thin:thin}; }
+// the strip: a 5px lane just under the plot area; warnings first so critical sits on top
+function drawEventStrip(g,c,E){ var x=g.x, y=c.h-c.B+2;
+  x.fillStyle="#141d28"; x.fillRect(c.L,y,c.w-c.L-c.R,5);
+  E.list.slice().sort(function(a,b){ return EV_LEVEL_RANK[a.level]-EV_LEVEL_RANK[b.level]; }).forEach(function(e){
+    var a=Math.max(c.L,PX(c,e.t0)), b=Math.min(c.w-c.R,PX(c,e.t1)); if(b-a<3){ var m=(a+b)/2; a=m-1.5; b=m+1.5; }
+    x.fillStyle=evCol(e); x.fillRect(a,y,b-a,5); });
+  if(E.thin){ x.fillStyle="#54637a"; x.textAlign="right"; x.fillText("events: critical only",c.w-c.R-22,c.T+9); x.textAlign="left"; } }
+// events under pointer time t (±2px), shaded faintly up the plot; returns readout rows
+function eventsAt(g,c,E,t){ var tol=2*(c.t1-c.t0)/((c.w-c.L-c.R)||1), rows=[], x=g.x;
+  E.list.forEach(function(e){ if(t>=e.t0-tol && t<=e.t1+tol){
+    var a=Math.max(c.L,PX(c,e.t0)), b=Math.min(c.w-c.R,PX(c,e.t1)); if(b-a<3){ var m=(a+b)/2; a=m-1.5; b=m+1.5; }
+    x.fillStyle=evCol(e)==="#ff5d5d"?"rgba(255,93,93,.08)":"rgba(255,180,84,.08)"; x.fillRect(a,c.T,b-a,c.h-c.B-c.T);
+    e.titles.slice(0,2).forEach(function(ti){ rows.push([evCol(e), "⚑ "+clip(ti,48)+(e.active?" (active)":"")]); }); } });
+  return rows.slice(0,3); }
+// Hover: pointer x (CSS px) over each plot, or null. The plot redraws with a crosshair
+// and a readout box of the SAMPLE under the pointer (never an interpolated value).
+var plotHover = {totals:null, rate:null, opBig:null};
+function fmtUTfull(ts,span){ var d=new Date(ts*1000); function z(n){return (n<10?"0":"")+n;}
+  return (span>2*86400? z(d.getUTCDate())+"/"+z(d.getUTCMonth()+1)+" ":"")+z(d.getUTCHours())+":"+z(d.getUTCMinutes())+" UT"; }
+// index of the sample to report at pointer time t: in stepped mode the value HELD at t
+// (last sample at or before t); otherwise the nearest sample.
+function hoverIdx(ts,t,held){ if(!ts.length) return -1;
+  var lo=0, hi=ts.length-1; while(lo<hi){ var m=(lo+hi+1)>>1; if(ts[m]<=t) lo=m; else hi=m-1; }
+  if(held || lo===ts.length-1) return lo;
+  return (t-ts[lo] <= ts[lo+1]-t)? lo : lo+1; }
+// crosshair at px + a readout box; rows = [[colour, text], ...]
+function hoverBox(g,c,px,rows){ var x=g.x;
+  x.strokeStyle="rgba(201,214,229,.35)"; x.lineWidth=1; x.setLineDash([3,3]);
+  x.beginPath(); x.moveTo(px+0.5,c.T); x.lineTo(px+0.5,c.h-c.B); x.stroke(); x.setLineDash([]);
+  x.font="11px ui-monospace,Menlo,Consolas,monospace";
+  var w=0; rows.forEach(function(r){ w=Math.max(w,x.measureText(r[1]).width); });
+  var bw=w+14, bh=rows.length*13+8, bx=px+10, by=c.T+4;
+  if(bx+bw>c.w-c.R) bx=px-10-bw; if(bx<c.L) bx=c.L+2;
+  x.fillStyle="rgba(9,13,18,.92)"; x.strokeStyle="#223041";
+  x.beginPath(); x.rect(bx,by,bw,bh); x.fill(); x.stroke();
+  x.textBaseline="middle"; x.textAlign="left";
+  rows.forEach(function(r,k){ x.fillStyle=r[0]; x.fillText(r[1],bx+7,by+10+k*13); });
+  x.textBaseline="alphabetic"; x.font="10px sans-serif"; }
+function hoverDot(g,px,py,col){ var x=g.x; x.beginPath(); x.arc(px,py,3,0,7);
+  x.fillStyle=col; x.fill(); x.strokeStyle="#0b0f14"; x.lineWidth=1; x.stroke(); }
 function drawPlots(hist){
-  drawTotals($("totals"), hist);
+  drawTotals($("totals"), hist, false);
+  if(opModalOpen()) drawTotals($("opBig"), hist, true);
   drawRate($("rate"), hist);
 }
 // ---- shared plot framework: time x-axis (UT) + numeric y-scale --------------
@@ -1476,21 +1675,72 @@ function rollRate(hist){
   return {ts:ts,news:news,clr:clr,net:net};
 }
 
-function drawTotals(cv,hist){
-  var g=fitCanvas(cv,150),x=g.x; x.clearRect(0,0,g.w,g.h);
+function drawTotals(cv,hist,byOp){
+  var g=fitCanvas(cv, byOp?360:150),x=g.x; x.clearRect(0,0,g.w,g.h);
+  if(byOp) renderOpKey(hist);
   if(!hist.length){ x.fillStyle="#54637a"; x.fillText("no history yet — samples accrue every ~5 min",50,78); return; }
   var ts=hist.map(function(r){return r.ts;});
   var off=hist.map(function(r){return (r.national||{}).off||0;});
   var inc=hist.map(function(r){return (r.national||{}).active||0;});
   var c=mkctx(g,ts[0],ts[ts.length-1],46,42);                 // dual axis: off (L), incidents (R)
-  var mOff=niceMax(Math.max.apply(null,off)), mInc=niceMax(Math.max.apply(null,inc));
-  yAxis(g,c,0,mOff,"#5ec8ff","L"); yAxis(g,c,0,mInc,"#ffb454","R");
-  xAxis(g,c); frameC(g,c);
   var draw = smoothPlots ? stepC : lineC;                     // stepped snapshots vs raw line
-  draw(g,c,ts,off,0,mOff,"#5ec8ff");
-  draw(g,c,ts,inc,0,mInc,"#ffb454");
-  x.fillStyle="#5ec8ff"; x.fillText("customers off"+(smoothPlots?" · stepped":""),c.L+4,c.T+9);
+  var ops=null, cum=null;
+  if(byOp){
+    // band order: largest mean over the window at the bottom; fixed for the whole window
+    ops=Object.keys(OP_COL).map(function(d){ var s=0; hist.forEach(function(r){ s+=opOff(r,d)||0; }); return [d,s]; })
+      .filter(function(p){ return p[1]>0; }).sort(function(a,b){ return b[1]-a[1]; }).map(function(p){ return p[0]; });
+    cum=[hist.map(function(){ return 0; })];
+    ops.forEach(function(d,j){ cum.push(hist.map(function(r,k){ return cum[j][k]+(opOff(r,d)||0); })); });
+  }
+  var top = byOp ? cum[cum.length-1] : off;
+  var mOff=niceMax(Math.max.apply(null,top.concat(off))), mInc=niceMax(Math.max.apply(null,inc));
+  yAxis(g,c,0,mOff,"#5ec8ff","L"); if(!byOp) yAxis(g,c,0,mInc,"#ffb454","R");
+  xAxis(g,c); frameC(g,c);
+  if(byOp){
+    ops.forEach(function(d,j){ var lo=cum[j], hi=cum[j+1];
+      x.beginPath();
+      for(var k=0;k<ts.length;k++){ var px=PX(c,ts[k]), py=PY(c,hi[k],0,mOff);
+        if(!k) x.moveTo(px,py); else { if(smoothPlots) x.lineTo(px,PY(c,hi[k-1],0,mOff)); x.lineTo(px,py); } }
+      for(var k2=ts.length-1;k2>=0;k2--){ var px2=PX(c,ts[k2]), py2=PY(c,lo[k2],0,mOff);
+        x.lineTo(px2,py2); if(smoothPlots && k2>0) x.lineTo(px2,PY(c,lo[k2-1],0,mOff)); }
+      x.closePath(); x.fillStyle=hexA(OP_COL[d],0.55); x.fill();
+      draw(g,c,ts,hi,0,mOff,OP_COL[d]); });
+    x.fillStyle="#9fb0c4"; x.fillText("customers off by operator"+(smoothPlots?" · stepped":""),c.L+4,c.T+9);
+  } else {
+    draw(g,c,ts,off,0,mOff,"#5ec8ff");
+    draw(g,c,ts,inc,0,mInc,"#ffb454");
+    x.fillStyle="#5ec8ff"; x.fillText("customers off"+(smoothPlots?" · stepped":""),c.L+4,c.T+9);
+    x.fillStyle="#ffb454"; x.fillText("active incidents",c.L+4,c.T+21);
+  }
+  var E=eventsIn(c); drawEventStrip(g,c,E);
+  var hx=plotHover[cv.id];
+  if(hx!=null && hx>=c.L && hx<=c.w-c.R){
+    var t=c.t0+(hx-c.L)/(c.w-c.L-c.R)*(c.t1-c.t0), k=hoverIdx(ts,t,smoothPlots), px=PX(c,ts[k]);
+    var evRows=eventsAt(g,c,E,t), rows=[["#9fb0c4",fmtUTfull(ts[k],c.t1-c.t0)]];
+    if(byOp){
+      hoverDot(g,px,PY(c,top[k],0,mOff),"#e6edf5");
+      rows.push(["#e6edf5",fmt(off[k])+" customers off · "+fmt(inc[k])+" incidents"]);
+      var r=hist[k], have=[], none=[];
+      Object.keys(OP_COL).forEach(function(d){ var v=opOff(r,d); if(v==null) none.push(d); else if(v>0) have.push([d,v]); });
+      have.sort(function(a,b){ return b[1]-a[1]; });
+      have.slice(0,7).forEach(function(p){ rows.push([OP_COL[p[0]], (p[0]+"     ").slice(0,5)+" "+fmt(p[1])]); });
+      if(have.length>7){ var rest=0; have.slice(7).forEach(function(p){ rest+=p[1]; }); rows.push(["#9fb0c4","others "+fmt(rest)]); }
+      if(none.length) rows.push(["#7c8ba0","no data: "+none.join(", ")]);
+    } else {
+      hoverDot(g,px,PY(c,off[k],0,mOff),"#5ec8ff"); hoverDot(g,px,PY(c,inc[k],0,mInc),"#ffb454");
+      rows.push(["#5ec8ff",fmt(off[k])+" customers off"],["#ffb454",fmt(inc[k])+" active incidents"]);
+    }
+    hoverBox(g,c,px,rows.concat(evRows));
+  }
 }
+// key under the plot, shown only in by-operator mode; lists operators with a band this window
+function renderOpKey(hist){ var el=$("opkey"); if(!el) return;
+  var have=Object.keys(OP_COL).filter(function(d){ return hist.some(function(r){ return (opOff(r,d)||0)>0; }); });
+  el.innerHTML=have.map(function(d){ return '<span class="k"><span class="dot" style="background:'+OP_COL[d]+'"></span> '+d+"</span>"; }).join("")+
+    '<span class="k muted">SPEN: no counts</span>';
+  var sp=hist.length? hist[hist.length-1].ts-hist[0].ts : 0;
+  $("opWin").textContent = sp? "— last "+(sp>=86400*1.5? Math.round(sp/86400)+" days" : Math.round(sp/3600)+" h") : ""; }
+function opModalOpen(){ return $("opModal") && $("opModal").classList.contains("show"); }
 function drawRate(cv,hist){
   var g=fitCanvas(cv,150),x=g.x; x.clearRect(0,0,g.w,g.h);
   if(hist.length<2){ x.fillStyle="#54637a"; x.fillText("need ≥2 samples for a rate",50,78); return; }
@@ -1515,6 +1765,17 @@ function drawRate(cv,hist){
   lineC(g,c,ts,clr,lo,hi,"#57d38c");
   lineC(g,c,ts,net,lo,hi,"#5ec8ff");
   x.fillStyle="#54637a"; x.fillText(smoothPlots?"per hour · 1h rolling":"per hour",c.L+4,c.T+9);
+  var E=eventsIn(c); drawEventStrip(g,c,E);
+  var hx=plotHover.rate;
+  if(hx!=null && hx>=c.L && hx<=c.w-c.R){
+    var t=c.t0+(hx-c.L)/(c.w-c.L-c.R)*(c.t1-c.t0), k=hoverIdx(ts,t,false), px=PX(c,ts[k]);
+    hoverDot(g,px,PY(c,news[k],lo,hi),"#ff5d5d"); hoverDot(g,px,PY(c,clr[k],lo,hi),"#57d38c");
+    hoverDot(g,px,PY(c,net[k],lo,hi),"#5ec8ff");
+    var r1=function(v){ return Math.round(v).toLocaleString(); }, evRows=eventsAt(g,c,E,t);
+    hoverBox(g,c,px,[["#9fb0c4",fmtUTfull(ts[k],c.t1-c.t0)+(smoothPlots?" · 1h rolling":" · per sample")],
+      ["#ff5d5d",r1(news[k])+" new cuts/hr"],["#57d38c",r1(clr[k])+" restorations/hr"],
+      ["#5ec8ff",(net[k]>0?"+":"")+r1(net[k])+" net/hr "+(net[k]>0?"(worsening)":net[k]<0?"(recovering)":"(steady)")]].concat(evRows));
+  }
 }
 
 // ---- map pan + wheel zoom ---------------------------------------------------
@@ -1554,14 +1815,36 @@ function drawRate(cv,hist){
     }
   });
   // hover: pointer over a clickable region, grab over sea
-  c.addEventListener("mousemove", function(e){ if(drag) return; var p=pt(e);
-    c.style.cursor = areaAt(p[0],p[1])>=0 ? "pointer" : "grab"; });
+  c.addEventListener("mousemove", function(e){ var p=pt(e);
+    if(drag){ _mapMouse=null; mapTipUpdate(); return; }
+    _mapMouse=p;
+    var onDot=mapTipUpdate();
+    c.style.cursor = (onDot || areaAt(p[0],p[1])>=0) ? "pointer" : "grab"; });
+  c.addEventListener("mouseleave", function(){ _mapMouse=null; mapTipUpdate(); });
   c.addEventListener("dblclick", function(){ view.scale=1; view.tx=0; view.ty=0; redrawMap(); });
   c.style.cursor="grab";
 })();
 
+// ---- plot hover ---------------------------------------------------------------
+(function(){
+  [["totals",drawTotals,false],["rate",drawRate],["opBig",drawTotals,true]].forEach(function(p){
+    var cv=$(p[0]); if(!cv) return;
+    function redraw(){ if(last) p[1](cv, last.history||[], p[2]); }
+    cv.addEventListener("mousemove",function(e){
+      plotHover[p[0]]=e.clientX-cv.getBoundingClientRect().left; redraw(); });
+    cv.addEventListener("mouseleave",function(){ plotHover[p[0]]=null; redraw(); });
+  });
+})();
+
 // ---- toggles: graph style + map dot visibility -----------------------------
 (function(){
+  var om=$("opModal");
+  function opClose(){ if(om) om.classList.remove("show"); }
+  var oo=$("opOpen"); if(oo) oo.addEventListener("click",function(){ om.classList.add("show");
+    if(last) drawTotals($("opBig"), last.history||[], true); });
+  var oc=$("opClose"); if(oc) oc.addEventListener("click",opClose);
+  if(om) om.addEventListener("click",function(e){ if(e.target===om) opClose(); });   // click the backdrop
+  document.addEventListener("keydown",function(e){ if(e.key==="Escape" && opModalOpen()){ opClose(); e.stopPropagation(); } });
   var s=$("tgSmooth"); if(s) s.addEventListener("change",function(e){
     smoothPlots=e.target.checked; if(last) drawPlots(last.history||[]); });
   var u=$("tgUnpl"); if(u) u.addEventListener("change",function(e){ showUnplanned=e.target.checked; redrawMap(); });
@@ -1726,6 +2009,7 @@ function drawWcCurve(cv, small){
 load();
 loadWind();
 setInterval(load, 60000);       // refresh view every 60s (server samples every ~5 min)
+loadEvents(); setInterval(loadEvents, 300000);   // grid-event strip: alert journal every 5 min
 setInterval(loadWind, 60000);   // wind/correlation refresh
 window.addEventListener("resize",function(){ if(last) render(last); if(wc) renderWind(); });
 </script>
