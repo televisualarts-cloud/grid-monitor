@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.4  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -939,7 +939,10 @@ def om_status(now=None):
 
 
 def fetch_om_precip(points, timeout=8):
-    """Batched Open-Meteo current precipitation (mm) for many coords in ONE call.
+    """Batched Open-Meteo current precipitation RATE (mm/h) for many coords in ONE call.
+    Open-Meteo's "current" values are backward-looking sums over current.interval
+    seconds (900 = the preceding 15 minutes, confirmed on the self-hosted instance
+    29 Sep 2026), so each amount is converted to mm/h: amount x 3600 / interval.
     Modelled. Never raises — returns rates aligned to points (None on failure). A
     rate-limit trips a short GLOBAL backoff: we stop calling Open-Meteo entirely during
     its cooldown (respecting its "try again in one minute"), so we neither hammer it nor
@@ -990,7 +993,13 @@ def fetch_om_precip(points, timeout=8):
             tot = cur.get("precipitation")           # total water-equiv, incl. snow
             if tot is None:
                 out.append({"mm": None, "snow": False, "src": "OM", "sent": True}); continue
-            rain = (cur.get("rain") or 0.0) + (cur.get("showers") or 0.0)
+            try:
+                _iv = float(cur.get("interval") or 900)
+            except (TypeError, ValueError):
+                _iv = 900.0
+            _k = 3600.0 / _iv if _iv > 0 else 4.0   # amount over the interval -> mm/h
+            tot = tot * _k
+            rain = ((cur.get("rain") or 0.0) + (cur.get("showers") or 0.0)) * _k
             snow_we = tot - rain                     # snow water-equivalent
             out.append({"mm": tot, "snow": bool(snow_we > 0.05 and snow_we >= rain),
                         "src": "OM", "sent": True})
@@ -1730,7 +1739,9 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
         src = p.get("src") or state.ring_src or "OC4"
         srcname = {"OM": "Open-Meteo", "RV": "radar"}.get(src, "OpenWeather")
         vg.append({
-            "modelled": src not in ("RV", "OC4"), "source": src, "kind": "ring",
+            # "modelled" means VIRTUAL (not an EA gauge) to every consumer, incl. the dashboard;
+            # "measured" says whether the reading itself is radar/OpenWeather rather than a model
+            "modelled": True, "measured": src in ("RV", "OC4"), "source": src, "kind": "ring",
             "name": f"{compass(p['bearing'])} · {srcname} backup",
             "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
             "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),
@@ -1937,7 +1948,7 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
         # label each point by where its reading actually came from, with its real age
         _src = p.get("src") or "OM"
         vgauges.append({
-            "modelled": _src not in ("RV", "OC4"), "source": _src, "kind": p["kind"],
+            "modelled": True, "measured": _src in ("RV", "OC4"), "source": _src, "kind": p["kind"],
             "name": f"{compass(p['bearing'])} sea · {p['bearing']:.0f}°",
             "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
             "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),

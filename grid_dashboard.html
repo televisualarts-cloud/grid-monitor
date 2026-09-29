@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260928.3  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260928.3 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260929.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -6199,8 +6199,9 @@ function eaRainCardModel(r){
   const rate = (r.mm!=null ? r.mm.toFixed(1) : '\u2014');
   const snow = !!r.snow;
   const mobile = (r.kind==='mobile');
-  const chip = mobile ? (r.confirmed?'RADAR':'TRACK') : 'MODEL';
-  const chipCls = mobile ? (r.confirmed?'rn-chip radar':'rn-chip track') : 'rn-chip';
+  const radarRead = !mobile && r.source==='RV';          // net / ring point read from measured radar
+  const chip = mobile ? (r.confirmed?'RADAR':'TRACK') : (radarRead?'RADAR':'MODEL');
+  const chipCls = mobile ? (r.confirmed?'rn-chip radar':'rn-chip track') : (radarRead?'rn-chip radar':'rn-chip');
   const kindLbl = mobile ? ('tracker'+(r.state?' ('+r.state+')':'')) : (r.kind==='ring'?'home-ring backup':(r.kind==='picket'?'inner picket':'sentinel'));
   const ageT = agePlain(r.model_ts);
   const cardTitle = (kindLbl+(ageT?' · sampled '+ageT:'')).replace(/"/g,'&quot;');
