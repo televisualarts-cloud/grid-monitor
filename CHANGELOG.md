@@ -23,6 +23,10 @@ exact tag.
 - **Power-cuts map.** Borders, dot rims, pulse rings and region labels stay one screen size at any zoom; dots grow only by √zoom. Hover card per incident: operator, type, customers off, start and restore/finish time, status, postcodes, distance from home, new/muted flags, overlap count. Status text ends at a sentence; ESB's stock text ends at "as quickly as possible." (`powercuts_page.html` 260929.2–.4)
 - **By operator and grid events.** "⤢ by operator" opens a pop-up with customers off stacked by operator (band stops where a feed was down; SPEN has no counts). A strip under both plots shows grid events from the alert journal (warning and above, feed-data excluded), merged per kind, critical-only above 40 marks, with titles on hover. (`powercuts_page.html` 260929.5–.6)
 - **README.** Power-cuts section gains *Map* (zoom, hover card) and *History plots* (hover readout, by-operator pop-up, grid-event strip) paragraphs.
+- **Rain engine: radar sea net.** The offshore net, home ring and land probes read measured radar (RainViewer, 10-min frames, zoom 7, Universal Blue decoded to dBZ, mm/h by Marshall-Palmer) and fall back to Open-Meteo when radar is unavailable. Radar readings are labelled measured and dated by frame time; net interval 10 min while radar serves. Prompted by a band on 29 Sep that radar showed at 1–9 mm/h on the south/south-west sentinels at 16:50 UT while the model net read dry. (`rain_probe.py` 260929.1, `grid_server.py` 260929.1)
+- **Rain engine runs without a page open.** A background sampler runs it every 5 min at the location pages last requested (`rain_home.json`, git-ignored). The wind read no longer sits inside the EA try, so an EA failure can't skip the engine; engine cycles are serialised with a lock. (`grid_server.py` 260929.1)
+- **Late EA gauges.** A gauge whose newest reading is over 45 min old is marked late: excluded from the situation field (not read as dry, not diluting coverage); if all are late the home ring stands in. (`rain_probe.py` 260929.1)
+- **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
 
@@ -307,12 +311,14 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260927.1** (2026-09-27) — `OPEN_METEO_MODELS` sent as `models=` on the rain-net and steering requests.
 - **260927.2** (2026-09-27) — Local-first Open-Meteo with automatic public fallback (`_om_request`), 5-min local cooldown and retry, all-null detection, `local_down`/`local_up` logging; public-only backoff; `OM-local` metering; `om_get_json()` and `om_status()` for the server.
 - **260927.3** (2026-09-27) — Land-probe limits relaxed while self-hosted Open-Meteo is serving: no episode cap, 15-min heartbeat/clear-check, all points per heartbeat, third range at 25 km, quiet-hours stretch ignored.
+- **260929.1** (2026-09-29) — Radar-sampled sea net / home ring / land probes (RainViewer) with Open-Meteo fallback; late EA gauges (>45 min) excluded from the situation field, all-late treated as EA unavailable.
 
 ### `forecast_view.html`
 
 Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/engine`.
 
 - **260926.1** (2026-09-26) — Renamed Forecast view, served at `/forecast` (`/engine` removed). Licence/build header. Gauge tooltips with place, grid and EA reference, distance and direction from home. Radar-only mode (`?view=radar`) for the EA page. Location from the link or the EA page (no built-in default); connects by itself; bottom text replaced; paste-JSON box removed.
+- **260929.1** (2026-09-29) — Late-gauge rings and count; radar net labels; OM-local counted separately in the API line; RainViewer credit.
 
 ### `metar.py`
 
