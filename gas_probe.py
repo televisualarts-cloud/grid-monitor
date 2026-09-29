@@ -1,5 +1,8 @@
 # gas_probe.py — read-only gas supply/margin DIAGNOSTIC probe for GB Energy Monitor
 #
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Change history: CHANGELOG.md
+#
 # Mirrors rain_probe.py: each cycle it evaluates the gas signals we have and LOGS the
 # exact phrase the alert WOULD speak — with no tone, no Web Speech, no state forced onto
 # the live alarm layer. It is deliberately side-effect-free apart from the GasState it is

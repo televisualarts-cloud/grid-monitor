@@ -1,5 +1,8 @@
 # owm_onecall.py — OpenWeather One Call API 4.0 client for GB Energy Monitor.
 #
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Change history: CHANGELOG.md
+#
 # OC4 is modular: separate endpoints, and every record is nested in a `data[]`
 # array (unlike the flat 2.5 body). This wraps the two endpoints we use:
 #   * current           /data/4.0/onecall/current

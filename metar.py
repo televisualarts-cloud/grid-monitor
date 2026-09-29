@@ -6,7 +6,8 @@
 # they fall in (point-in-polygon against region_polys.json, nearest-country fallback for
 # coastal/offshore sites) so wind can be rolled up per region for the correlation model.
 #
-# Build: 260917.1 (2026-09-17) — new module.
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Change history: CHANGELOG.md
 #
 # Python 3, stdlib only.
 
