@@ -26,6 +26,7 @@ exact tag.
 - **Rain engine: radar sea net.** The offshore net, home ring and land probes read measured radar (RainViewer, 10-min frames, zoom 7, Universal Blue decoded to dBZ, mm/h by Marshall-Palmer) and fall back to Open-Meteo when radar is unavailable. Radar readings are labelled measured and dated by frame time; net interval 10 min while radar serves. Prompted by a band on 29 Sep that radar showed at 1–9 mm/h on the south/south-west sentinels at 16:50 UT while the model net read dry. (`rain_probe.py` 260929.1, `grid_server.py` 260929.1)
 - **Rain engine runs without a page open.** A background sampler runs it every 5 min at the location pages last requested (`rain_home.json`, git-ignored). The wind read no longer sits inside the EA try, so an EA failure can't skip the engine; engine cycles are serialised with a lock. (`grid_server.py` 260929.1)
 - **Late EA gauges.** A gauge whose newest reading is over 45 min old is marked late: excluded from the situation field (not read as dry, not diluting coverage); if all are late the home ring stands in. (`rain_probe.py` 260929.1)
+- **Late EA gauges: threshold and flapping fix.** 45 min was inside normal EA lag (~60 min just before each batch), so gauges flipped to "all late" around every batch and the home ring showed "unavailable (OWM budget spent)". Late is now >75 min per gauge; once all are late, EA counts again only below 60 min. The home ring keeps its readings when switched off, samples at once when switched on with nothing cached (free sampler only), reports "OWM budget spent" only when true, is labelled by its real source (radar ring was named "OpenWeather backup"), and uses radar even while Open-Meteo is backing off. (`rain_probe.py` 260929.2)
 - **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
@@ -312,6 +313,7 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260927.2** (2026-09-27) — Local-first Open-Meteo with automatic public fallback (`_om_request`), 5-min local cooldown and retry, all-null detection, `local_down`/`local_up` logging; public-only backoff; `OM-local` metering; `om_get_json()` and `om_status()` for the server.
 - **260927.3** (2026-09-27) — Land-probe limits relaxed while self-hosted Open-Meteo is serving: no episode cap, 15-min heartbeat/clear-check, all points per heartbeat, third range at 25 km, quiet-hours stretch ignored.
 - **260929.1** (2026-09-29) — Radar-sampled sea net / home ring / land probes (RainViewer) with Open-Meteo fallback; late EA gauges (>45 min) excluded from the situation field, all-late treated as EA unavailable.
+- **260929.2** (2026-09-29) — Late-gauge threshold 75 min with 60 min all-late hysteresis; home ring keeps its cache, samples immediately on the free sampler, labels by real source.
 
 ### `forecast_view.html`
 
