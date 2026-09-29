@@ -31,6 +31,7 @@ exact tag.
 - **Virtual rain points stay virtual.** 260929.1 flagged radar-fed net and ring points `modelled: false`, which the dashboard reads as "real EA gauge": their cards were drawn as gauge cards and one could anchor the rainfall map's centre. `modelled` again marks every virtual point; a new `measured` flag says whether the reading is radar/OpenWeather. Radar-fed net and ring cards show a RADAR chip. (`rain_probe.py` 260929.4, `grid_dashboard.html` 260929.1)
 - **README.** Rain sections describe the radar sea net, late EA gauges and the background engine; self-hosting check uses `127.0.0.1` and explains how to spot another program on the same port.
 - **Weather panel: Low / High today.** The Min/Max temp rows were always "—" on One Call 4.0 (its current endpoint has no min/max; 2.5's temp_min/temp_max were only the spread observed across the area at that moment, not the day's range). They are now **Low today** / **High today** from Open-Meteo's daily forecast for the location (local-first, cached 1 h, reset at midnight, separate from the cloud call), tagged OM with a "model, not a measurement" tooltip; "—" if Open-Meteo is unavailable. Server footer build label corrected (was left at 260928.4). (`grid_server.py` 260929.2, `grid_dashboard.html` 260929.2)
+- **Build tags for the remaining modules.** `gas_probe.py`, `metar.py` and `owm_onecall.py` now carry the standard header build line, so every code file has one. No code changes. (`gas_probe.py`, `metar.py`, `owm_onecall.py` 260929.1)
 - **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
@@ -335,3 +336,16 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 New module at 260917.1. File unchanged by the 260926.1 tidy (no history to move).
 
 - **260917.1** (2026-09-17) — New module.
+- **260929.1** (2026-09-29) — Header build line in the standard format (was `Build: 260917.1`). No code changes.
+
+### `gas_probe.py`
+
+Unversioned until 260929.1; earlier changes are in the dated entries above.
+
+- **260929.1** (2026-09-29) — Header build line added. No code changes.
+
+### `owm_onecall.py`
+
+Unversioned until 260929.1; earlier changes are in the dated entries above.
+
+- **260929.1** (2026-09-29) — Header build line added. No code changes.
