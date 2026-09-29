@@ -27,6 +27,9 @@ exact tag.
 - **Rain engine runs without a page open.** A background sampler runs it every 5 min at the location pages last requested (`rain_home.json`, git-ignored). The wind read no longer sits inside the EA try, so an EA failure can't skip the engine; engine cycles are serialised with a lock. (`grid_server.py` 260929.1)
 - **Late EA gauges.** A gauge whose newest reading is over 45 min old is marked late: excluded from the situation field (not read as dry, not diluting coverage); if all are late the home ring stands in. (`rain_probe.py` 260929.1)
 - **Late EA gauges: threshold and flapping fix.** 45 min was inside normal EA lag (~60 min just before each batch), so gauges flipped to "all late" around every batch and the home ring showed "unavailable (OWM budget spent)". Late is now >75 min per gauge; once all are late, EA counts again only below 60 min. The home ring keeps its readings when switched off, samples at once when switched on with nothing cached (free sampler only), reports "OWM budget spent" only when true, is labelled by its real source (radar ring was named "OpenWeather backup"), and uses radar even while Open-Meteo is backing off. (`rain_probe.py` 260929.2)
+- **Open-Meteo precipitation units.** Open-Meteo's `current` precipitation is the amount over the preceding `interval` seconds (900 = 15 min, confirmed on the self-hosted instance), but the engine used it as mm/h, so every model reading was 4× too low and the 0.3 mm/h wet threshold was effectively 1.2 mm/h. Amounts are now converted to mm/h from each response's interval (900 assumed if missing). (`rain_probe.py` 260929.3)
+- **Virtual rain points stay virtual.** 260929.1 flagged radar-fed net and ring points `modelled: false`, which the dashboard reads as "real EA gauge": their cards were drawn as gauge cards and one could anchor the rainfall map's centre. `modelled` again marks every virtual point; a new `measured` flag says whether the reading is radar/OpenWeather. Radar-fed net and ring cards show a RADAR chip. (`rain_probe.py` 260929.4, `grid_dashboard.html` 260929.1)
+- **README.** Rain sections describe the radar sea net, late EA gauges and the background engine; self-hosting check uses `127.0.0.1` and explains how to spot another program on the same port.
 - **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
@@ -258,6 +261,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260928.1** (2026-09-28) — System-warnings alarm takes its tier from the server and speaks type and window; critical system warnings release the critical repeat when they clear; System Warnings panel shows notices in force with a severity chip plus recent ones not in force.
 - **260928.3** (2026-09-28) — Per-gauge rain-alert mute switch (normal / <0.3 / mute) in the rain plot header, applied to the rain popup; mute dot on each gauge card; gauge name dimmed after 3 h without a report.
 - **260928.2** (2026-09-28) — Frequency figures, dial and drift show "—" while the feed is down, with "no data since HH:MM UT"; trace kept; replay resumes on the first fresh reading.
+- **260929.1** (2026-09-29) — RADAR chip on radar-fed sea-net and home-ring cards.
 
 ### `powercuts_page.html`
 
@@ -314,6 +318,8 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260927.3** (2026-09-27) — Land-probe limits relaxed while self-hosted Open-Meteo is serving: no episode cap, 15-min heartbeat/clear-check, all points per heartbeat, third range at 25 km, quiet-hours stretch ignored.
 - **260929.1** (2026-09-29) — Radar-sampled sea net / home ring / land probes (RainViewer) with Open-Meteo fallback; late EA gauges (>45 min) excluded from the situation field, all-late treated as EA unavailable.
 - **260929.2** (2026-09-29) — Late-gauge threshold 75 min with 60 min all-late hysteresis; home ring keeps its cache, samples immediately on the free sampler, labels by real source.
+- **260929.3** (2026-09-29) — Open-Meteo current amounts converted to mm/h using the response interval.
+- **260929.4** (2026-09-29) — Virtual net/ring points keep `modelled: true`; new `measured` flag for radar/OpenWeather readings.
 
 ### `forecast_view.html`
 

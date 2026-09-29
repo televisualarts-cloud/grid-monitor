@@ -158,7 +158,7 @@ docker run -d --name open-meteo --restart unless-stopped -v open-meteo-data:/app
 The terrain data (`copernicus_dem90`) is about 10 GB and is a one-off; the ICON-EU model (covers the UK and Ireland) is under 1 GB. `om-sync` keeps the model up to date every 5 minutes. Both containers restart with Docker Desktop.
 
 Check it in a browser — the values should be numbers, not `null`:
-`http://localhost:8765/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover,precipitation&models=icon_eu`
+`http://127.0.0.1:8765/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover,precipitation&models=icon_eu`
 
 **Point the app at it.** In PowerShell, then close all terminal windows and restart `grid_server.py`:
 
@@ -178,11 +178,22 @@ netsh interface ipv4 show excludedportrange protocol=tcp
 
 The first should print nothing (nothing is listening on it). The second lists port ranges Windows has reserved for Hyper-V/WSL — these can't be used even though `netstat` shows them free — so make sure your port isn't inside any range listed. (A browser connecting *to* a `:8080` address doesn't occupy that port on your PC; only a program *listening* on it does.)
 
+**Another program on the same port.** Windows lets two programs listen on the same
+port at different local addresses — one on `127.0.0.1`, another on the IPv6 `::1` or
+on all addresses. If something else on your PC already uses your chosen port, the app
+(which asks for `localhost`) may still reach Open-Meteo by one address while
+`127.0.0.1` reaches the other program: it appears to work, but only because of how
+`localhost` happens to resolve. That is why the check above uses `127.0.0.1`. If the
+check returns a plain *"Error response … 404 … Nothing matches the given URI"* page
+instead of Open-Meteo's JSON (numbers, not an error), another program is answering
+on that port. `netstat -ano | findstr :8765` lists every listener with its process
+ID; move Open-Meteo to a free port as below.
+
 **If the port is blocked — changing it.** Signs: `docker run` fails with "port is already allocated" or "ports are not available", or the footer shows **Open-Meteo: online — local unavailable: unreachable**. To move to another port (8766 here):
 
 1. Remove the container: `docker rm -f open-meteo` (the downloaded weather data is kept — it lives in the `open-meteo-data` volume).
 2. Start it on the new port: `docker run -d --name open-meteo --restart unless-stopped -v open-meteo-data:/app/data -p 8766:8080 ghcr.io/open-meteo/open-meteo`
-3. Check it: `http://localhost:8766/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover&models=icon_eu` should show a number, not `null`.
+3. Check it: `http://127.0.0.1:8766/v1/forecast?latitude=50.37&longitude=-4.14&current=cloud_cover&models=icon_eu` should show a number, not `null`.
 4. Update the app's setting in PowerShell: `setx OPEN_METEO_BASE "http://localhost:8766/v1"`
 5. Close all terminal windows, restart `grid_server.py`, and confirm the footer shows **Open-Meteo: local**.
 
@@ -303,7 +314,7 @@ Open with the **ea** button.
 - **Click a river-level or rainfall gauge** to plot its history. Rainfall is shown as a **mm/h rate** — the raw 15-minute bucket total is converted and kept in the card's hover tooltip — and colour-coded by intensity band (dry / light / moderate / heavy / extremely heavy). **Snow** is drawn in bright pink rather than on the rain scale. If a gauge stops reporting, its card **times out to 0 mm/h** and greys rather than presenting an old value as current, and its history plot runs through to the current time (a gap shows as empty) instead of freezing on the last reading. A gauge card's **border** additionally holds the highest intensity of the last two hours, so recent rain stays visible after it stops, while the number and fill reflect the current reading.
 - **Mute a ratty rain gauge from the alerts.** With a rain gauge selected, the plot header has an **alerts normal · <0.3 · mute** switch. **<0.3** makes the rain alerts treat that gauge's readings under 0.3 mm/h as dry; **mute** leaves it out of the rain alerts altogether. The card and plot keep showing its raw readings. The dot before each gauge's name shows the setting: **green** normal, **amber** <0.3, **red** muted. The setting is kept by the server, so it survives a page refresh and a restart. A gauge that hasn't reported for over 3 hours stays on screen with its name dimmed.
 - **Reading age.** River-level readings carry a coloured "…ago" — green up to an hour, amber to four hours, red beyond — so a stale gauge is obvious at a glance.
-- **Gauge radar.** The **◎ gauge radar** button at the top right of the plot area swaps the plot for a live radar-style plan of your area from the rain engine: EA gauges coloured by what they are doing (dry, steady, showery, wet), modelled sea points, tracked rain cells with their direction, speed and expected arrival, and your home at the centre. Hover over any marker for its details — a gauge shows its place, grid reference and EA reference, and how far away it is and in which direction from home. Click the button again (or pick a gauge) to go back to the plot.
+- **Gauge radar.** The **◎ gauge radar** button at the top right of the plot area swaps the plot for a live radar-style plan of your area from the rain engine: EA gauges coloured by what they are doing (dry, steady, showery, wet; gauges whose data is running late are dashed rings), sea points (from radar, or modelled when radar is unavailable), tracked rain cells with their direction, speed and expected arrival, and your home at the centre. Hover over any marker for its details — a gauge shows its place, grid reference and EA reference, and how far away it is and in which direction from home. Click the button again (or pick a gauge) to go back to the plot.
 - **Under the hood.** The **⚙ under the hood** button in the top bar opens the full **Forecast view** in a new browser tab for your location and radius (see *Forecast view* below).
 - **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
 
@@ -312,10 +323,14 @@ Open with the **ea** button.
 The offshore rainfall watch fills the biggest gap in gauge coverage: the sea.
 Real Environment Agency gauges only exist on land, so for a coastal location the
 direction weather usually arrives from can be a blind spot. A permanent **net**
-of *modelled* sea points watches that arc — sentinels roughly 40 km out plus
-inner pickets around 20 km — sampled from the free, keyless Open-Meteo model, so
-the wide watch costs nothing against your OpenWeather budget. They appear on the
-rainfall map as dashed *MODEL* cards at their true bearing and distance.
+of sea points watches that arc — sentinels roughly 40 km out plus inner pickets
+around 20 km. They are read from **measured rain radar** (RainViewer's free
+past-radar service: 10-minute frames, usually 10–20 minutes behind real time, for
+personal and educational use), falling back to the free, keyless Open-Meteo model
+when radar is unavailable — neither costs anything against your OpenWeather
+budget. They appear on the rainfall map as dashed cards at their true bearing and
+distance, marked *RADAR* or *MODEL* by where the reading came from. A model can
+miss or misplace a narrow rain band entirely; radar shows where it actually is.
 
 When rain is detected offshore, **mobile tracker cards** (marked *TRACK*) spawn
 and follow the cell inward through the 5–35 km band, jumping back now and then to
@@ -327,18 +342,24 @@ detections; without it they fall back to the free model. When the rain clears th
 trackers retreat back offshore and fade, leaving the sentinels watching. Snow is
 shown in bright pink throughout, never on the rain scale.
 
-If the free Open-Meteo feed becomes unreachable (see *weather API limits* above) at
-the same time as your EA rain gauges, there is no local rain coverage — so **eight
-OpenWeather/OC4 probes are placed around your home location** (at 20 km and 10 km on
-offset compass points) to stand in as virtual rain gauges, so you still get a working
-local picture. They show on the rain-gauge page with their readings, work even for an
-inland location with no sea nearby, and are metered against your OpenWeather budget
-like the trackers. They retract automatically as soon as **either** your EA gauges
-reappear **or** Open-Meteo recovers; while the offshore net is down but your EA gauges
-are still reporting, the backup isn't deployed. Like everything modelled, their cards
-are labelled as such (and never as "sea", since they can sit over land).
+**When your EA rain gauges can't describe the present** — the EA feed is down, or
+every gauge's newest reading is more than 75 minutes old — **eight virtual gauges are
+placed around your home location** (at 20 km and 10 km on offset compass points) to
+stand in, so you still get a working local picture. The EA publishes readings in
+batches, normally up to about an hour behind, so only a longer delay counts; once the
+gauges fall behind, they count as current again only when the newest reading is under
+an hour old, so the backup doesn't flip on and off around each EA batch. The virtual
+gauges are read from radar, or the Open-Meteo model if radar is unavailable, or
+OpenWeather/OC4 (metered against your OpenWeather budget) only if neither free source
+is available. They show on the rain-gauge page with their readings, work even for an
+inland location with no sea nearby, and retract when your EA gauges are current again.
+Their cards are labelled by source (and never as "sea", since they can sit over land).
+An individual gauge more than 75 minutes behind is shown as *late* and is not counted
+as dry — a late gauge says nothing about what is happening now.
 
-Alongside this the server runs a background rain-alert assessment that combines
+Alongside this the server runs a background rain-alert assessment — every 5 minutes,
+at the location last used on the Environment Agency page or Forecast view, whether or
+not a page is open — that combines
 your real gauges, OpenWeather's minute-by-minute precipitation forecast for the
 next hour, and local pressure and visibility trends — building a picture of what
 is happening at your location, what is approaching and from which direction, and
@@ -351,8 +372,9 @@ spoken alerts, enable **Weather nowcast** in the alarms panel and arm sound; unt
 assessment simply logs what an alert would say (a diagnostic). Like the other
 alarm categories it is off by default and speaks only while sound is armed.
 
-Throughout, modelled data is always labelled modelled and is never counted as a
-confirmed gauge reading (honesty over plausibility). The whole feature is
+Throughout, modelled data is always labelled modelled and radar readings are
+labelled radar; neither is counted as a physical gauge reading (honesty over
+plausibility). The whole feature is
 throttled to your daily OpenWeather call budget, and if the key isn't subscribed
 to One Call 4.0 it simply doesn't appear — the standard rainfall panel keeps
 working on the free tier.
@@ -362,7 +384,7 @@ working on the free tier.
 **http://localhost:8412/forecast** (or **⚙ under the hood** on the Environment Agency
 page) shows the rain engine's full picture: the same radar plan as the gauge radar,
 plus the current situation (for example *approaching · moderate · west*), coverage and
-wet-gauge counts, the steering wind it is using, any gauges it has flagged as
+wet-gauge counts, how many EA gauges are running late, the steering wind it is using, any gauges it has flagged as
 stationary or suspect, each tracked rain cell with its speed and arrival estimate, and
 what the rain alerts would say. It uses the location saved on the Environment Agency
 page (or the location in the link), refreshes on its own, and **demo** shows an example
