@@ -30,6 +30,7 @@ exact tag.
 - **Open-Meteo precipitation units.** Open-Meteo's `current` precipitation is the amount over the preceding `interval` seconds (900 = 15 min, confirmed on the self-hosted instance), but the engine used it as mm/h, so every model reading was 4× too low and the 0.3 mm/h wet threshold was effectively 1.2 mm/h. Amounts are now converted to mm/h from each response's interval (900 assumed if missing). (`rain_probe.py` 260929.3)
 - **Virtual rain points stay virtual.** 260929.1 flagged radar-fed net and ring points `modelled: false`, which the dashboard reads as "real EA gauge": their cards were drawn as gauge cards and one could anchor the rainfall map's centre. `modelled` again marks every virtual point; a new `measured` flag says whether the reading is radar/OpenWeather. Radar-fed net and ring cards show a RADAR chip. (`rain_probe.py` 260929.4, `grid_dashboard.html` 260929.1)
 - **README.** Rain sections describe the radar sea net, late EA gauges and the background engine; self-hosting check uses `127.0.0.1` and explains how to spot another program on the same port.
+- **Weather panel: Low / High today.** The Min/Max temp rows were always "—" on One Call 4.0 (its current endpoint has no min/max; 2.5's temp_min/temp_max were only the spread observed across the area at that moment, not the day's range). They are now **Low today** / **High today** from Open-Meteo's daily forecast for the location (local-first, cached 1 h, reset at midnight, separate from the cloud call), tagged OM with a "model, not a measurement" tooltip; "—" if Open-Meteo is unavailable. Server footer build label corrected (was left at 260928.4). (`grid_server.py` 260929.2, `grid_dashboard.html` 260929.2)
 - **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
@@ -262,6 +263,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260928.3** (2026-09-28) — Per-gauge rain-alert mute switch (normal / <0.3 / mute) in the rain plot header, applied to the rain popup; mute dot on each gauge card; gauge name dimmed after 3 h without a report.
 - **260928.2** (2026-09-28) — Frequency figures, dial and drift show "—" while the feed is down, with "no data since HH:MM UT"; trace kept; replay resumes on the first fresh reading.
 - **260929.1** (2026-09-29) — RADAR chip on radar-fed sea-net and home-ring cards.
+- **260929.2** (2026-09-29) — Weather panel rows Low today / High today (Open-Meteo daily forecast, OM-tagged) replace the always-blank Min/Max temp.
 
 ### `powercuts_page.html`
 
