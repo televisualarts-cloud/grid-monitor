@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260927.3  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -112,6 +112,10 @@ ETA_MIN_MIN      = 15
 ETA_MAX_MIN      = 90
 
 GAUGE_CONFIRM_KM = 8.0         # a physical gauge this close counts as "at your location"
+GAUGE_LATE_S     = 45 * 60     # an EA gauge whose newest reading is older than this is LATE:
+                               # EA publishes in batches (often 1-1.5 h behind), so a late gauge
+                               # says nothing about now -- it must not read as "dry", and if ALL
+                               # gauges are late, EA is treated as unavailable (home ring stands in)
 UPWIND_HALF_ANGLE = 60        # a gauge within +/- this of wind-from is "upwind"
 
 # Steering flow. Showers move with the ~850 hPa wind, not the 10 m wind. One keyless
@@ -374,6 +378,7 @@ class ProbeState:
     net_speed_kmh: float | None = None                 # last measured net-edge closing speed
     net_cache: dict = field(default_factory=dict)      # (bearing,range)->{mm,snow,src}: last net sample, reused within TTL
     net_cache_ts: float = 0.0                          # when the net was last actually sampled (Open-Meteo)
+    net_src: str = ""                                   # 'RV' radar or 'OM' model: who served the last net sample
     net_dither: dict = field(default_factory=dict)     # az->stable jitter (regenerated per dither epoch)
     net_dither_ts: float = 0.0                         # when the dither pattern was last regenerated
     net_feed: str = "ok"                               # offshore feed state: ok | degraded | exhausted | down
@@ -1025,6 +1030,159 @@ def fetch_om_precip(points, timeout=8):
         return [{"mm": None, "snow": False, "src": "OM", "err": "fetch failed: " + str(e)[:80]}] * len(points)
 
 
+
+# ───────────────────────── measured radar for the sea net (RainViewer) ─────────────
+# The net used to sample ONLY a weather model (Open-Meteo "current" precipitation), which
+# can miss or misplace a narrow band entirely (29 Sep 2026: radar showed 1-9 mm/h on the
+# 40 km south/south-west sentinels at 16:50 UT while the model net read dry). RainViewer's
+# free API (personal/educational use; since 1 Jan 2026: past radar only, 10-min frames for
+# 2 h, max zoom 7, "Universal Blue" colours, 100 req/IP/min) gives MEASURED reflectivity.
+# One zoom-7 512px tile (~0.4 km/px here) covers the whole net, so a sample costs 1-2
+# tile fetches. Pixel colour -> dBZ (table below) -> mm/h by Marshall-Palmer Z = 200 R^1.6.
+# A transparent pixel is "no echo" (dry). Any failure returns None so the caller falls
+# back to the model. Stdlib only: the PNG is decoded with zlib.
+RADAR_ENABLED   = os.environ.get("RAIN_RADAR", "1") != "0"
+RV_MAPS_URL     = "https://api.rainviewer.com/public/weather-maps.json"
+RV_ZOOM, RV_SIZE, RV_COLOR = 7, 512, 2        # zoom cap 7; Universal Blue = scheme 2
+RV_MAPS_TTL_S   = 5 * 60                      # re-read the frame list at most this often
+RV_MAX_AGE_S    = 30 * 60                     # newest frame older than this -> radar unusable
+RV_NET_TTL_S    = 10 * 60                     # net sampling interval while radar serves (frames are 10-min)
+RV_MIN_DBZ      = 10.0                        # below this: clutter / non-precipitating echo -> dry
+_RV_TABLE = ",".join([
+    "-10:636159,-9:66635a,-8:69665c,-7:6c685d,-6:6f6b5f,-5:726e61,-4:757062,-3:787364,"
+    "-2:7c7565,-1:7f7867,0:827b69,1:857d6a,2:88806c,3:8b826d,4:8e856f,5:928871,"
+    "6:9e9375,7:aa9e79,8:b6a97e,9:c2b482,10:cec087,11:d2c48b,12:d6c88f,13:dacc93,"
+    "14:ded097,15:88ddee,16:6cd1eb,17:51c5e8,18:36bae5,19:1baee2,20:00a3e0,21:009ad5,"
+    "22:0091ca,23:0088bf,24:007fb4,25:0077aa,26:0070a3,27:00699c,28:006295,29:005b8e,"
+    "30:005588,31:005180,32:004e78,33:004a70,34:004768,35:ffee00,36:ffe000,37:ffd200,"
+    "38:ffc500,39:ffb700,40:ffaa00,41:ff9f00,42:ff9500,43:ff8b00,44:ff8100,45:ff4400,"
+    "46:f23600,47:e62800,48:d91b00,49:cd0d00,50:c10000,51:a80000,52:8f0000,53:760000,"
+    "54:5d0000,55:ffaaff,56:ff9fff,57:ff95ff,58:ff8bff,59:ff81ff,60:ff77ff,61:ff6cff,"
+    "62:ff62ff,63:ff58ff,64:ff4eff,65:ffffff"
+])
+_RV_DBZ = {k: float(d) for d, k in (e.split(":") for e in _RV_TABLE.split(","))}
+_RV_RGB = [(int(k[0:2], 16), int(k[2:4], 16), int(k[4:6], 16), d) for k, d in _RV_DBZ.items()]
+_rv = {"maps": None, "maps_ts": 0.0, "tiles": {}, "last_err": None, "frame_ts": None}
+
+
+def _png_rgba(b):
+    """Minimal PNG decoder (8-bit RGBA/RGB/palette, non-interlaced) -> (w, h, px(x, y))."""
+    import struct, zlib
+    if b[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    i, w, h, ct, pal, trns, idat = 8, 0, 0, None, None, None, b""
+    while i < len(b):
+        n = struct.unpack(">I", b[i:i + 4])[0]; t = b[i + 4:i + 8]; data = b[i + 8:i + 8 + n]; i += 12 + n
+        if t == b"IHDR":
+            w, h, bd, ct = struct.unpack(">IIBB", data[:10])
+            if bd != 8 or data[12] != 0:
+                raise ValueError("unsupported PNG (bit depth / interlace)")
+        elif t == b"PLTE":
+            pal = [data[k:k + 3] for k in range(0, len(data), 3)]
+        elif t == b"tRNS":
+            trns = data
+        elif t == b"IDAT":
+            idat += data
+    bpp = {6: 4, 2: 3, 3: 1}[ct]
+    raw = zlib.decompress(idat); stride = w * bpp; rows = []; prev = bytearray(stride); p = 0
+    for _y in range(h):
+        f = raw[p]; line = bytearray(raw[p + 1:p + 1 + stride]); p += 1 + stride
+        if f:
+            for x in range(stride):
+                a = line[x - bpp] if x >= bpp else 0; up = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+                if f == 1:   line[x] = (line[x] + a) & 255
+                elif f == 2: line[x] = (line[x] + up) & 255
+                elif f == 3: line[x] = (line[x] + ((a + up) >> 1)) & 255
+                elif f == 4:
+                    pp = a + up - c; pa, pb, pc = abs(pp - a), abs(pp - up), abs(pp - c)
+                    line[x] = (line[x] + (a if pa <= pb and pa <= pc else (up if pb <= pc else c))) & 255
+        rows.append(bytes(line)); prev = line
+
+    def px(x, y):
+        L = rows[y]
+        if ct == 6: return tuple(L[4 * x:4 * x + 4])
+        if ct == 2: return tuple(L[3 * x:3 * x + 3]) + (255,)
+        k = L[x]; a = trns[k] if trns and k < len(trns) else 255
+        return tuple(pal[k]) + (a,)
+    return w, h, px
+
+
+def _rv_dbz(r, g, b):
+    d = _RV_DBZ.get("%02x%02x%02x" % (r, g, b))
+    if d is not None:
+        return d
+    best = min(_RV_RGB, key=lambda e: (e[0] - r) ** 2 + (e[1] - g) ** 2 + (e[2] - b) ** 2)
+    return best[3]
+
+
+def _rv_newest_frame(now):
+    if _rv["maps"] is None or now - _rv["maps_ts"] >= RV_MAPS_TTL_S:
+        req = urllib.request.Request(RV_MAPS_URL, headers={"User-Agent": "gb-energy-monitor"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            _rv["maps"] = json.loads(r.read()); _rv["maps_ts"] = now
+        meter_api("RV", "radar_index", 1)
+    past = ((_rv["maps"] or {}).get("radar") or {}).get("past") or []
+    if not past:
+        raise RuntimeError("no radar frames")
+    fr = max(past, key=lambda f: f.get("time") or 0)
+    if now - (fr.get("time") or 0) > RV_MAX_AGE_S:
+        raise RuntimeError("newest radar frame is %d min old" % ((now - fr["time"]) // 60))
+    return _rv["maps"].get("host") or "https://tilecache.rainviewer.com", fr
+
+
+def fetch_radar_precip(points, now=None):
+    """Measured radar rain rate (mm/h) at each point, from the newest RainViewer frame.
+    Returns a list shaped like fetch_om_precip's ({mm, snow, src:'RV', radar_ts}), or
+    None on any failure (caller falls back to the model). Never raises."""
+    if not RADAR_ENABLED or not points:
+        return None
+    now = now or time.time()
+    try:
+        host, fr = _rv_newest_frame(now)
+        n = 2 ** RV_ZOOM; out = []
+        for p in points:
+            la, lo = float(p["lat"]), float(p["lon"])
+            xf = (lo + 180.0) / 360.0 * n
+            yf = (1 - math.log(math.tan(math.radians(la)) + 1 / math.cos(math.radians(la))) / math.pi) / 2 * n
+            key = (fr["path"], int(xf), int(yf))
+            if key not in _rv["tiles"]:
+                url = f"{host}{fr['path']}/{RV_SIZE}/{RV_ZOOM}/{int(xf)}/{int(yf)}/{RV_COLOR}/0_0.png"
+                req = urllib.request.Request(url, headers={"User-Agent": "gb-energy-monitor"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    _rv["tiles"] = {k: v for k, v in _rv["tiles"].items() if k[0] == fr["path"]}  # keep this frame only
+                    _rv["tiles"][key] = _png_rgba(r.read())
+                meter_api("RV", "radar_tile", 1)
+            w, h, px = _rv["tiles"][key]
+            r_, g_, b_, a_ = px(min(w - 1, int((xf % 1) * w)), min(h - 1, int((yf % 1) * h)))
+            if a_ == 0:
+                mmh = 0.0                                    # no echo
+            else:
+                dbz = _rv_dbz(r_, g_, b_)
+                mmh = 0.0 if dbz < RV_MIN_DBZ else round((10 ** (dbz / 10.0) / 200.0) ** (1 / 1.6), 2)
+            out.append({"mm": mmh, "snow": False, "src": "RV", "radar_ts": fr.get("time")})
+        _rv["last_err"] = None; _rv["frame_ts"] = fr.get("time")
+        return out
+    except Exception as e:
+        _rv["last_err"] = f"{type(e).__name__}: {e}"
+        return None
+
+
+def radar_status():
+    return {"enabled": RADAR_ENABLED, "frame_ts": _rv.get("frame_ts"), "last_err": _rv.get("last_err")}
+
+
+def fetch_net_precip(points):
+    """Sea net / home ring / land probes: measured radar first, the model if radar fails."""
+    r = fetch_radar_precip(points)
+    return r if r is not None else fetch_om_precip(points)
+
+
+def _om_charged(rates):
+    """Locations Open-Meteo charged for in a sampler result (radar reads cost it nothing)."""
+    return sum(1 for rt in rates if isinstance(rt, dict) and rt.get("src") != "RV"
+               and (rt.get("sent") or rt.get("mm") is not None))
+
+
 def _apply_sample(pt, rt):
     """Normalise a sampler result onto a point: {mm, snow, src}. Tolerates a bare
     float for back-compat."""
@@ -1539,7 +1697,8 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
                 covered += 1
         state.ring_feed = "active" if covered else "exhausted"
         state.ring_feed_reason = None if covered else ("Open-Meteo unavailable" if om_ok else "OWM budget/limit")
-        state.ring_src = ("OM" if om_ok else "OC4") if covered else None
+        _rv_used = any(isinstance(rt, dict) and rt.get("src") == "RV" for rt in rates)
+        state.ring_src = (("RV" if _rv_used else "OM") if om_ok else "OC4") if covered else None
         state.ring_cache = [{"bearing": p["bearing"], "range_km": p["range_km"],
                              "mm": p.get("mm"), "snow": p.get("snow"), "src": p.get("src")}
                             for p in pts]
@@ -1560,7 +1719,7 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
         src = p.get("src") or state.ring_src or "OC4"
         srcname = "Open-Meteo" if src == "OM" else "OpenWeather"
         vg.append({
-            "modelled": True, "source": src, "kind": "ring",
+            "modelled": src not in ("RV", "OC4"), "source": src, "kind": "ring",
             "name": f"{compass(p['bearing'])} · {srcname} backup",
             "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
             "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),
@@ -1623,19 +1782,23 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
     # readings in between -- the biggest cut to the Open-Meteo daily-call budget.
     disp, fills = _net_points(state, home, seaset, sentinel_az)
     net_pts = disp + fills
-    due = (now - (state.net_cache_ts or 0)) >= NET_SAMPLE_TTL_S * max(1.0, net_ttl_mult) or not state.net_cache
+    _ttl = RV_NET_TTL_S if getattr(state, "net_src", None) == "RV" else NET_SAMPLE_TTL_S   # radar frames are 10-min
+    due = (now - (state.net_cache_ts or 0)) >= _ttl * max(1.0, net_ttl_mult) or not state.net_cache
     if due:
         rates = net_sample_fn(net_pts) if net_pts else []
         for pt, rt in zip(net_pts, rates):
             _apply_sample(pt, rt)
-            pt["ts"] = now if pt.get("mm") is not None else None
+            # a radar reading is dated by its FRAME time (true age); a model read by now
+            _rts = rt.get("radar_ts") if isinstance(rt, dict) else None
+            pt["ts"] = (_rts or now) if pt.get("mm") is not None else None
+        state.net_src = "RV" if any(isinstance(rt, dict) and rt.get("src") == "RV" for rt in rates) else "OM"
         # Meter the locations Open-Meteo actually CHARGED for: every point in a request
         # that reached its servers (returned data OR an over-limit error), but not the
         # ones skipped locally during a backoff. Open-Meteo weights per location, so this
         # tracks the true budget footprint rather than only the readings we kept.
-        _sent = sum(1 for rt in rates if isinstance(rt, dict)
-                    and (rt.get("sent") or rt.get("mm") is not None))
-        meter_api("OM", "offshore_net", _sent)
+        _sent = _om_charged(rates)
+        if _sent:
+            meter_api("OM", "offshore_net", _sent)
         errs = [rt.get("err") for rt in rates if isinstance(rt, dict) and rt.get("err")]
         all_none = bool(net_pts) and all(p.get("mm") is None for p in net_pts)
         if errs and all_none:
@@ -1763,11 +1926,11 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
         # label each point by where its reading actually came from, with its real age
         _src = p.get("src") or "OM"
         vgauges.append({
-            "modelled": True, "source": _src, "kind": p["kind"],
+            "modelled": _src not in ("RV", "OC4"), "source": _src, "kind": p["kind"],
             "name": f"{compass(p['bearing'])} sea · {p['bearing']:.0f}°",
             "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
             "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),
-            "confirmed": bool(_src == "OC4" and p.get("mm") is not None),
+            "confirmed": bool(_src in ("OC4", "RV") and p.get("mm") is not None),
             "model_ts": p.get("ts"), "stale": bool(p.get("stale")),
             "age_s": (int(now - p["ts"]) if p.get("ts") is not None else None),
         })
@@ -2361,8 +2524,8 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
             pts = pts[:1]                       # public: a heartbeat needs only one upwind look
         rates = sampler(pts) if pts else []
         # Count locations Open-Meteo charged for (sent), not just the ones that returned data.
-        meter_api("OM", "land_probe", sum(1 for rt in rates if isinstance(rt, dict)
-                                          and (rt.get("sent") or rt.get("mm") is not None)))
+        if _om_charged(rates):
+            meter_api("OM", "land_probe", _om_charged(rates))
         probes = []
         for pt, rt in zip(pts, rates):
             mm = rt.get("mm") if isinstance(rt, dict) else rt
@@ -2544,7 +2707,11 @@ def build_situational(points, home, wind_from, land, sea, now):
     State is driven by RECENT ACTIVITY over the history window (so an intermittent
     shower doesn't read "clear" during its dry phase), and coverage is measured over
     the PHYSICAL land field only (the dry sea sentinels must not dilute it)."""
-    field = [p for p in points if p.get("dist_km") is not None and p["dist_km"] <= SIT_MID_KM]
+    # LATE physical gauges (newest reading older than GAUGE_LATE_S) say nothing about now:
+    # left out of the field so they neither read as "clear" nor dilute the coverage.
+    n_late = sum(1 for p in points if p.get("kind") == "phys" and p.get("late"))
+    field = [p for p in points if p.get("dist_km") is not None and p["dist_km"] <= SIT_MID_KM
+             and not (p.get("kind") == "phys" and p.get("late"))]
     phys = [p for p in field if p.get("kind") == "phys"]
 
     def _active(p):
@@ -2610,7 +2777,7 @@ def build_situational(points, home, wind_from, land, sea, now):
     return {
         "state": stt + ("_snow" if snow and stt != "clear" else ""),
         "base_state": stt, "snow": snow,
-        "n_field": len(field), "n_phys": n_phys, "n_active": len(active), "n_wet": len(wet_now),
+        "n_field": len(field), "n_phys": n_phys, "n_late": n_late, "n_active": len(active), "n_wet": len(wet_now),
         "nearest_wet_km": (round(nearest["dist_km"], 1) if nearest else None),
         "coverage": coverage, "shower_confidence": shower_conf,
         "n_showery": len(showery), "n_steady": len(steady),
@@ -3078,7 +3245,8 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     _wf = flow["from_deg"] if flow else wind_from
     # stationary / suspect gauges: kept on screen and in the area state, but left out of
     # everything that judges motion or approach (land front, tracks, approach threat)
-    gauge_flags = update_gauge_flags(state, gauges, now, sampler=net_sample_fn)
+    gauge_flags = update_gauge_flags(state, gauges, now,
+                                     sampler=(fetch_om_precip if net_sample_fn is fetch_net_precip else net_sample_fn))
     _flagged = set(state.gauge_flags)
     _gauges_mv = [g for g in (gauges or []) if _gkey(g) not in _flagged]
     appr = gauge_approach(gauges, home, wind_from, wind_kmh, flow=flow)
@@ -3090,7 +3258,11 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     #    DOWN the HOME RING stands in — sampled from the FREE Open-Meteo net if OM is up
     #    (one batched call, no budget cost), else the OC4 backup. So EA-down triggers the
     #    backup regardless of OM's state.
-    _ea_gauges = bool(gauges)
+    def _g_late(g):
+        t = _iso_ts(g.get("dt"))
+        return t is not None and now - t > GAUGE_LATE_S
+    _n_late = sum(1 for g in (gauges or []) if _g_late(g))
+    _ea_gauges = any(not _g_late(g) for g in (gauges or []))   # present AND current
     _om_ok = not om_in_backoff(now)
     sea, vgauges = arc_update(state, home, now, net_sample_fn=net_sample_fn,
                               track_sample_fn=track_sample_fn, landsea_fn=landsea_fn,
@@ -3124,7 +3296,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                          "flag": (state.gauge_flags.get(_gkey(_g)) or {}).get("flag"),
                          "name": _gname(_g), "ref": _g.get("ref"), "grid": _g.get("grid"),
                          "place": _g.get("place"),
-                         "mm": _mm, "last_ts": _iso_ts(_g.get("dt"))})
+                         "mm": _mm, "last_ts": _iso_ts(_g.get("dt")), "late": _g_late(_g)})
     for _vg in vgauges:
         if _vg.get("kind") not in ("sentinel", "picket", "ring"):
             continue
@@ -3152,6 +3324,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                               "mm": (round(p["mm"], 2) if p.get("mm") is not None else None),
                               "age_s": (int(now - p["last_ts"]) if p.get("last_ts") else None),
                               "flag": p.get("flag"), "src": p.get("src"), "stale": bool(p.get("stale")),
+                              "late": bool(p.get("late")),
                               "id": p.get("key"), "ref": p.get("ref"), "grid": p.get("grid"),
                               "place": p.get("place")}
                              for p in _sit_pts]
@@ -3173,11 +3346,16 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                                    "snow": bool(v.get("snow")), "src": v.get("source")}
                                   for v in ring_vgauges]
     # LOCAL (land) coverage status: real gauges, or which backup is standing in for them.
-    situational["ea_gauges"] = "present" if _ea_gauges else "down"
+    situational["ea_gauges"] = ("present" if _ea_gauges else
+                                ("late" if gauges else "down"))       # late = present but all behind
+    _ages = [now - t for t in (_iso_ts(g.get("dt")) for g in (gauges or [])) if t is not None]
+    situational["ea_late"] = {"n_late": _n_late, "n": len(gauges or []),
+                              "newest_age_s": (int(min(_ages)) if _ages else None),
+                              "late_after_s": GAUGE_LATE_S}
     if _ea_gauges:
         situational["backup"] = None                              # real gauges; no backup needed
     elif state.ring_feed == "active":
-        situational["backup"] = ("Open-Meteo home-ring" if state.ring_src == "OM" else "OpenWeather home-ring")
+        situational["backup"] = {"RV": "radar home-ring", "OM": "Open-Meteo home-ring"}.get(state.ring_src, "OpenWeather home-ring")
     else:
         situational["backup"] = "unavailable (OWM budget spent)"
     # active offshore mobile trackers (spawn only on sea detections) — so they appear

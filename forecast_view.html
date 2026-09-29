@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -119,16 +119,17 @@
         <span class="it"><span class="sw" style="background:#6fd3e0"></span>wet</span>
         <span class="it"><span class="sw" style="border:1px solid #39d98a;background:transparent"></span>probe</span>
         <span class="it"><span style="color:#3fb6c9;font-size:13px">▶</span>mobile</span>
-        <span class="it"><span class="sw" style="border:1px solid #6b7c92;background:transparent"></span>sea/model net</span>
+        <span class="it"><span class="sw" style="border:1px solid #6b7c92;background:transparent"></span>sea net (radar / model)</span>
       </div>
       <div class="apiu" id="apiu" style="display:none"></div>
     </div>
   </div>
 
   <div class="foot">
-    A live plan of the rain picture around your location: rain gauges, modelled sea points, tracked rain
+    A live plan of the rain picture around your location: rain gauges, sea points (radar, or modelled when radar is unavailable), tracked rain
     cells, and what the rain engine expects next — whether rain is approaching, from where, and when.<br>
-    Hover over any marker for details. It refreshes on its own and shows exactly what drives the rain alerts.
+    Hover over any marker for details. It refreshes on its own and shows exactly what drives the rain alerts.<br>
+    Radar: <a href="https://www.rainviewer.com" target="_blank" rel="noopener" style="color:#5ec8ff">RainViewer</a> (past radar, personal use).
   </div>
 </div>
 
@@ -232,8 +233,11 @@ function draw(){
     if(p.kind!=='phys'){ const wet=(p.band||0)>0; const rr=wet?(3.5+(p.band||0)*1.3):3.5;
       g.beginPath();g.arc(x,y,rr,0,7);
       g.strokeStyle=wet?(p.snow?'#ff7ed6':(col[p.label]||col.steady)):'#6b7c92';g.lineWidth=wet?1.8:1.2;g.stroke();
-      HIT.push({x,y,r:Math.max(rr,8),html:tipGauge(p,'model net')}); return; }
+      HIT.push({x,y,r:Math.max(rr,8),html:tipGauge(p,p.src==='RV'?'radar net':'model net')}); return; }
     const rr=3+(p.band||0)*1.4; g.beginPath();g.arc(x,y,rr,0,7);
+    if(p.late){ // LATE: newest reading too old to say anything about now -> hollow, dim
+      g.strokeStyle='rgba(107,124,146,.55)';g.lineWidth=1;g.setLineDash([2,2]);g.stroke();g.setLineDash([]);
+      HIT.push({x,y,r:Math.max(rr,8),html:tipGauge(p,'gauge')}); return; }
     g.fillStyle=p.snow?'#ff7ed6':(col[p.label]||col.dry); g.globalAlpha=p.label==='dry'?.7:1; g.fill(); g.globalAlpha=1;
     if(p.label!=='dry'){g.strokeStyle='rgba(255,255,255,.22)';g.lineWidth=1;g.stroke();}
     if(p.flag){ // stationary / suspect gauge: dashed ring, excluded from approach tracking
@@ -274,7 +278,7 @@ function render(sit, spk, ws){
     ['nearest wet',sit.nearest_wet_km!=null?sit.nearest_wet_km+' km':'—'],['active gauges',sit.n_active],
     ['wet now',sit.n_wet],['stable',Math.round((sit.stable_s||0)/60)+' min'],
     ['at home',(sit.home&&sit.home.band>0)?((sit.home.mm!=null?sit.home.mm+' mm/h ':'')+sit.home.name):'dry'],
-    ['EA gauges', sit.ea_gauges||'—'],
+    ['EA gauges', eaGaugesTxt(sit)],
     ['local backup', sit.backup||(sit.ea_gauges==='present'?'EA gauges (live)':'—')],
     ['steering wind', sit.steering?('from '+bearingWord(sit.steering.from_deg)+' '+mph(sit.steering.kmh)+' mph · '
         +(sit.steering.src==='850hPa'?('850 hPa'+(sit.steering.stale?' (old)':'')):'surface est.')):'—'],
@@ -296,17 +300,26 @@ function render(sit, spk, ws){
   const pr=sit.probe||{}; $('probes').innerHTML=pr.n?`<div class="trow">${pr.n} deployed · airmass <span style="color:${pr.active?'var(--warn)':'var(--ok)'}">${pr.active?'ACTIVE':'quiet'}</span>${pr.fresh_clear?' · clear confirmed':''}</div>`:'<div class="trow" style="color:var(--ink-faint)">not deployed</div>';
   ingest('rain', SPK); ingest('now', WS); renderSpeak(); renderApiUsage();
 }
+// "present" / "present · 12 of 44 late" / "all late · newest 1h 20m old"
+function eaGaugesTxt(sit){ const L=sit.ea_late||{}, g=sit.ea_gauges||'—';
+  const age=L.newest_age_s!=null?(L.newest_age_s<5400?Math.round(L.newest_age_s/60)+' min':(Math.floor(L.newest_age_s/3600)+'h '+Math.round((L.newest_age_s%3600)/60)+'m')):'';
+  if(g==='late') return '<span style="color:var(--warn)">all late · newest '+age+' old</span>';
+  if(g==='present' && L.n_late) return 'present · '+L.n_late+' of '+L.n+' late';
+  return g; }
 function renderApiUsage(){
   const el=$('apiu'); if(!el) return;
   const c=APIU&&APIU.counts; const tot=APIU&&(APIU.total||0);
   if(!c||!tot){ el.style.display='none'; return; }
   const lbl={'OM/offshore_net':'net','OM/land_probe':'probes','OM/net_fallback':'OM-fallback',
+    'RV/radar_tile':'radar tiles','RV/radar_index':'radar index',
     'OWM/wind':'wind','OWM/oc4_sea':'oc4-sea','OWM/resource':'conditions','OWM/demand':'demand'};
-  const om=Object.keys(c).filter(k=>k.indexOf('OM/')===0).reduce((a,k)=>a+c[k],0);
-  const owm=Object.keys(c).filter(k=>k.indexOf('OWM/')===0).reduce((a,k)=>a+c[k],0);
-  const parts=Object.keys(c).sort((a,b)=>c[b]-c[a]).map(k=>(lbl[k]||k)+' '+c[k]);
+  const sum=pre=>Object.keys(c).filter(k=>k.indexOf(pre)===0).reduce((a,k)=>a+c[k],0);
+  const oml=sum('OM-local/'), om=sum('OM/'), owm=sum('OWM/');
+  // OM-local keys read as "local net" etc.; public OM keys keep their own labels
+  const nm=k=>k.indexOf('OM-local/')===0?('local '+(lbl['OM/'+k.slice(9)]||k.slice(9))):(lbl[k]||k);
+  const parts=Object.keys(c).sort((a,b)=>c[b]-c[a]).map(k=>nm(k)+' '+c[k]);
   el.style.display='block';
-  el.textContent='API today: '+tot+'  (OM '+om+' / OWM '+owm+')  \u2014  '+parts.join(' \u00b7 ');
+  el.textContent='API today: '+tot+'  ('+(oml?'OM-local '+oml+' \u00b7 ':'')+'OM '+om+' / OWM '+owm+')  \u2014  '+parts.join(' \u00b7 ');
 }
 
 // stamp newly-appeared phrases (not present last cycle) so we know when each was voiced
@@ -328,7 +341,7 @@ function bearingWord(b){ if(b==null)return''; const d=['north','north-east','eas
 function mph(kmh){ return Math.round(kmh/1.609); }
 const ABBR=['N','NE','E','SE','S','SW','W','NW'];
 function abbr(b){ return b==null?'':ABBR[Math.round((b%360)/45)%8]; }
-function agefmt(s){ if(s==null)return'—'; return s<90?s+'s':(s<5400?Math.round(s/60)+'m':Math.round(s/3600)+'h'); }
+function agefmt(s){ if(s==null)return'—'; return s<90?s+'s':(s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1).replace(/\.0$/,'')+'h'); }
 // Live arrival estimate: count the server's minute-range window down from the moment
 // the estimate was COMPUTED (probe ts), so it keeps ticking between pulls and doesn't
 // reset when the browser re-polls the same cached estimate.
@@ -364,13 +377,14 @@ function tipGauge(p,kind){
     ids=[p.place?p.grid:null, p.ref?('EA '+p.ref):null].filter(Boolean).join(' · ');
   } else {                                   // modelled sea / backup point
     title=p.name||kind;
-    ids=(p.src==='OC4'?'OpenWeather reading':(p.src==='OM'?'Open-Meteo model':'model'));
+    ids=(p.src==='RV'?'radar (RainViewer), measured':(p.src==='OC4'?'OpenWeather reading':(p.src==='OM'?'Open-Meteo model':'model')));
   }
   return `<b>${esc(title)}</b> <span style="color:#8595a8">${kind}</span><br>`+
     (ids?`<span style="color:#8595a8">${esc(ids)}</span><br>`:'')+
     `${fromHome(p.b,p.d)}<br>`+
     `${mm} · now ${cur}<br>peak ${pk} · ${p.label||'dry'}${p.trans?(' · '+p.trans+' flips'):''}`+
-    (p.age_s!=null?('<br>last reading '+agefmt(p.age_s)+' ago'+(p.stale?' (stale)':'')):'')+flagLine(p);
+    (p.age_s!=null?('<br>last reading '+agefmt(p.age_s)+' ago'+(p.stale?' (stale)':'')):'')+
+    (p.late?'<br><span style="color:#f5b942">late — EA hasn\'t published a recent reading; not counted as dry</span>':'')+flagLine(p);
 }
 function flagLine(p){
   if(!p.flag) return '';

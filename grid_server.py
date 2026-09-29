@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260928.4  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -5411,7 +5411,6 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
         if not rain_only:
             _ea_collect_stations(out, lat, lon, dist, latest)
         _ea_collect_rainfall(out, lat, lon, dist, latest)
-        _ea_collect_wind(out, lat, lon, sampling_mult)  # TTL+budget-throttled; needed by the probe in both modes
         if not rain_only:
             _lk = (round(lat, 3), round(lon, 3), dist)
             _lf = _ea_local_floods(lat, lon, dist)
@@ -5428,6 +5427,12 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
             out["local_flood_area_ids"] = [f["area_id"] for f in out["local_floods"]]
     except Exception as e:
         out["error"] = _ea_errstr(e)
+    # Wind in its OWN try, after the EA calls: the rain engine needs it, and an EA
+    # failure above must not skip it (that used to switch the engine off silently).
+    try:
+        _ea_collect_wind(out, lat, lon, sampling_mult)  # TTL+budget-throttled
+    except Exception as e:
+        out["diag"]["wind"] = _ea_errstr(e)
     # Roll a concise top-level error from whichever sub-call failed, so existing
     # UI that reads out['error'] still shows something useful.
     if not out["error"]:
@@ -5456,9 +5461,10 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
             # Open-Meteo fallback -- ONE OWM call per point, so budget-guarded: if
             # the day's wind budget can't cover the batch, fall back to Open-Meteo.
             _okey = _load_weather_key()
-            # NET (sentinels + inner pickets + dither fills): always the free,
-            # batched, keyless Open-Meteo -- one call regardless of point count.
-            _net_sample = _rain_probe.fetch_om_precip
+            # NET (sentinels + inner pickets + dither fills), home ring and land probes:
+            # MEASURED radar (RainViewer, 1-2 tile fetches) first, falling back to the
+            # free batched Open-Meteo model when radar is unavailable.
+            _net_sample = getattr(_rain_probe, "fetch_net_precip", _rain_probe.fetch_om_precip)
             # TRACK (mobile cards): OC4 radar-fed quality read, one OWM call per
             # tracked point, budget-guarded; falls back to Open-Meteo when the day's
             # budget can't cover the batch. Only ever called for active detections.
@@ -5474,7 +5480,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
                 _r = _rain_probe.fetch_om_precip(pts)   # free Open-Meteo fallback
                 _meter("OM", "net_fallback", len(pts))  # after the call: attributed to the host that served it
                 return _r
-            _res = _rain_probe.run_probe(
+            with _RAIN_PROBE_LOCK:
+              _res = _rain_probe.run_probe(
                 _RAIN_PROBE_STATE, home=(lat, lon),
                 rain_mm_h=_cond.get("rain_1h") or 0.0,
                 pressure_hpa=_cond.get("pressure"),
@@ -5498,6 +5505,8 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
         except Exception as _pe:
             out["diag"]["rain_probe"] = "probe error: " + _ea_errstr(_pe)
 
+    if _rain_probe is not None and hasattr(_rain_probe, "radar_status"):
+        out["radar"] = _rain_probe.radar_status()
     if _rain_probe is not None:
         try:
             out["api_usage"] = _rain_probe.api_usage_today()
@@ -5830,6 +5839,58 @@ def _openmeteo_cloud(lat, lon, timeout=12):
     except Exception as e:
         dbg("open-meteo cloud fetch failed:", _ea_errstr(e))
         return None
+
+
+# ---- background rain engine --------------------------------------------------
+# The rain engine used to run only when a page asked for EA data, so with the EA page
+# and Forecast view closed it stopped. This sampler keeps it running at the location
+# pages last asked for (persisted in rain_home.json so it survives a restart). It calls
+# the same get_ea(rain_only=True) path, so the 5-min EA cache means no duplicate work
+# while a page is polling, and the wind/net/probe calls keep their own intervals.
+RAIN_HOME_FILE = Path(__file__).with_name("rain_home.json")
+RAIN_SAMPLE_S = 300
+_rain_home = {"lat": None, "lon": None, "dist": None, "cad": 1.0}
+_rain_bg = {"last_run": None, "last_err": None}
+_RAIN_PROBE_LOCK = threading.Lock()    # one engine cycle at a time (pages + sampler share one state)
+
+def _rain_home_load():
+    try:
+        d = json.loads(RAIN_HOME_FILE.read_text())
+        if isinstance(d.get("lat"), (int, float)) and isinstance(d.get("lon"), (int, float)):
+            _rain_home.update({"lat": d["lat"], "lon": d["lon"], "dist": d.get("dist"),
+                               "cad": float(d.get("cad") or 1.0)})
+    except Exception:
+        pass
+
+def _rain_home_note(lat, lon, dist, cad):
+    """Record the location (and alarm cadence) a page asked for. Written only on change."""
+    new = {"lat": round(lat, 4), "lon": round(lon, 4), "dist": dist, "cad": cad}
+    if all(_rain_home.get(k) == v for k, v in new.items()):
+        return
+    _rain_home.update(new)
+    try:
+        RAIN_HOME_FILE.write_text(json.dumps(new))
+    except Exception:
+        pass
+
+def _rain_sampler():
+    import time as _t
+    _t.sleep(60)                       # let the server settle first
+    while True:
+        try:
+            h = dict(_rain_home)
+            if h["lat"] is not None and _rain_probe is not None:
+                get_ea(h["lat"], h["lon"], h["dist"], rain_only=True,
+                       cadence_mult=h.get("cad") or 1.0, sampling_mult=_forecast_sampling_mult())
+                _rain_bg["last_run"] = _t.time(); _rain_bg["last_err"] = None
+        except Exception as e:
+            _rain_bg["last_err"] = f"{type(e).__name__}: {e}"
+        _t.sleep(RAIN_SAMPLE_S)
+
+def _rain_sampler_start():
+    _rain_home_load()
+    import threading as _rs_th
+    _rs_th.Thread(target=_rain_sampler, daemon=True).start()
 
 
 def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
@@ -7636,14 +7697,19 @@ class Handler(BaseHTTPRequestHandler):
                 rain_only = qs.get("rain", ["0"])[0] in ("1", "true", "yes")
                 cad = 2.0 if qs.get("cadence", ["normal"])[0] == "low" else 1.0
                 smult = _forecast_sampling_mult()
+                if lat and lon:
+                    _rain_home_note(float(lat), float(lon), float(dist) if dist else None, cad)
                 d = get_ea(
                     float(lat) if lat else None,
                     float(lon) if lon else None,
                     float(dist) if dist else None,
                     rain_only=rain_only, cadence_mult=cad, sampling_mult=smult)
-                if isinstance(d, dict):     # current mutes, never cached with the data
+                if isinstance(d, dict):     # current mutes + sampler status, never cached with the data
                     d = dict(d, gauge_mutes=dict(_gauge_mutes),
-                             gauge_mute_partial_mmh=GAUGE_MUTE_PARTIAL_MMH)
+                             gauge_mute_partial_mmh=GAUGE_MUTE_PARTIAL_MMH,
+                             rain_bg={"home": [_rain_home.get("lat"), _rain_home.get("lon")],
+                                      "last_run": _rain_bg.get("last_run"),
+                                      "last_err": _rain_bg.get("last_err")})
                 self._send_json(d)
             except Exception as e:
                 # get_ea is internally resilient (returns partial data with a
@@ -7771,6 +7837,7 @@ def main():
         return
 
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    _rain_sampler_start()              # keep the rain engine running with no page open
     print(f"GB Energy Monitor running: http://localhost:{args.port}")
     if DEBUG:
         print("Debug logging ON (per-fetch diagnostics to stderr).")
