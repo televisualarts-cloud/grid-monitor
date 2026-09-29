@@ -32,6 +32,7 @@ exact tag.
 - **README.** Rain sections describe the radar sea net, late EA gauges and the background engine; self-hosting check uses `127.0.0.1` and explains how to spot another program on the same port.
 - **Weather panel: Low / High today.** The Min/Max temp rows were always "—" on One Call 4.0 (its current endpoint has no min/max; 2.5's temp_min/temp_max were only the spread observed across the area at that moment, not the day's range). They are now **Low today** / **High today** from Open-Meteo's daily forecast for the location (local-first, cached 1 h, reset at midnight, separate from the cloud call), tagged OM with a "model, not a measurement" tooltip; "—" if Open-Meteo is unavailable. Server footer build label corrected (was left at 260928.4). (`grid_server.py` 260929.2, `grid_dashboard.html` 260929.2)
 - **Build tags for the remaining modules.** `gas_probe.py`, `metar.py` and `owm_onecall.py` now carry the standard header build line, so every code file has one. No code changes. (`gas_probe.py`, `metar.py`, `owm_onecall.py` 260929.1)
+- **Rain gauge cards no longer read 0 while EA is late.** A card zeroed its rate once the reading was over 30 min old, but EA readings routinely reach the dashboard 30–60 min late, so in heavy rain the cards showed 0.0 mm/h while the gauge plot and radar showed the rain. Cards now keep the last reported rate, dim it past 30 min (age in the tooltip), and show "—" (not known, never 0) only past 75 min — the rain engine's late limit. The dashboard's rain pop-up uses the same 75 min, so a late batch can't trigger "Rain stopped"; its "… now" wording still needs a reading under 30 min old. (`grid_dashboard.html` 260929.3)
 - **Forecast view.** Late gauges drawn as dashed hollow rings with a note; EA gauges line shows the late count; radar net points labelled; API line counts OM-local separately and lists radar calls; ages over 90 min shown to 0.1 h; RainViewer credit. (`forecast_view.html` 260929.1)
 
 ## 2026-09-28
@@ -265,6 +266,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260928.2** (2026-09-28) — Frequency figures, dial and drift show "—" while the feed is down, with "no data since HH:MM UT"; trace kept; replay resumes on the first fresh reading.
 - **260929.1** (2026-09-29) — RADAR chip on radar-fed sea-net and home-ring cards.
 - **260929.2** (2026-09-29) — Weather panel rows Low today / High today (Open-Meteo daily forecast, OM-tagged) replace the always-blank Min/Max temp.
+- **260929.3** (2026-09-29) — Gauge cards keep late readings (dimmed past 30 min), "—" only past 75 min; rain pop-up uses the same 75 min.
 
 ### `powercuts_page.html`
 
