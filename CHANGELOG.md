@@ -16,6 +16,13 @@ exact tag.
 
 ---
 
+## 2026-09-29
+
+- **ESB feed fix.** ESB's outage list now arrives gzip-compressed even when not requested, so every parse failed and the feed went stale/down. Responses are decompressed when gzipped (header or magic bytes). (`powercuts.py` 260929.1)
+- **Power-cuts plots.** Orange "active incidents" key on the customers-off plot. Hover crosshair and readout on both plots, reporting the sample under the pointer (held value in stepped mode). (`powercuts_page.html` 260929.1–.2)
+- **Power-cuts map.** Borders, dot rims, pulse rings and region labels stay one screen size at any zoom; dots grow only by √zoom. Hover card per incident: operator, type, customers off, start and restore/finish time, status, postcodes, distance from home, new/muted flags, overlap count. Status text ends at a sentence; ESB's stock text ends at "as quickly as possible." (`powercuts_page.html` 260929.2–.4)
+- **By operator and grid events.** "⤢ by operator" opens a pop-up with customers off stacked by operator (band stops where a feed was down; SPEN has no counts). A strip under both plots shows grid events from the alert journal (warning and above, feed-data excluded), merged per kind, critical-only above 40 marks, with titles on hover. (`powercuts_page.html` 260929.5–.6)
+
 ## 2026-09-28
 
 - **NESO notices tiered by type.** An Electricity Margin Notice was raised as a critical alert and spoken as critical, because the classifier matched words anywhere in the text and every margin notice's body mentions "Demand Control". Tier now comes from the notice type (Elexon `warningType`, or the notice's heading for type OTHER), never the body: demand control is critical; high risk of demand reduction (critical from 2 h before its window), Capacity Market Notice and risk of system disturbance are warnings; Electricity Margin Notice, NRAPM, Demand Flexibility Service, emergency instruction to a single unit, interconnector emergency assistance, geomagnetic notices and unrecognised types are notices; IT, SO-SO trades, tests (including demand control by voltage reduction tests) and manifest-error claims raise nothing. Checked against every SYSWARN notice since 2023: none reaches critical. (`grid_server.py` 260928.1)
@@ -262,6 +269,12 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **260918.1** (2026-09-18) — Fixed the NIE Networks click-through map link (old www.nienetworks.co.uk/power-outages/power-outages-map 404s) → https://powercheck.nienetworks.co.uk/
 - **260918.2** (2026-09-18) — Per-provider MUTE — a mute toggle per operator in the By-Operator panel; a muted provider is excluded from the national totals and greyed on the map (labels + dots). Shared (localStorage) with the dashboard badge/alarm, for when a provider warns its data may be unreliable.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md. Home marker and near-you radius ring on the map; "Near you" list at the top of the By-Operator panel.
+- **260929.1** (2026-09-29) — Orange "active incidents" key on the customers-off plot.
+- **260929.2** (2026-09-29) — Hover readouts on both plots and on map incidents; strokes, dots and labels stay screen-sized when zoomed.
+- **260929.3** (2026-09-29) — ESB stock status text shown up to "as quickly as possible."
+- **260929.4** (2026-09-29) — Other operators' status text ends at a sentence.
+- **260929.5** (2026-09-29) — Customers off by operator (stacked bands); grid-event strip under both plots.
+- **260929.6** (2026-09-29) — By-operator view moved from a switch to a pop-up.
 
 ### `powercuts.py`
 
@@ -273,6 +286,7 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **260917.2** (2026-09-17) — A feed's last good reading (incl. an empty 'no outages' one) is now served as 'stale' for up to STALE_GRACE (2h) of silence before it becomes 'down'. Fixes ESB dropping straight to 'down' when it failed after a legitimately empty reading.
 - **260917.3** (2026-09-17) — History log now records national un_new (new UNPLANNED incidents/sample) and un_off (unplanned customers off) so the dashboard's storm/power-cuts alarm can track non-planned cuts and restorations. Older rows lack them; readers tolerate.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md.
+- **260929.1** (2026-09-29) — Decompress gzip responses sent without being requested (ESB list endpoint).
 
 ### `windcuts.py`
 
