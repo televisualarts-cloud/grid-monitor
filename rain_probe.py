@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -112,10 +112,14 @@ ETA_MIN_MIN      = 15
 ETA_MAX_MIN      = 90
 
 GAUGE_CONFIRM_KM = 8.0         # a physical gauge this close counts as "at your location"
-GAUGE_LATE_S     = 45 * 60     # an EA gauge whose newest reading is older than this is LATE:
-                               # EA publishes in batches (often 1-1.5 h behind), so a late gauge
-                               # says nothing about now -- it must not read as "dry", and if ALL
-                               # gauges are late, EA is treated as unavailable (home ring stands in)
+GAUGE_LATE_S     = 75 * 60     # an EA gauge whose newest reading is older than this is LATE: it
+                               # says nothing about now, so it must not read as "dry". Normal EA lag
+                               # (15-min readings, published ~20-30 min late, plus our index refresh
+                               # and cache) reaches ~60 min just before each batch, so 75 min only
+                               # catches genuinely delayed data.
+GAUGE_FRESH_S    = 60 * 60     # hysteresis: once ALL gauges are late (EA treated as unavailable,
+                               # home ring stands in), EA counts again only when the newest reading
+                               # is younger than this -- no flip-flopping around each EA batch
 UPWIND_HALF_ANGLE = 60        # a gauge within +/- this of wind-from is "upwind"
 
 # Steering flow. Showers move with the ~850 hPa wind, not the 10 m wind. One keyless
@@ -379,6 +383,7 @@ class ProbeState:
     net_cache: dict = field(default_factory=dict)      # (bearing,range)->{mm,snow,src}: last net sample, reused within TTL
     net_cache_ts: float = 0.0                          # when the net was last actually sampled (Open-Meteo)
     net_src: str = ""                                   # 'RV' radar or 'OM' model: who served the last net sample
+    ea_all_late: bool = False                          # EA gauges all late (with GAUGE_FRESH_S hysteresis)
     net_dither: dict = field(default_factory=dict)     # az->stable jitter (regenerated per dither epoch)
     net_dither_ts: float = 0.0                         # when the dither pattern was last regenerated
     net_feed: str = "ok"                               # offshore feed state: ok | degraded | exhausted | down
@@ -1672,10 +1677,9 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
     sampler (track_sample_fn). Reuses cached readings within RING_SAMPLE_TTL_S. When not
     active, clears the ring and returns []."""
     if not active:
-        state.ring_cache = []
+        # keep ring_cache: if the ring is needed again within its TTL it reuses the readings
         state.ring_feed = "off"
         state.ring_feed_reason = None
-        state.ring_src = None
         return []
     sampler = net_sample_fn if om_ok else track_sample_fn
     if sampler is None:
@@ -1688,6 +1692,10 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
     if not state.ring_cache_ts:
         state.ring_cache_ts = _ring_ts_load()
     due = (now - (state.ring_cache_ts or 0)) >= RING_SAMPLE_TTL_S * max(1.0, ttl_mult)
+    # Nothing usable cached (first activation, or after a restart): sample now when the
+    # sampler is the FREE one (radar / Open-Meteo). Only the budgeted OC4 path waits.
+    if not due and om_ok and not any(cp.get("mm") is not None for cp in (state.ring_cache or [])):
+        due = True
     if due:
         rates = sampler(pts)
         covered = 0
@@ -1698,7 +1706,7 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
         state.ring_feed = "active" if covered else "exhausted"
         state.ring_feed_reason = None if covered else ("Open-Meteo unavailable" if om_ok else "OWM budget/limit")
         _rv_used = any(isinstance(rt, dict) and rt.get("src") == "RV" for rt in rates)
-        state.ring_src = (("RV" if _rv_used else "OM") if om_ok else "OC4") if covered else None
+        state.ring_src = ("RV" if _rv_used else ("OM" if om_ok else "OC4")) if covered else None
         state.ring_cache = [{"bearing": p["bearing"], "range_km": p["range_km"],
                              "mm": p.get("mm"), "snow": p.get("snow"), "src": p.get("src")}
                             for p in pts]
@@ -1710,6 +1718,9 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
                 if cp["bearing"] == p["bearing"] and cp["range_km"] == p["range_km"]:
                     p["mm"] = cp["mm"]; p["snow"] = cp["snow"]; p["src"] = cp["src"]
                     break
+        if any(p.get("mm") is not None for p in pts):          # re-activated on cached readings
+            state.ring_feed = "active"; state.ring_feed_reason = None
+            state.ring_src = next((p.get("src") for p in pts if p.get("src")), state.ring_src)
     # Don't render blank cards: if nothing was actually read (budget spent), show
     # nothing — honestly nothing to see — rather than 8 empty gauges.
     if not any(p.get("mm") is not None for p in pts):
@@ -1717,13 +1728,13 @@ def home_ring_backup(state, home, now, net_sample_fn, track_sample_fn, active, o
     vg = []
     for p in pts:
         src = p.get("src") or state.ring_src or "OC4"
-        srcname = "Open-Meteo" if src == "OM" else "OpenWeather"
+        srcname = {"OM": "Open-Meteo", "RV": "radar"}.get(src, "OpenWeather")
         vg.append({
             "modelled": src not in ("RV", "OC4"), "source": src, "kind": "ring",
             "name": f"{compass(p['bearing'])} · {srcname} backup",
             "lat": p["lat"], "lon": p["lon"], "bearing": p["bearing"],
             "dist_km": p["range_km"], "mm": p.get("mm"), "snow": bool(p.get("snow")),
-            "confirmed": (src == "OC4" and p.get("mm") is not None),
+            "confirmed": (src in ("OC4", "RV") and p.get("mm") is not None),
             "model_ts": now,
         })
     return vg
@@ -3258,12 +3269,27 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     #    DOWN the HOME RING stands in — sampled from the FREE Open-Meteo net if OM is up
     #    (one batched call, no budget cost), else the OC4 backup. So EA-down triggers the
     #    backup regardless of OM's state.
+    _g_ages = [now - t for t in (_iso_ts(g.get("dt")) for g in (gauges or [])) if t is not None]
+    _g_newest = min(_g_ages) if _g_ages else None
+    if not gauges:
+        state.ea_all_late = False
+    elif state.ea_all_late:
+        if _g_newest is not None and _g_newest < GAUGE_FRESH_S:
+            state.ea_all_late = False
+    elif _g_newest is not None and _g_newest > GAUGE_LATE_S:
+        state.ea_all_late = True
+
     def _g_late(g):
+        if state.ea_all_late:
+            return True
         t = _iso_ts(g.get("dt"))
         return t is not None and now - t > GAUGE_LATE_S
     _n_late = sum(1 for g in (gauges or []) if _g_late(g))
-    _ea_gauges = any(not _g_late(g) for g in (gauges or []))   # present AND current
+    _ea_gauges = bool(gauges) and not state.ea_all_late        # present AND current
     _om_ok = not om_in_backoff(now)
+    # a FREE sampler is available if Open-Meteo is up, or radar is serving (radar doesn't
+    # depend on Open-Meteo's backoff)
+    _free_ok = _om_ok or (net_sample_fn is fetch_net_precip and RADAR_ENABLED and not _rv.get("last_err"))
     sea, vgauges = arc_update(state, home, now, net_sample_fn=net_sample_fn,
                               track_sample_fn=track_sample_fn, landsea_fn=landsea_fn,
                               wind_kmh=wind_kmh, sample_fn=sample_fn, net_ttl_mult=sampling_mult,
@@ -3272,7 +3298,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     _ring_active = not _ea_gauges                       # ring replaces the land gauges whenever they're gone
     _track_for_ring = track_sample_fn if track_sample_fn is not None else net_sample_fn
     ring_vgauges = home_ring_backup(state, home, now, net_sample_fn, _track_for_ring,
-                                    active=_ring_active, om_ok=_om_ok, ttl_mult=sampling_mult)
+                                    active=_ring_active, om_ok=_free_ok, ttl_mult=sampling_mult)
     if _ring_active:
         # Keep the sea net cards that carry data (OM live, or OC4-backed) and any live
         # mobile, then add the home ring on top.
@@ -3348,16 +3374,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # LOCAL (land) coverage status: real gauges, or which backup is standing in for them.
     situational["ea_gauges"] = ("present" if _ea_gauges else
                                 ("late" if gauges else "down"))       # late = present but all behind
-    _ages = [now - t for t in (_iso_ts(g.get("dt")) for g in (gauges or [])) if t is not None]
     situational["ea_late"] = {"n_late": _n_late, "n": len(gauges or []),
-                              "newest_age_s": (int(min(_ages)) if _ages else None),
+                              "newest_age_s": (int(_g_newest) if _g_newest is not None else None),
                               "late_after_s": GAUGE_LATE_S}
     if _ea_gauges:
         situational["backup"] = None                              # real gauges; no backup needed
     elif state.ring_feed == "active":
         situational["backup"] = {"RV": "radar home-ring", "OM": "Open-Meteo home-ring"}.get(state.ring_src, "OpenWeather home-ring")
-    else:
+    elif state.ring_feed == "exhausted" and not _free_ok:
         situational["backup"] = "unavailable (OWM budget spent)"
+    else:
+        situational["backup"] = "unavailable" + (f" ({state.ring_feed_reason})" if state.ring_feed_reason else "")
     # active offshore mobile trackers (spawn only on sea detections) — so they appear
     # on the plan view the moment they are deployed.
     situational["mobiles"] = [{"b": round(m["bearing"]), "d": m["dist_km"], "mm": m.get("mm"),
