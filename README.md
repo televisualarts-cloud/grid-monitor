@@ -236,6 +236,29 @@ is kept visible for up to **2 hours** after it stops responding, shown as *stale
 before it is marked *down* and dropped from the national totals. Each region's map
 label is coloured to match: **green** live, **amber** stale, **red** down.
 
+**Map.** Scroll to zoom and drag to pan; double-click resets. Borders, dots and
+region labels stay the same size on screen as you zoom, so zooming in separates
+nearby incidents rather than enlarging them. Hover over an incident for its details:
+operator and region, planned or unplanned, cause, customers off (or postcode sectors
+for SPEN), start and estimated restore time (or finish time for planned work), the
+operator's status text, postcodes, distance and direction from your location, and
+whether it is new or its operator is muted. Overlapping incidents are counted
+("+2 more here — zoom in to separate"). Times are shown as the operator publishes them.
+Clicking a region still opens that operator's own map.
+
+**History plots.** The customers-off and rate plots cover the chosen window (6h, 24h,
+7d, 30d). Hover over either for a crosshair and the exact sample at that time — with
+**smoothed** on, the customers-off readout is the value in force at that moment and the
+rate is the 1-hour rolling figure. **⤢ by operator** opens a pop-up with customers off
+stacked by operator (the top edge is the national total); a band stops where that
+operator's feed was down, and SPEN has no band because it publishes no customer counts.
+A thin strip under each plot marks **grid events** from the dashboard's alert log —
+red for critical or severe, amber for warnings (frequency, system risk, margin, N-1,
+NESO System Warnings and so on; feed-data notices are left out) — so you can see
+whether a rise in cuts lines up with something on the grid. Hover over a mark for its
+title. If a window holds more than 40 events only the critical ones are shown, and the
+plot says so. Flood warnings are not included, as they are not kept historically.
+
 **API keys.** ESB works out of the box (a shared default key is built in); NIE
 Networks needs your own key, entered via the ⚙ on the page. Keys are stored
 server-side in `powercut_keys.json` and are sent only to the operator they belong to.

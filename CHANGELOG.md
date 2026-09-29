@@ -22,6 +22,7 @@ exact tag.
 - **Power-cuts plots.** Orange "active incidents" key on the customers-off plot. Hover crosshair and readout on both plots, reporting the sample under the pointer (held value in stepped mode). (`powercuts_page.html` 260929.1–.2)
 - **Power-cuts map.** Borders, dot rims, pulse rings and region labels stay one screen size at any zoom; dots grow only by √zoom. Hover card per incident: operator, type, customers off, start and restore/finish time, status, postcodes, distance from home, new/muted flags, overlap count. Status text ends at a sentence; ESB's stock text ends at "as quickly as possible." (`powercuts_page.html` 260929.2–.4)
 - **By operator and grid events.** "⤢ by operator" opens a pop-up with customers off stacked by operator (band stops where a feed was down; SPEN has no counts). A strip under both plots shows grid events from the alert journal (warning and above, feed-data excluded), merged per kind, critical-only above 40 marks, with titles on hover. (`powercuts_page.html` 260929.5–.6)
+- **README.** Power-cuts section gains *Map* (zoom, hover card) and *History plots* (hover readout, by-operator pop-up, grid-event strip) paragraphs.
 
 ## 2026-09-28
 
