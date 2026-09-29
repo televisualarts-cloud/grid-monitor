@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260929.3  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260929.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260929.3 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -6087,6 +6087,13 @@ function eaRainBand(mm){
 // as dry; "full" = gauge ignored by the alerts.
 var gaugeMutes={}, gaugeMutePartialMmh=0.3;
 const GAUGE_GONE_MS=3*3600*1000;       // no report for this long: dim the gauge name
+// EA readings arrive late by design: 15-min readings, published ~15-25 min after their
+// time, then our index refresh + cache -- routinely 30-60 min old. So a reading is
+// shown with its value (dimmed once it is over GAUGE_LATE_MS old, age in the tooltip)
+// and only becomes "not known" (shown as —, never as 0 = dry) past GAUGE_UNKNOWN_MS,
+// the same 75 min the rain engine uses for a LATE gauge.
+const GAUGE_LATE_MS=30*60000;
+const GAUGE_UNKNOWN_MS=75*60000;
 function gaugeMutesAdopt(d){
   if(d && d.gauge_mutes && typeof d.gauge_mutes==="object"){
     gaugeMutes=d.gauge_mutes;
@@ -6225,20 +6232,23 @@ function eaRainCard(r, near){
   else if(r.dist_bucket!=null) dist=(r.dist_bucket===0?'~here':'~'+r.dist_bucket+' km');
   const perMin=(r.period_s?Math.round(r.period_s/60):15);
   const rawTip=(r.mm!=null?r.mm.toFixed(1)+' mm in '+perMin+' min':'');
-  // freshness: a reading older than ~2 publications (min 30 min) has TIMED OUT —
-  // we no longer know the current rate, so the card shows 0 mm/h and greys, rather
-  // than presenting a hours-old value as if it were live. The tooltip keeps the
-  // true last-reported time and value. No visible age chip (an "m" reads as miles).
+  // freshness (see GAUGE_LATE_MS / GAUGE_UNKNOWN_MS): a late reading keeps its value
+  // but the card dims; past GAUGE_UNKNOWN_MS the rate is NOT KNOWN and shows "—" --
+  // never 0, which would claim "dry". The tooltip keeps the true last-reported time
+  // and value. No visible age chip (an "m" reads as miles).
   const ageMs=(r.dt?Date.now()-Date.parse(r.dt):null);
-  const timeoutMs=Math.max(30*60000, 2*((r.period_s||900)*1000));
-  const stale=(ageMs!=null && ageMs>timeoutMs);
+  const late=(ageMs!=null && ageMs>Math.max(GAUGE_LATE_MS, 2*((r.period_s||900)*1000)));
+  const unknown=(ageMs!=null && ageMs>GAUGE_UNKNOWN_MS);
+  const stale=late||unknown;
   let rate=(r.mm_h!=null?r.mm_h:r.mm);
-  if(stale) rate=0;                     // timed out -> no current rain reported
+  if(unknown) rate=null;                // too old to say anything about now -> "—"
   // border/tint hold the highest band of the last 2h (server-tracked), so a gauge
   // that has stopped still shows recent activity; the value stays the current rate.
-  const peak=(r.mm_h_max2h!=null?Math.max(r.mm_h_max2h,rate):rate);
+  const peak=(r.mm_h_max2h!=null?Math.max(r.mm_h_max2h,rate||0):(rate||0));
   const cardTitle=((r.dt?'last reported '+hhmm(r.dt)+' ('+agePlain(r.dt)+')':'no reading time')
-                   +(rawTip?' · '+rawTip:'')).replace(/"/g,'&quot;');
+                   +(rawTip?' · '+rawTip:'')
+                   +(unknown?' · no current reading (over 75 min old)':(late?' · late — EA publishes readings in delayed batches':''))
+                  ).replace(/"/g,'&quot;');
   // no report for over 3 h (or no reading time at all): dim the name — still shown
   const gone=(ageMs==null || ageMs>GAUGE_GONE_MS);
   const mute=gaugeMuteOf(r.ref);
@@ -8202,13 +8212,13 @@ const Alarm = (function(){
   function evaluateRainfall(rainfall){
     if(!Array.isArray(rainfall)){ return; }
     rainfall=gaugeAlertRainfall(rainfall);   // per-gauge alert mutes (display unaffected)
-    // A gauge counts as "raining now" only while its reading is fresh by the SAME
-    // timeout the cards use (~2 publications, min 30 min) — NOT the 2 h river window.
+    // A gauge counts as raining only while its reading is still usable by the SAME
+    // limit the cards use (GAUGE_UNKNOWN_MS, 75 min) — NOT the 2 h river window.
     // Otherwise the alarm fires "light rain nearby" on an hours-old reading that the
     // cards have already timed out to 0, so you hear rain the gauges no longer show.
     const now=Date.now();
     const fresh=r=>{ if(!r.dt) return false; const t=Date.parse(r.dt);
-                     return !isNaN(t) && (now-t) <= Math.max(30*60000, 2*((r.period_s||900)*1000)); };
+                     return !isNaN(t) && (now-t) <= Math.max(GAUGE_UNKNOWN_MS, 2*((r.period_s||900)*1000)); };
     const wet=rainfall.map(r=>({...r, band:_rainBandName(r.mm_h!=null?r.mm_h:r.mm)}))
                       .filter(r=>r.band && fresh(r))
                       .sort((a,b)=>(a.dist_km==null?1e9:a.dist_km)-(b.dist_km==null?1e9:b.dist_km));
