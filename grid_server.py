@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260928.4"
+SERVER_BUILD = "260929.2"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -5841,6 +5841,45 @@ def _openmeteo_cloud(lat, lon, timeout=12):
         return None
 
 
+_om_range_cache = {}          # (round(lat,2), round(lon,2), local date) -> {"data":..., "ts":...}
+OM_RANGE_TTL = 3600           # the daily high/low only moves with new model runs (~3-hourly)
+
+def _openmeteo_today_range(lat, lon, timeout=12):
+    """Today's forecast low/high (deg C) for the location from Open-Meteo (local-first,
+    keyless): daily temperature_2m_min/max over the location's own local day. A MODEL
+    forecast for the whole day, not a measurement -- labelled as such on the panel.
+    (One Call 4.0's current endpoint has no min/max; 2.5's temp_min/temp_max were only
+    the spread observed across the area at that moment, not the day's low/high.)
+    Separate from the cloud call so a failure here can only blank these two values.
+    Returns {day_min, day_max, date, source} or None."""
+    if _rain_probe is None or not hasattr(_rain_probe, "om_get_json"):
+        return None
+    key = (round(lat, 2), round(lon, 2), time.strftime("%Y-%m-%d"))
+    c = _om_range_cache.get(key)
+    if c and time.time() - c["ts"] < OM_RANGE_TTL:
+        return c["data"]
+    try:
+        d, om_host = _rain_probe.om_get_json(
+            {"latitude": lat, "longitude": lon,
+             "daily": "temperature_2m_max,temperature_2m_min",
+             "timezone": "auto", "forecast_days": 1}, timeout=timeout)
+        _meter("OM", "temp_range", 1)
+        dl = (d or {}).get("daily") or {}
+        tmax = (dl.get("temperature_2m_max") or [None])[0]
+        tmin = (dl.get("temperature_2m_min") or [None])[0]
+        if tmax is None and tmin is None:
+            raise ValueError("no daily temperature values")
+        data = {"day_min": tmin, "day_max": tmax, "date": (dl.get("time") or [None])[0],
+                "source": "Open-Meteo (local)" if om_host == "local" else "Open-Meteo"}
+        for k in [k for k in _om_range_cache if k[:2] == key[:2] and k != key]:
+            _om_range_cache.pop(k, None)          # drop earlier days for this location
+        _om_range_cache[key] = {"data": data, "ts": time.time()}
+        return data
+    except Exception as e:
+        dbg("open-meteo temp range fetch failed:", _ea_errstr(e))
+        return None
+
+
 # ---- background rain engine --------------------------------------------------
 # The rain engine used to run only when a page asked for EA data, so with the EA page
 # and Forecast view closed it stopped. This sampler keeps it running at the location
@@ -5985,6 +6024,11 @@ def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
             cond["cloud_source"] = om.get("source") or "Open-Meteo"
         else:
             cond["cloud_source"] = "OpenWeather (Open-Meteo unavailable)"
+        # today's forecast low/high (Open-Meteo model; neither OWM tier supplies it)
+        rng = _openmeteo_today_range(lat, lon)
+        cond["day_min"] = rng.get("day_min") if rng else None
+        cond["day_max"] = rng.get("day_max") if rng else None
+        cond["day_range_source"] = rng.get("source") if rng else None
         # 3-hour pressure tendency (persisted per location so it survives refresh)
         try:
             cond["pressure_tendency"] = _log_pressure(lat, lon, m.get("pressure"))

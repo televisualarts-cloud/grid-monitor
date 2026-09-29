@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260929.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260929.2 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -6492,6 +6492,13 @@ function eaRenderWindDials(){
       ' <span style="color:'+tb.colour+';font-weight:400;font-size:11px">'+tb.word+'</span>';
   const row = (label, val) => '<div class="wd-drow"><span class="wd-dl">'+label+'</span>'+
                               '<span class="wd-dv">'+val+'</span></div>';
+  // today's low/high: an Open-Meteo MODEL forecast for the whole day, tagged so it
+  // isn't read as a measurement (neither OpenWeather tier supplies it)
+  const rangeSrc = c.day_range_source || '';
+  const rangeTag = rangeSrc
+    ? ' <span class="wd-du" style="font-size:9px;color:var(--ink-faint)" title="Today\'s forecast low/high for your location — '+
+      rangeSrc.replace(/"/g,'&quot;')+' model, not a measurement">OM</span>'
+    : '';
   // block 3: temperature, humidity, THI & pressure. "Dew point" on one line, cyan.
   const dewVal = c.dew_point==null ? '—' : cVal(Math.round(c.dew_point)+'°', '#5bd6e0');
   const block3 =
@@ -6501,8 +6508,8 @@ function eaRenderWindDials(){
       row('Humidity', c.humidity==null?'—':cVal(Math.round(c.humidity), humColour(c.humidity), '%'))+
       row('THI', thiRow)+
       row('Feels like', tVal(c.feels_like))+
-      row('Min temp', tVal(c.temp_min))+
-      row('Max temp', tVal(c.temp_max))+
+      row('Low today'+rangeTag, tVal(c.day_min))+
+      row('High today'+rangeTag, tVal(c.day_max))+
     '</div>';
   // block 4: sky, precip & sun. Rainfall value coloured like the rain gauge
   // bands (dry grey -> light blue -> mid blue -> heavy indigo/violet).
