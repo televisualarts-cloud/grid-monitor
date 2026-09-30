@@ -53,6 +53,15 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
 1. Run `grid_server.py`.
 2. Open a browser and go to **http://localhost:8412**.
 
+If another program is already using port 8412, the server starts on the next free port
+(8413–8421) and says so in its console window, e.g. *"GB Energy Monitor is on port 8413 —
+open http://localhost:8413"*. It remembers that port in `server_port.json` and tries it first
+next time, so your bookmark only needs changing once; delete the file to go back to trying
+8412 first. The port in use is shown in the dashboard footer. If GB Energy Monitor is already
+running, a second launch just tells you where and exits, so you never get two copies. To pick
+a port yourself run `grid_server.py --port N`; if N is taken you are shown the free ports to
+choose from.
+
 The page refreshes itself roughly every 60 seconds, so you can leave it open.
 
 ### Updating an existing install
@@ -319,7 +328,7 @@ Open with the **ea** button.
 - **Reading age.** River-level readings carry a coloured "…ago" — green up to an hour, amber to four hours, red beyond — so a stale gauge is obvious at a glance.
 - **Gauge radar.** The **◎ gauge radar** button at the top right of the plot area swaps the plot for a live radar-style plan of your area from the rain engine: EA gauges coloured by what they are doing (dry, steady, showery, wet; gauges whose data is running late are dashed rings), sea points (from radar, or modelled when radar is unavailable), tracked rain cells with their direction, speed and expected arrival, and your home at the centre. Hover over any marker for its details — a gauge shows its place, grid reference and EA reference, and how far away it is and in which direction from home. Click the button again (or pick a gauge) to go back to the plot.
 - **Under the hood.** The **⚙ under the hood** button in the top bar opens the full **Forecast view** in a new browser tab for your location and radius (see *Forecast view* below).
-- **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; today's low and high are Open-Meteo's forecast for the whole day (tagged "OM" — a model forecast, not a measurement); cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current.
+- **Local wind & weather** (below the gauges) shows wind direction and speed, temperature, pressure and sky conditions for your location. Wind, temperature and pressure come from OpenWeather; today's low and high are Open-Meteo's forecast for the whole day (tagged "OM" — a model forecast, not a measurement); cloud cover and the sky description come from Open-Meteo (more reliable for this than OpenWeather's cloud field), with OpenWeather as a fallback if Open-Meteo is unavailable. A small "OM"/"OWM" tag by the Cloud % row shows which source supplied it. If a fresh reading isn't available, the panel shows a "cached" marker with the reading's age rather than presenting old data as current. The **850 hPa wind** (about 1.5 km up — the flow showers actually move with, from the rain engine) is shown alongside: a green dotted arrow on the compass and a green dash on the speed dial, with its direction and speed in green below. Hover for how far it has veered or backed from the surface wind and how old the reading is. It appears only when a real 850 hPa reading is available, faded and marked *(old)* when it is stale.
 
 ### Rainfall nowcast (optional — One Call 4.0)
 
@@ -477,6 +486,8 @@ This is the most common first-run issue and almost always means one of two thing
 2. **You opened the HTML file directly.** Double-clicking `grid_dashboard.html` opens it as a `file://…` page, and the data requests won't reach the server. Always open the dashboard at **http://localhost:8412** in your browser instead.
 
 The page retries every 60 seconds, so once the server is running and you're on the right address, it recovers on its own — no need to reload.
+
+If the console says **GB Energy Monitor is on port 84xx**, another program had port 8412: use the address it shows (see *Running it*). On Windows a port can also be *blocked* rather than in use — Hyper-V, WSL and Docker reserve ranges of ports — and the console says which.
 
 **Nothing happens when I run `grid_server.py`, or I get an error in the console.**
 - Make sure **Python 3** is installed and on your system path. Test with `python --version` (or `python3 --version`) in a terminal — it should report Python 3.10 or newer (the project is developed against 3.13).
