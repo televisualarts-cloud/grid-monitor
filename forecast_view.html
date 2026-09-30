@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -255,7 +255,7 @@ function draw(){
     g.lineTo(x+Math.cos(ang-2.5)*s, y+Math.sin(ang-2.5)*s);
     g.closePath(); wet?g.fill():g.stroke();
     g.fillStyle=cc;g.font='12px monospace';g.textAlign='center';g.fillText('M'+(m.confirmed?'✓':''),x,y-11);
-    HIT.push({x,y,r:12,html:`<b>mobile tracker</b> ${m.confirmed?'· OC4 confirmed':'· model'}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+Math.round(m.speed_mph)+' mph inbound'):''}`}); });
+    HIT.push({x,y,r:12,html:`<b>mobile tracker</b> · ${m.src==='RV'?'radar (RainViewer)':(m.src==='OC4'?'OpenWeather reading':'Open-Meteo model')}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+Math.round(m.speed_mph)+' mph inbound'):''}`}); });
   drawHome(cx,cy,R);
 }
 function drawHome(cx,cy){

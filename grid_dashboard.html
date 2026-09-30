@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260929.3  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1324,7 +1324,7 @@
                 <span class="fr-k">inertia</span><span class="fr-v" id="riskInertia">—</span></div>
               <div title="Notional post-fault RoCoF — the initial rate of change of frequency (Hz/s) if the largest credible infeed (~1320 MW) tripped right now, given current inertia. Higher = the grid would fall faster.">
                 <span class="fr-k">if largest trips</span><span class="fr-v" id="riskNpf">—</span></div>
-              <div title="Composite Grid Risk Index — frequency deviation from 50 Hz, amplified by low system inertia (vulnerability) and by the rate of change of frequency. A 0.1 Hz wobble reads higher on a fragile grid than a robust one. Green under 0.2, amber 0.2–0.5, red 0.5 and above.">
+              <div title="Composite Grid Risk Index — frequency deviation from 50 Hz, amplified only when system inertia is reduced (notional post-fault RoCoF 0.25 Hz/s or more) and by the rate of change of frequency. On a normal grid it equals the deviation, so amber matches the ±0.2 Hz operational band; on a weak grid a smaller wobble reads higher. Green under 0.2, amber 0.2–0.5, red 0.5 and above.">
                 <span class="fr-k">CGRI</span><span class="fr-v" id="riskCgri">—</span></div>
             </div>
             <div class="fr-genloss" id="riskGenLoss" style="display:none"></div>
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260929.3 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260930.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -7496,7 +7496,7 @@ const Alarm = (function(){
   // ---- integrated frequency + system-risk alarm (escalating) --------------
   // peakHz = the burst's worst point on the alarmed side (what is judged + spoken);
   // nowHz = its newest point; lastPeak = the previous evaluation's peak (worsening fallback).
-  const SR={tier:0, level:"green", since:0, lastVoice:0, powerCutSaid:false,
+  const SR={tier:0, level:"green", inertiaBand:"unknown", since:0, lastVoice:0, powerCutSaid:false,
             running:false, lastHz:null, peakHz:null, nowHz:null, lastPeak:null, burstKey:null, peakSide:null,
             worsening:false, high:false, freqTier:0, lastRiskSev:0};
   const SR_TIER_HZ=[49.8,49.7,49.5];        // under-frequency tier floors
@@ -7607,8 +7607,11 @@ const Alarm = (function(){
     if(nw!=null && Math.abs(pk-nw)>=0.005)
       msg+=", "+(SR.high?"peaked at ":"dipped to ")+pk.toFixed(2)+" hertz, now "+nw.toFixed(2)+".";
     else msg+=", "+pk.toFixed(2)+" hertz.";
-    if(SR.level==="red") msg+=" System inertia is low, limited reserve.";
-    else if(SR.level==="amber") msg+=" System inertia reduced.";
+    // Inertia is mentioned only when the INERTIA estimate itself is reduced (server
+    // inertia_band) -- not whenever the composite risk level is raised, which a plain
+    // frequency excursion or an infeed loss can do on a healthy grid.
+    if(SR.inertiaBand==="red") msg+=" System inertia is low.";
+    else if(SR.inertiaBand==="amber") msg+=" System inertia reduced.";
     if(SR.worsening && SR.tier>=2) msg+=(SR.high?" Still rising.":" Still falling.");
     say(msg);
   }
@@ -7643,7 +7646,7 @@ const Alarm = (function(){
   }
 
   function evaluateSystemRisk(freq, risk){
-    if(risk) SR.level=risk.level||"green";
+    if(risk){ SR.level=risk.level||"green"; SR.inertiaBand=risk.inertia_band||"unknown"; }
     const hz=(freq && freq.hz!=null)?freq.hz:null;
     const stale=!freq || freq.stale || hz==null;
     // BURST EXTREMES. The feed publishes ~8 x 15s points at once; hz is only the newest.

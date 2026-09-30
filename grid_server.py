@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260929.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260930.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -167,7 +167,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260929.2"
+SERVER_BUILD = "260930.2"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -405,6 +405,13 @@ ROCOF_RED      = 0.5
 ROCOF_VULN_REF = 0.5    # notional-RoCoF scale for the vulnerability factor V
 ROCOF_OBS_REF  = 0.1    # observed 15s-slope scale for the CGRI RoCoF multiplier
 CGRI_ALPHA  = 1.0       # weight of inertia vulnerability in the composite
+# Inertia amplifies CGRI only when inertia is REDUCED: the multiplier is 1 until the
+# notional post-fault RoCoF reaches this (the inertia band's own amber cut), then grows
+# in proportion. On a normal grid CGRI therefore equals the frequency deviation, so its
+# amber cut (0.2) lines up with the +/-0.2 Hz operational band. (Previously the factor
+# was 1 + npf/0.5 at ALL times -- ~1.4x on a typical day -- so CGRI went amber at
+# ~0.14 Hz: 386 amber episodes in Sep 2026, only 14 with frequency outside the band.)
+CGRI_NPF_REF = ROCOF_AMBER
 CGRI_BETA   = 1.0       # weight of observed RoCoF in the composite
 CGRI_AMBER  = 0.2       # composite band cuts (Hz-equivalent)
 CGRI_RED    = 0.5
@@ -581,9 +588,17 @@ def compute_system_risk(gen, freq, gen_loss=None):
     dev = round(abs(hz_judge - NOMINAL_HZ), 3) if hz_judge is not None else None
     cgri = None
     if dev is not None and V is not None:
-        m_inertia = 1.0 + CGRI_ALPHA * max(0.0, V)
+        m_inertia = 1.0 + CGRI_ALPHA * max(0.0, npf / CGRI_NPF_REF - 1.0)
         m_rocof = 1.0 + CGRI_BETA * (abs(rocof) / ROCOF_OBS_REF if rocof else 0.0)
         cgri = round(dev * m_inertia * m_rocof, 3)
+    drivers = []
+    if hz_min is not None and hz_max is not None:
+        if hz_min <= FREQ_STAT_LO or hz_max >= FREQ_STAT_HI: drivers.append("statutory")
+        elif hz_min <= FREQ_OP_LO or hz_max >= FREQ_OP_HI:   drivers.append("band")
+    if cgri is not None and cgri >= CGRI_AMBER:
+        drivers.append("cgri")
+    if gen_loss and (gen_loss.get("flagged") or gen_loss.get("severe")):
+        drivers.append("gen_loss")
     if hz is None:
         # No current frequency: no level either (the badge shows '—'); the
         # hysteresis state is left untouched so it resumes cleanly on recovery.
@@ -598,6 +613,8 @@ def compute_system_risk(gen, freq, gen_loss=None):
         "inertia_band": inertia_band, "notional_rocof": npf,
         "largest_loss_mw": LARGEST_INFEED_LOSS_MW, "rocof_obs": rocof,
         "vulnerability": V, "hz": hz, "dev": dev, "cgri": cgri,
+        "m_inertia": (round(m_inertia, 2) if cgri is not None else None),
+        "drivers": drivers,             # what raised the level: statutory/band/cgri/gen_loss
         # hz = newest sample; hz_judge = burst point furthest from nominal (what dev,
         # CGRI and level are judged on); hz_min/hz_max = the burst's extremes.
         "hz_judge": hz_judge, "hz_min": hz_min, "hz_max": hz_max,
@@ -606,7 +623,7 @@ def compute_system_risk(gen, freq, gen_loss=None):
         "params": {"op_lo": FREQ_OP_LO, "op_hi": FREQ_OP_HI, "stat_lo": FREQ_STAT_LO,
                    "stat_hi": FREQ_STAT_HI, "lfdd_hz": LFDD_HZ, "rocof_vuln_ref": ROCOF_VULN_REF,
                    "rocof_amber": ROCOF_AMBER, "rocof_red": ROCOF_RED,
-                   "cgri_amber": CGRI_AMBER, "cgri_red": CGRI_RED},
+                   "cgri_amber": CGRI_AMBER, "cgri_red": CGRI_RED, "cgri_npf_ref": CGRI_NPF_REF},
     }
 
 
@@ -5465,12 +5482,18 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
             # MEASURED radar (RainViewer, 1-2 tile fetches) first, falling back to the
             # free batched Open-Meteo model when radar is unavailable.
             _net_sample = getattr(_rain_probe, "fetch_net_precip", _rain_probe.fetch_om_precip)
-            # TRACK (mobile cards): OC4 radar-fed quality read, one OWM call per
-            # tracked point, budget-guarded; falls back to Open-Meteo when the day's
-            # budget can't cover the batch. Only ever called for active detections.
+            # TRACK (mobile cards): MEASURED radar first (free, and actually radar); then
+            # OpenWeather OC4 (OpenWeather's own estimate; one paid call per point,
+            # budget-guarded) only when radar is unavailable; then the free Open-Meteo
+            # model. Only ever called for active detections.
             def _track_sample(pts):
                 if not pts:
                     return []
+                _rv_fn = getattr(_rain_probe, "fetch_radar_precip", None)
+                if _rv_fn is not None:
+                    _rv = _rv_fn(pts)                   # None on any failure -> fall through
+                    if _rv is not None:
+                        return _rv
                 if (_owm_onecall is not None and _w.get("api") == "OC4" and _okey
                         and _wind_budget_remaining() >= len(pts)):
                     rates = _owm_onecall.fetch_sea_precip(pts, _okey)
@@ -6268,6 +6291,42 @@ def _freq_dynamics(freq):
     return out
 
 
+def _risk_alert_text(sr, hz_txt, dev, lvl):
+    """System-risk alert text that states what ACTUALLY raised the level (sr['drivers']):
+    frequency outside the operational band, the composite index on a reduced-inertia grid
+    (or with frequency moving fast), and/or a sudden infeed loss. Never blames inertia
+    unless the inertia estimate itself is reduced."""
+    drv = sr.get("drivers") or []
+    p = sr.get("params") or {}
+    cgri, npf, rocof = sr.get("cgri"), sr.get("notional_rocof"), sr.get("rocof_obs")
+    inertia_low = sr.get("inertia_band") in ("amber", "red")
+    why = []
+    if "statutory" in drv:
+        why.append(f"beyond the statutory {p.get('stat_lo', 49.5):.1f}–{p.get('stat_hi', 50.5):.1f} Hz limit")
+    elif "band" in drv:
+        why.append(f"outside the normal operational band "
+                   f"({p.get('op_lo', 49.8):.1f}–{p.get('op_hi', 50.2):.1f} Hz)")
+    # CGRI is a reason only when it says something the deviation alone doesn't: reduced
+    # inertia, or (inside the band) a fast-moving frequency. On a normal grid CGRI equals
+    # the deviation, so outside the band it just mirrors the band reason.
+    cgri_adds = ("cgri" in drv and "statutory" not in drv
+                 and (inertia_low or (dev or 0) < p.get("cgri_amber", 0.2)))
+    if cgri_adds:
+        if inertia_low:
+            why.append(f"system inertia is {'low' if sr.get('inertia_band') == 'red' else 'reduced'} "
+                       f"({sr.get('inertia_gws')} GVA·s, notional post-fault RoCoF {npf} Hz/s), "
+                       f"so a trip now would move frequency faster (CGRI {cgri})")
+        elif rocof:
+            why.append(f"frequency is moving quickly (~{rocof * 60:+.2f} Hz/min) (CGRI {cgri})")
+        else:
+            why.append(f"composite risk index raised (CGRI {cgri})")
+    if "gen_loss" in drv:
+        why.append("a sudden infeed loss was detected (see the infeed-loss alert)")
+    if not why:                       # level held by hysteresis after the cause eased
+        why.append(f"easing (CGRI {cgri})" if cgri is not None else "easing")
+    return f"Grid frequency {hz_txt}, {dev:.3f} Hz off nominal — " + "; ".join(why) + "."
+
+
 def build_alerts(snap):
     alerts = []
 
@@ -6304,7 +6363,7 @@ def build_alerts(snap):
             hz_txt = f"{verb} {hz:.3f} Hz in the latest 2-min data, now {hz_now:.3f} Hz"
         else:
             hz_txt = f"{hz:.3f} Hz"
-        lvl = sr.get("level") or "green"; rocof = sr.get("rocof_obs"); cgri = sr.get("cgri")
+        lvl = sr.get("level") or "green"; rocof = sr.get("rocof_obs")
         p = sr.get("params") or {}
         lfdd = p.get("lfdd_hz", 48.8); stat_lo = p.get("stat_lo", 49.5); stat_hi = p.get("stat_hi", 50.5)
         # (a) statutory / disconnection territory — always critical (hard floor).
@@ -6343,16 +6402,10 @@ def build_alerts(snap):
         #     low-inertia grid escalates while noise on a stiff grid stays quiet. This is
         #     the SYSTEM-RISK alert (tag RISK), kept separate from the frequency-limit
         #     alert above — on the dashboard it pips + banners rather than sounding tones.
-        elif lvl == "red":
-            alerts.append(_a("critical", "Elevated system risk",
-                f"Composite grid risk high (CGRI {cgri}); frequency {hz_txt}, with low system inertia "
-                f"({sr.get('inertia_gws')} GVA·s, notional post-fault RoCoF {sr.get('notional_rocof')} Hz/s). "
-                "A large trip now would pull frequency down fast.", tag="RISK"))
-        elif lvl == "amber":
-            reason = "system inertia reduced" if sr.get("inertia_band") in ("amber", "red") \
-                     else "outside the normal operational band"
-            alerts.append(_a("warning", "System risk elevated",
-                f"Grid frequency {hz_txt}, {dev:.3f} Hz off nominal — {reason} (CGRI {cgri}).", tag="RISK"))
+        elif lvl in ("red", "amber"):
+            alerts.append(_a("critical" if lvl == "red" else "warning",
+                             "Elevated system risk" if lvl == "red" else "System risk elevated",
+                             _risk_alert_text(sr, hz_txt, dev, lvl), tag="RISK"))
         # (c) slew note — from the SAME rocof_obs the panel shows
         if rocof is not None and lvl != "red" and not (hz <= stat_lo or hz >= stat_hi):
             a_ro = abs(rocof); arrow = "falling" if rocof < 0 else "rising"

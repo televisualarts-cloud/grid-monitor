@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260929.4  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -1343,7 +1343,10 @@ def _update_mobiles(state, home, now, track_sample_fn, wind_kmh, net_speed_kmh, 
     survivors = []
     for m, rt in zip(state.mobiles, rates):
         _apply_sample(m, rt)
-        m["confirmed"] = (m.get("src") == "OC4") and (m.get("mm") is not None)
+        # measured = radar (RV) or OpenWeather (OC4); the reading is dated by its radar
+        # frame when it has one, so its true age is known downstream (approach ETA)
+        m["confirmed"] = (m.get("src") in ("OC4", "RV")) and (m.get("mm") is not None)
+        m["ts"] = ((rt.get("radar_ts") if isinstance(rt, dict) else None) or now) if m.get("mm") is not None else m.get("ts")
         wet = (m.get("mm") or 0) >= ARC_DETECT_MMH
         if wet:
             m["last_wet_ts"] = now
@@ -1380,6 +1383,7 @@ def _spawn_mobiles(state, now, detections):
             "range_km": max(MOBILE_BAND_MIN, min(MOBILE_BAND_MAX, p["range_km"])),
             "state": "hunt", "born_ts": now, "last_wet_ts": now, "dry_cycles": 0,
             "mm": p.get("mm"), "snow": bool(p.get("snow")), "confirmed": False,
+            "src": p.get("src"), "ts": p.get("ts"),
             "probe_ct": 0, "last_move_ts": now,
         })
 
@@ -1805,7 +1809,10 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
     disp, fills = _net_points(state, home, seaset, sentinel_az)
     net_pts = disp + fills
     _ttl = RV_NET_TTL_S if getattr(state, "net_src", None) == "RV" else NET_SAMPLE_TTL_S   # radar frames are 10-min
-    due = (now - (state.net_cache_ts or 0)) >= _ttl * max(1.0, net_ttl_mult) or not state.net_cache
+    # The quiet-hours multiplier is for PAID sampling. Radar is free and is read on every
+    # 10-min frame around the clock (29 Sep: a 42-min radar gap during an evening onset).
+    _mult = 1.0 if getattr(state, "net_src", None) == "RV" else max(1.0, net_ttl_mult)
+    due = (now - (state.net_cache_ts or 0)) >= _ttl * _mult or not state.net_cache
     if due:
         rates = net_sample_fn(net_pts) if net_pts else []
         for pt, rt in zip(net_pts, rates):
@@ -1959,13 +1966,13 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
     for m in state.mobiles:
         la, lo = offset_latlon(home[0], home[1], m["bearing"], m["range_km"])
         vgauges.append({
-            "modelled": True, "source": ("OC4" if m.get("confirmed") else "OM"),
+            "modelled": True, "source": (m.get("src") or "OM"),
             "kind": "mobile", "state": m.get("state"),
             "name": f"{compass(m['bearing'])} sea · {m['bearing']:.0f}°",
             "lat": la, "lon": lo, "bearing": m["bearing"], "dist_km": round(m["range_km"], 1),
             "mm": m.get("mm"), "snow": bool(m.get("snow")), "confirmed": bool(m.get("confirmed")),
             "speed_mph": _spd(m), "speed_trusted": bool(m is lead and info["speed_trusted"]),
-            "model_ts": now,
+            "model_ts": m.get("ts") or now,
         })
     return info, vgauges
 
@@ -2938,7 +2945,8 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
         b = bearing_deg(home[0], home[1], g["lat"], g["lon"])
         if d is None or not (GAUGE_CONFIRM_KM < d <= APPR_MAX_KM) or not _in_cone(b, wind_from):
             continue
-        cells.append({"src": "gauge", "b": round(b), "d": round(d, 1), "mm": round(mm, 2), "snow": False})
+        cells.append({"src": "gauge", "b": round(b), "d": round(d, 1), "mm": round(mm, 2), "snow": False,
+                      "age_s": (int(now - ts) if ts is not None else None)})
     # modelled sea net (sentinels/pickets), home-ring backup points, and live mobiles
     for v in (vgauges or []):
         if v.get("kind") not in ("sentinel", "picket", "mobile", "ring"):
@@ -2952,8 +2960,10 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
         if d is None or b is None or not (GAUGE_CONFIRM_KM < d <= APPR_MAX_KM) or not _in_cone(b, wind_from):
             continue
         src = ("ring" if v["kind"] == "ring" else "sea_" + v["kind"])
+        _vts = v.get("model_ts")
         cells.append({"src": src, "b": round(b), "d": round(d, 1), "mm": round(mm, 2),
-                      "snow": bool(v.get("snow"))})
+                      "snow": bool(v.get("snow")),
+                      "age_s": (int(max(0.0, now - _vts)) if _vts else None)})
     # tracked clusters the tracker itself judges to be approaching (already upwind-gated)
     trk = [t for t in (tracks or []) if t.get("approaching") and SIT_HERE_KM < (t.get("dist_km") or 0) <= APPR_MAX_KM]
     for t in trk:
@@ -2997,12 +3007,19 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
         spd, speed_src = wind_kmh, "surface"
         eta_txt, eta_lo, eta_hi = eta_from_speed(lead["d"], spd, measured=False)
     too_far = bool(spd) and eta_txt is None
+    # The lead cell was seen where it was when its reading was VALID, not now: the rain
+    # has kept moving since (radar ~10-20 min, EA gauges ~60 min). Take that age off the
+    # arrival window; if it is used up, the rain may already be arriving.
+    data_age_s = lead.get("age_s") or 0
+    if eta_lo is not None and eta_hi is not None and data_age_s >= 60:
+        eta_txt, eta_lo, eta_hi = _eta_age_corrected(eta_lo, eta_hi, data_age_s)
     weakening = bool((land and land.get("active") and land.get("intensity_trend") == "weakening")
                      or (sea and sea.get("detected") and sea.get("weakening")))
     trend = ("weakening" if weakening else
              (land.get("intensity_trend") if (land and land.get("active")) else "steady"))
     snow_cells = [c for c in cells if c.get("snow")]
     return {"cls": cls, "why": why, "edge_km": lead["d"], "bearing": lead["b"],
+            "data_age_s": (int(data_age_s) if data_age_s else 0),
             "dir": compass(lead["b"], spoken=True), "peak_mm": round(peak, 2),
             "n_cells": len(cells), "n_land": n_land, "n_model": n_model, "n_track": len(trk),
             "width_km": width, "sources": sorted({c["src"] for c in cells}),
@@ -3012,6 +3029,21 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
             "weakening": weakening, "trend": trend, "press_cls": press_cls,
             "snow": len(snow_cells) > len(cells) / 2,
             "cells": sorted(cells, key=lambda c: c["d"])[:12]}
+
+
+def _eta_age_corrected(lo, hi, age_s):
+    """Arrival window with the lead reading's age taken off (minutes, rounded to 5).
+    Wording follows eta_from_speed; a window used up by the data's age reads
+    'any time now' (the alert says it 'may arrive any time now')."""
+    a = age_s / 60.0
+    lo2, hi2 = max(0, _round5(lo - a)), max(0, _round5(hi - a))
+    if hi2 <= 0:
+        return "any time now", 0, 0
+    if hi2 <= 5:
+        return "within a few minutes", lo2, hi2
+    if lo2 < ETA_MIN_MIN:
+        return "within the next fifteen minutes", lo2, hi2
+    return f"in {lo2} to {hi2} minutes", lo2, hi2
 
 
 def _appr_qualifies(th, supp=None):
@@ -3070,6 +3102,7 @@ def _appr_fizzle_phrase(ep):
 
 _SNAP_KEYS = ("cls", "why", "edge_km", "bearing", "dir", "peak_mm", "n_cells", "n_land", "n_model",
               "n_track", "width_km", "sources", "speed_kmh", "measured", "speed_src", "eta_lo", "eta_hi",
+              "data_age_s",
               "weakening", "trend", "press_cls")
 
 
@@ -3400,6 +3433,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # on the plan view the moment they are deployed.
     situational["mobiles"] = [{"b": round(m["bearing"]), "d": m["dist_km"], "mm": m.get("mm"),
                                "snow": bool(m.get("snow")), "confirmed": bool(m.get("confirmed")),
+                               "src": m.get("source"),
                                "speed_mph": m.get("speed_mph"), "state": m.get("state")}
                               for m in vgauges if m.get("kind") == "mobile"]
     # phase (d): cluster continuity — track systems across sectors; if home is dry but
@@ -3539,7 +3573,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         "suppressed": bool(state.appr_supp),
         "threat": (None if not _threat else {k: _threat[k] for k in (
             "cls", "why", "edge_km", "dir", "peak_mm", "n_cells", "width_km", "sources", "eta_text", "weakening",
-            "speed_src")}),
+            "speed_src", "data_age_s")}),
         "present_reads": state.appr_present_reads, "empty_reads": state.appr_empty_reads,
         "qualifies": (None if not _threat else _appr_qualifies(_threat, state.appr_supp)[1]),
         "shadow_candidate": (state.appr_cand or {}).get("cand"),
