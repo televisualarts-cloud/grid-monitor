@@ -1,5 +1,8 @@
 # grid-monitor
 
+# Note that some unreleased individual files are newer than release v2026.09.29.3. Please replace these files on your machine and restart grid_server.py and refresh the html page. 
+# I aim to push another full release before 15 October 2026 pending a rebuild of the weather forecast engine. See known_issues.md for reasons for the rebuild.
+
 A dashboard for monitoring the GB electricity grid and GB gas supply in real time. It also shows live power cuts across the UK & Ireland, rain, river levels and flood warnings for England (from the Environment Agency), and — if you're an Octopus Energy customer — your own household electricity and gas usage and cost.
 
 **Full disclosure:** This project was vibe-coded with Claude Opus 4.8 and Opus 5.5. Errors are probable, but when found they get corrected. A guiding principle throughout is *honesty over plausibility* — anything estimated, derived or out of date is labelled as such rather than presented as hard fact.
