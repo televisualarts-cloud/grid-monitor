@@ -16,6 +16,14 @@ exact tag.
 
 ---
 
+## 2026-09-30
+
+- **System risk: CGRI no longer alarms inside the operational band on a normal grid.** The inertia multiplier was 1 + notional RoCoF/0.5 at all times (~1.4× on a typical day), so CGRI reached its 0.2 amber cut at ~0.14 Hz off nominal. Replayed over September's logs: 386 amber episodes (amber 11% of the time), only 14 with frequency outside 49.8–50.2 Hz. Inertia now amplifies CGRI only when reduced (notional RoCoF ≥ 0.25 Hz/s, the inertia band's amber cut): same replay gives 24 episodes (0.5% of the time), all 19 band excursions still alerted, 5 more on weak-inertia grids. (`grid_server.py` 260930.1)
+- **System risk alert text states the real cause.** Amber alerts said "outside the normal operational band" whenever inertia wasn't reduced, including when frequency was inside the band and only CGRI had crossed. The server now reports what raised the level (`drivers`: statutory / band / cgri / gen_loss) and the alert names it: outside the band, reduced inertia (with GVA·s and notional RoCoF), frequency moving quickly, or a sudden infeed loss. `system_risk` also carries `m_inertia`. (`grid_server.py` 260930.1)
+- **Spoken frequency alarm no longer blames inertia for every excursion.** The voice appended "System inertia reduced" / "System inertia is low, limited reserve" from the composite risk level, so any high or low excursion was blamed on inertia. It now uses the inertia estimate's own band and says nothing about inertia when it is normal; "limited reserve" is dropped (reserve is not what the risk level measures). CGRI tooltip updated. (`grid_dashboard.html` 260930.1)
+- **Rain engine stopgaps (ahead of the rebuild).** (1) Quiet hours no longer slow the radar sea net: while radar serves it reads every 10-min frame around the clock (29 Sep had a 42-min radar gap during an evening onset); the quiet factor still stretches the model net. (2) Mobile trackers read radar first; OpenWeather OC4 (its own estimate, paid) only when radar is unavailable, then the model — during 29 Sep's rain the trackers made ~48 paid calls an hour. A tracker keeps its reading's source and radar frame time; its card and Forecast view tooltip name the source. (5) Approach arrival window corrected for the age of the leading reading: the window is shifted earlier by that age, and when it is used up the alert says the rain "may arrive any time now" (0–5 min: "within a few minutes"). The threat carries `data_age_s`, also in the shadow log. (`rain_probe.py` 260930.1, `grid_server.py` 260930.2, `forecast_view.html` 260930.1)
+- **Known issues: rain / forecast engine.** New section documenting how the rain sources are merged (timing, cadence, spatial coverage), what the September logs show, and the planned rebuild.
+
 ## 2026-09-29
 
 - **ESB feed fix.** ESB's outage list now arrives gzip-compressed even when not requested, so every parse failed and the feed went stale/down. Responses are decompressed when gzipped (header or magic bytes). (`powercuts.py` 260929.1)
@@ -267,6 +275,7 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260929.1** (2026-09-29) — RADAR chip on radar-fed sea-net and home-ring cards.
 - **260929.2** (2026-09-29) — Weather panel rows Low today / High today (Open-Meteo daily forecast, OM-tagged) replace the always-blank Min/Max temp.
 - **260929.3** (2026-09-29) — Gauge cards keep late readings (dimmed past 30 min), "—" only past 75 min; rain pop-up uses the same 75 min.
+- **260930.1** (2026-09-30) — Spoken frequency alarm mentions inertia only when the inertia estimate is reduced; "limited reserve" dropped; CGRI tooltip.
 
 ### `powercuts_page.html`
 
@@ -325,6 +334,7 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260929.2** (2026-09-29) — Late-gauge threshold 75 min with 60 min all-late hysteresis; home ring keeps its cache, samples immediately on the free sampler, labels by real source.
 - **260929.3** (2026-09-29) — Open-Meteo current amounts converted to mm/h using the response interval.
 - **260929.4** (2026-09-29) — Virtual net/ring points keep `modelled: true`; new `measured` flag for radar/OpenWeather readings.
+- **260930.1** (2026-09-30) — Radar net ignores the quiet-hours multiplier; mobiles keep source and radar frame time (confirmed for RV or OC4); approach ETA corrected for the lead reading's age (`data_age_s`).
 
 ### `forecast_view.html`
 
@@ -332,6 +342,7 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 
 - **260926.1** (2026-09-26) — Renamed Forecast view, served at `/forecast` (`/engine` removed). Licence/build header. Gauge tooltips with place, grid and EA reference, distance and direction from home. Radar-only mode (`?view=radar`) for the EA page. Location from the link or the EA page (no built-in default); connects by itself; bottom text replaced; paste-JSON box removed.
 - **260929.1** (2026-09-29) — Late-gauge rings and count; radar net labels; OM-local counted separately in the API line; RainViewer credit.
+- **260930.1** (2026-09-30) — Mobile tracker tooltip names the reading's source (radar / OpenWeather / Open-Meteo) instead of "OC4 confirmed".
 
 ### `metar.py`
 
