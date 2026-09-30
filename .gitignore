@@ -21,6 +21,7 @@ bmu_locations.json
 bmu_registry.json
 gauge_mutes.json
 rain_home.json
+server_port.json
 
 # ── Logs / accumulating history ──
 margin_history.json

@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 260930.3  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260930.1 · Server build <span id="serverBuild">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 260930.3 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -2756,6 +2756,9 @@ function render(d){
   // that can silently drift). Older servers won't send it — show "unknown" then.
   const sb=$("#serverBuild");
   if(sb) sb.textContent = d.server_build || "unknown";
+  // the port this page is served from (8412, or the fallback the server chose if 8412 was taken)
+  const sp=$("#serverPort");
+  if(sp) sp.textContent = location.port || (location.protocol==="https:"?"443":"80");
 
   // ---- per-source status strip (makes a failing feed visible + its reason) ----
   const ok=d.sources_ok||{};
@@ -6298,6 +6301,25 @@ function eaRenderWindDials(){
   const dirDefined = (wState==="normal" && dir!=null);
   const stateLabel = wState==="calm" ? "CALM" : (wState==="variable" ? "VAR" : null);
   const compass = dirDefined ? windCompassName(dir) : stateLabel;
+  // ---- steering wind (850 hPa) from the rain engine: the flow showers move with.
+  // Drawn only for a REAL 850 hPa read -- the engine's fallback is just surface x 1.6,
+  // which would be a copy of the surface arrow, not information. Old reads are faded.
+  const STEER_COL="#4ade80";
+  const _st=((eaData && eaData.rain_probe && eaData.rain_probe.situational)||{}).steering;
+  const steer=(_st && _st.src==="850hPa" && _st.from_deg!=null && _st.kmh!=null) ? _st : null;
+  const steerMph = steer ? steer.kmh/1.609344 : null;
+  const steerOld = !!(steer && steer.stale);
+  const steerAge = (steer && steer.age_s!=null)
+    ? (steer.age_s<5400 ? Math.round(steer.age_s/60)+" min" : (steer.age_s/3600).toFixed(1)+" h") : "";
+  let steerTurn="";                                  // veer/back from surface to 850 hPa
+  if(steer && dirDefined){
+    const d=((steer.from_deg-dir+540)%360)-180;      // + = veered (clockwise with height)
+    steerTurn = Math.abs(d)<5 ? "same direction as the surface wind"
+      : (d>0?"veered ":"backed ")+Math.round(Math.abs(d))+"° from the surface wind";
+  }
+  const steerTip = steer ? ("850 hPa wind (~1.5 km up): from "+windCompassName(steer.from_deg)+" "+
+    Math.round(steer.from_deg)+"°, "+Math.round(steerMph)+" mph"+(steerTurn?" — "+steerTurn:"")+
+    ". Showers move with this flow."+(steerAge?" Read "+steerAge+" ago"+(steerOld?" (old)":"")+".":"")) : "";
 
   // ---- direction compass (SVG) ----
   // Arrow points in the direction the wind is blowing TOWARDS is a common
@@ -6360,6 +6382,20 @@ function eaRenderWindDials(){
     : '<text x="52" y="52" text-anchor="middle" dominant-baseline="central" '+
       'fill="#5bd6e0" font-size="20" font-weight="700" '+
       'letter-spacing="1">'+stateLabel+'</text>';
+  let steerGlyph='';
+  if(steer){
+    const sr=(steer.from_deg-90)*Math.PI/180;
+    const srot=(px,py)=>{
+      const rx=px*Math.cos(sr+Math.PI/2)-py*Math.sin(sr+Math.PI/2);
+      const ry=px*Math.sin(sr+Math.PI/2)+py*Math.cos(sr+Math.PI/2);
+      return (cx+rx).toFixed(1)+','+(cy+ry).toFixed(1);
+    };
+    // same shape as the surface arrow, 18% larger and drawn BEHIND it, so when the two
+    // are nearly aligned the dotted outline still frames the surface arrow
+    steerGlyph='<g opacity="'+(steerOld?0.45:1)+'"><title>'+steerTip+'</title>'+
+      '<polygon points="'+local.map(p=>srot(p[0]*1.18,p[1]*1.18)).join(' ')+'" fill="'+STEER_COL+'" fill-opacity="0.14" '+
+      'stroke="'+STEER_COL+'" stroke-width="1.3" stroke-dasharray="2 2" stroke-linejoin="round"/></g>';
+  }
   const dirSvg='<svg viewBox="-6 -6 116 116" class="wd-svg">'+
     '<circle cx="52" cy="52" r="42" fill="none" stroke="var(--line)" stroke-width="1"/>'+
     histTicks.join('')+
@@ -6368,6 +6404,7 @@ function eaRenderWindDials(){
     '<text x="52" y="92" text-anchor="middle" class="wd-card">S</text>'+
     '<text x="90" y="56" text-anchor="middle" class="wd-card">E</text>'+
     '<text x="14" y="56" text-anchor="middle" class="wd-card">W</text>'+
+    steerGlyph+
     centreGlyph+
     '</svg>';
 
@@ -6413,11 +6450,20 @@ function eaRenderWindDials(){
     const [gx0,gy0]=arcPt(gA, gr+3), [gx1,gy1]=arcPt(gA, gr-5);
     gustTick='<line x1="'+gx0.toFixed(1)+'" y1="'+gy0.toFixed(1)+'" x2="'+gx1.toFixed(1)+'" y2="'+gy1.toFixed(1)+'" stroke="#f5b942" stroke-width="2" stroke-linecap="round"/>';
   }
+  // steering tick: same form as the gust tick, in the steering green
+  let steerTick='';
+  if(steer){
+    const sA=startA+sweep*spdFrac(steerMph);
+    const [sx0,sy0]=arcPt(sA, gr+3), [sx1,sy1]=arcPt(sA, gr-5);
+    steerTick='<g opacity="'+(steerOld?0.45:1)+'"><title>'+steerTip+'</title>'+
+      '<line x1="'+sx0.toFixed(1)+'" y1="'+sy0.toFixed(1)+'" x2="'+sx1.toFixed(1)+'" y2="'+sy1.toFixed(1)+'" stroke="'+STEER_COL+'" stroke-width="2" stroke-linecap="round"/></g>';
+  }
   const spdSvg='<svg viewBox="-6 -6 116 116" class="wd-svg">'+
     '<path d="'+arcPath(startA,startA+sweep,gr)+'" fill="none" stroke="var(--line)" stroke-width="6" stroke-linecap="round"/>'+
     '<path d="'+arcPath(startA,needleA,gr)+'" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/>'+
     scaleTicks+
     gustTick+
+    steerTick+
     '<line x1="52" y1="52" x2="'+nx.toFixed(1)+'" y2="'+ny.toFixed(1)+'" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"/>'+
     '<circle cx="52" cy="52" r="3" fill="var(--ink)"/>'+
     '<text x="52" y="70" text-anchor="middle" class="wd-card" style="font-size:10px">MPH</text>'+
@@ -6425,6 +6471,12 @@ function eaRenderWindDials(){
 
   const gustTxt = (gustMph!=null && gustMs!=null)
     ? '<div class="wd-gust">gusts '+Math.round(gustMph)+' mph · '+gustMs.toFixed(1)+' m/s</div>' : '';
+  const steerSpdTxt = steer
+    ? '<div class="wd-gust" style="color:'+STEER_COL+(steerOld?';opacity:.5':'')+'" title="'+steerTip+'">850 hPa '+
+      (steerMph>SPD_MAX?SPD_MAX+'+':Math.round(steerMph))+' mph'+(steerOld?' (old)':'')+'</div>' : '';
+  const steerDirTxt = steer
+    ? '<div class="wd-sub" style="color:'+STEER_COL+';font-size:10px'+(steerOld?';opacity:.5':'')+'" title="'+steerTip+'">850 hPa '+
+      windCompassName(steer.from_deg)+' '+Math.round(steer.from_deg)+'°</div>' : '';
 
   // ---- area spread across the 8-point ring (uses the surrounding field, not
   // just home) — surfaces whether wind is uniform over the area or changing
@@ -6637,10 +6689,11 @@ function eaRenderWindDials(){
         (w.dir_range && w.dir_range.span_deg!=null
           ? '<div class="wd-sub" style="color:var(--ink-faint);font-size:10px">3h range '+w.dir_range.span_deg+'°</div>'
           : '')+
+        steerDirTxt+
         '</div></div>'+
       '<div class="wd-cell">'+spdSvg+
         '<div class="wd-read"><div class="wd-main">'+(spdMph!=null?Math.round(spdMph):'—')+' <span class="wd-u">mph</span></div>'+
-        '<div class="wd-sub">'+(spdMs!=null?spdMs.toFixed(1):'—')+' m/s</div>'+gustTxt+'</div></div>'+
+        '<div class="wd-sub">'+(spdMs!=null?spdMs.toFixed(1):'—')+' m/s</div>'+gustTxt+steerSpdTxt+'</div></div>'+
       block3+
       block4+
     '</div></div>';

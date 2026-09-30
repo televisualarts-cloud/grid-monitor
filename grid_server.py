@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260930.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 260930.3  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -40,18 +40,22 @@ Sources (all free, no API key):
 
 Run:
     python3 grid_server.py            # serves dashboard + /api/grid on :8412
+                                      # (next free of 8413-8421 if 8412 is taken;
+                                      #  the port in use is kept in server_port.json)
     python3 grid_server.py --once     # write snapshot.json once and exit
-    python3 grid_server.py --port 9000
+    python3 grid_server.py --port 9000  # exactly this port; if taken, pick from a list
 
 The dashboard (grid_dashboard.html) fetches /api/grid every 60 s.
 """
 
 import argparse
+import errno
 import json
 import math
 import os
 import random
 import re
+import socket
 import sys
 import threading
 import time
@@ -167,7 +171,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260930.2"
+SERVER_BUILD = "260930.3"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -7646,7 +7650,12 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _route(self):
-        if self.path.startswith("/api/weather-key"):
+        if self.path.startswith("/api/whoami"):
+            # Identity for the startup port check: lets a second launch recognise an
+            # already-running GB Energy Monitor instead of starting a duplicate.
+            self._send_json({"app": APP_ID, "build": SERVER_BUILD, "pid": os.getpid(),
+                             "port": self.server.server_address[1]})
+        elif self.path.startswith("/api/weather-key"):
             # Status only — never returns the key itself, just whether one is set.
             self._send_json({"has_key": bool(_load_weather_key())})
         elif self.path.startswith("/api/forecast_window"):
@@ -7914,10 +7923,173 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
 
+# ───────────────────────── port selection ─────────────────────────
+# Default 8412. If another program holds it, the next free port in 8413-8421 is used and
+# remembered in server_port.json, which is tried first next time (so a bookmark changes
+# once, not on every start) and read by companion tools (e.g. rain_recorder.py). A second
+# launch that finds GB Energy Monitor already running says where and exits -- never a
+# duplicate server (two rain engines). An explicit --port is honoured exactly; if taken,
+# the free ports are listed to choose from.
+APP_ID = "gb-energy-monitor"
+PORT_DEFAULT = 8412
+PORT_FALLBACKS = list(range(8413, 8422))
+PORT_FILE = Path(__file__).with_name("server_port.json")
+
+
+class GridHTTPServer(ThreadingHTTPServer):
+    """Binds its port EXCLUSIVELY. On Windows, SO_REUSEADDR (which HTTPServer sets by
+    default) lets a second process bind a port another is already listening on with no
+    error, and connections are then shared unpredictably between them. So on Windows
+    reuse is off and SO_EXCLUSIVEADDRUSE is set: a clash fails at once and is handled."""
+    allow_reuse_address = (os.name != "nt")
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _port_saved():
+    try:
+        p = int(json.loads(PORT_FILE.read_text()).get("port"))
+        return p if 0 < p < 65536 else None
+    except Exception:
+        return None
+
+
+def _port_save(port):
+    if _port_saved() == port:
+        return
+    try:
+        PORT_FILE.write_text(json.dumps({"port": port, "saved": datetime.now(timezone.utc)
+                                         .strftime("%Y-%m-%dT%H:%M:%SZ")}))
+    except Exception:
+        pass
+
+
+def _port_is_ours(port):
+    """True if GB Energy Monitor (any build) is already answering on this port."""
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(base + "/api/whoami", timeout=2) as r:
+            return (json.loads(r.read(4096) or b"{}") or {}).get("app") == APP_ID
+    except urllib.error.HTTPError:
+        pass                      # something answered; older builds have no /api/whoami
+    except Exception:
+        return False              # nothing there (or not HTTP)
+    try:                          # older build: recognise the dashboard page itself
+        with urllib.request.urlopen(base + "/", timeout=2) as r:
+            return b"GB Energy Monitor" in r.read(8192)
+    except Exception:
+        return False
+
+
+def _port_try(port, handler):
+    """(server, None) if bound, else (None, reason)."""
+    try:
+        return GridHTTPServer(("0.0.0.0", port), handler), None
+    except OSError as e:
+        code = getattr(e, "winerror", None) or e.errno
+        if code in (errno.EADDRINUSE, 10048):
+            return None, "in use by another program"
+        if code in (errno.EACCES, 10013):
+            return None, "blocked by Windows (reserved range, e.g. Hyper-V/WSL/Docker)"
+        return None, f"unavailable ({e})"
+
+
+def _port_free_list(exclude):
+    """Candidate ports that can be bound right now (checked by a trial bind)."""
+    out = []
+    for p in [PORT_DEFAULT] + PORT_FALLBACKS:
+        if p in exclude:
+            continue
+        srv, _ = _port_try(p, BaseHTTPRequestHandler)
+        if srv:
+            srv.server_close()
+            out.append(p)
+    return out
+
+
+def _port_choose(port, reason, handler):
+    """Explicit --port is taken: list the free ports and let the user pick (console),
+    or explain and stop when there is no console to ask."""
+    free = _port_free_list({port})
+    print(f"Port {port} is {reason}.")
+    if not free:
+        print(f"None of {PORT_DEFAULT}-{PORT_FALLBACKS[-1]} is free either. "
+              "Choose another with --port N.")
+        return None
+    if not (sys.stdin and sys.stdin.isatty()):
+        print("Free ports: " + ", ".join(map(str, free)) + ". Restart with --port N.")
+        return None
+    print("Free ports:")
+    for i, p in enumerate(free, 1):
+        print(f"  {i}) {p}")
+    while True:
+        try:
+            ans = input(f"Choose 1-{len(free)} (Enter = {free[0]}, q = quit): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if ans in ("q", "quit"):
+            return None
+        if ans == "" or (ans.isdigit() and 1 <= int(ans) <= len(free)):
+            p = free[int(ans) - 1] if ans else free[0]
+            srv, why = _port_try(p, handler)
+            if srv:
+                return srv
+            print(f"Port {p} is now {why}; choose again.")
+            free = _port_free_list({port})
+            if not free:
+                return None
+
+
+def _open_server(requested, handler):
+    """Bind the server as described above. Returns the server, or None to exit."""
+    if requested is not None:                     # explicit --port: exactly that port
+        if _port_is_ours(requested):
+            print(f"GB Energy Monitor is already running: http://localhost:{requested}")
+            return None
+        srv, why = _port_try(requested, handler)
+        return srv or _port_choose(requested, why, handler)
+    order = []
+    for p in [_port_saved(), PORT_DEFAULT] + PORT_FALLBACKS:
+        if p and p not in order:
+            order.append(p)
+    for p in order:                               # never start a second copy
+        if _port_is_ours(p):
+            print(f"GB Energy Monitor is already running: http://localhost:{p}")
+            return None
+    skipped = []
+    for p in order:
+        srv, why = _port_try(p, handler)
+        if srv:
+            if p != PORT_DEFAULT:
+                bar = "=" * 72
+                if skipped:                       # tried and failed on the way here
+                    why_line = ("Port " + "; ".join(f"{q} {w}" for q, w in skipped) + ".")
+                else:                             # the remembered port, used first
+                    why_line = (f"Using the port remembered in {PORT_FILE.name} "
+                                f"(from an earlier clash on {PORT_DEFAULT}).")
+                print(f"{bar}\n  {why_line}\n"
+                      f"  GB Energy Monitor is on port {p} -- open:\n"
+                      f"      http://localhost:{p}\n"
+                      f"  Delete {PORT_FILE.name} to go back to trying {PORT_DEFAULT} first."
+                      f"\n{bar}")
+            return srv
+        skipped.append((p, why))
+    print("No usable port: " + "; ".join(f"{q} {w}" for q, w in skipped)
+          + ". Choose one with --port N.")
+    return None
+
+
 def main():
     global DEBUG
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8412)
+    ap.add_argument("--port", type=int, default=None,
+                    help=f"serve on exactly this port (default {PORT_DEFAULT}, or the next free "
+                         f"{PORT_FALLBACKS[0]}-{PORT_FALLBACKS[-1]}; if an explicit port is taken, "
+                         "the free ones are listed to choose from)")
     ap.add_argument("--once", action="store_true", help="write snapshot.json and exit")
     ap.add_argument("--debug", action="store_true",
                     help="verbose per-fetch logging to stderr (URL, status, timing, "
@@ -7933,9 +8105,13 @@ def main():
         print(f"\nWrote snapshot.json  (alert level: {snap['alert_level']})")
         return
 
-    srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    srv = _open_server(args.port, Handler)
+    if srv is None:
+        sys.exit(1)
+    port = srv.server_address[1]
+    _port_save(port)                   # where the server is, for next start + companion tools
     _rain_sampler_start()              # keep the rain engine running with no page open
-    print(f"GB Energy Monitor running: http://localhost:{args.port}")
+    print(f"GB Energy Monitor running: http://localhost:{port}")
     if DEBUG:
         print("Debug logging ON (per-fetch diagnostics to stderr).")
     print("Ctrl-C to stop.")
