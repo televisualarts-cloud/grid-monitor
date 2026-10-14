@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 260930.3  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261014.3  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1489,7 +1489,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 260930.3 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 261014.3 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -2271,9 +2271,15 @@ async function refreshUtilData(){
       const liveOps=new Set((p.operators||[]).filter(o=>o.status==="ok"||o.status==="stale").map(o=>o.dno));
       // every still-active incident id (any distance, muted or not): an announced one only
       // counts as restored when it has left the feed, not when it drops out of "near"
-      const activeIds=(p.incidents||[]).filter(i=>!PC_DONE_RE.test(i.status||"")).map(i=>i.dno+":"+i.id);
+      // (overdue incidents — far past their ETR, uncounted — still count as present here, so one
+      // going overdue is never announced as a restoration)
+      const activeIds=(p.incidents||[]).concat(p.overdue||[]).filter(i=>!PC_DONE_RE.test(i.status||"")).map(i=>i.dno+":"+i.id);
       const near={home, km:nearKm, list:pcNearby(p, home, nearKm, muted), liveOps:[...liveOps], activeIds};
-      pcSummary={off:unOff+plOff, unOff, unInc, plOff, plInc, near,
+      // monitored postcode areas (server-matched; muted providers and finished incidents left
+      // out). null when the server sent none (older server / error) — never read as "all clear".
+      const watch=p.watch ? {areas:p.watch.areas||[], liveOps:[...liveOps], activeIds,
+        matches:(p.watch.matches||[]).filter(m=>!muted.has(m.dno) && !PC_DONE_RE.test(m.status||""))} : null;
+      pcSummary={off:unOff+plOff, unOff, unInc, plOff, plInc, near, watch,
                  cutsHr, unCutsHr, restoredHr, restoredHrAll:restoredExMuted, flashRate, hasUn,
                  climbRegions: pcTopRegions(opNew, 1), worstRegions: pcTopRegions(opOff, 1),
                  majorOps, mutedNames:[...muted].map(d=>PC_OP_NAME[d]||d)};
@@ -2285,6 +2291,7 @@ async function refreshUtilData(){
   try{ const wc=await fetch("/api/windcuts").then(r=>r.json()); if(wc && !wc.error) pcWind=wc.wind||null; }catch(e){ /* wind optional */ }
   try{ if(Alarm && Alarm.evaluatePowerCuts) Alarm.evaluatePowerCuts(pcSummary, pcWind, LAST_RISK, pcInclPlanned); }catch(e){}
   try{ if(Alarm && Alarm.evaluatePowerCutsNear && pcSummary) Alarm.evaluatePowerCutsNear(pcSummary.near); }catch(e){}
+  try{ if(Alarm && Alarm.evaluatePowerCutsWatch && pcSummary && pcSummary.watch) Alarm.evaluatePowerCutsWatch(pcSummary.watch); }catch(e){}
   buildHeaderSummaries();
 }
 
@@ -7367,6 +7374,8 @@ const Alarm = (function(){
             desc:"Escalating tones + speech for UNPLANNED UK & Ireland power cuts. Combines, in one alert: a 'climbing' warning when new cuts/hr crosses the flash threshold, milestone alerts as customers off pass 20k / 50k / 100k / 500k / 1M (then every 500k, highest reached), where the cuts are concentrated (operator regions), and the cause when known (a storm from correlated METAR gusts, or a supply-side grid infeed loss). Hysteresis, and it keeps monitoring — re-voicing while elevated. Announces an operator's declared major incident (from its feed's own category). Also announces big restorations. Planned works excluded by default — the top-bar switch includes them."},
     pcnear:{name:"Power cut near you", tier:"warn", on:false,
             desc:"Speaks when a power cut starts within your chosen radius of your location (set on the EA page) — an unplanned fault as a warning, planned works as a quieter notice — naming how far away, which direction, customers off and the estimated restoration, and again when it's back on. Muted providers are skipped. Set the radius below."},
+    pcwatch:{name:"Monitored postcode areas", tier:"warn", on:true,
+            desc:"Siren, then speech, when a power cut (unplanned or planned) starts in one of your monitored postcode areas — set with the <b>Monitored areas</b> button on the power-cuts page (up to 10 sectors such as EX23 4, or full postcodes such as EX23 4AA). Names the area, its place and customers without power (not for SP Energy Networks, which publishes no count). A full postcode whose operator only publishes sectors is announced as “may be affected”. Several areas at once become one message. Speaks again, with a soft tone, when power is restored. Muted providers are skipped."},
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
@@ -7416,6 +7425,20 @@ const Alarm = (function(){
     if(tier==="crit"){ beep(880,0,0.16,0.35); beep(880,0.22,0.16,0.35); beep(1046,0.44,0.22,0.4); }
     else if(tier==="warn"){ beep(660,0,0.16,0.28); beep(660,0.22,0.18,0.28); }
     else { beep(520,0,0.12,0.16); }   // notice: single soft blip
+  }
+  // Two-tone siren (~2.7 s) for the monitored-postcode-area alert. Returns its length in ms
+  // so speech can start once it has finished.
+  function siren(){
+    if(!ensureCtx()) return 0;
+    const o=ac.createOscillator(), g=ac.createGain(), t0=ac.currentTime+0.02, step=0.45, n=6;
+    o.type="triangle"; o.connect(g); g.connect(ac.destination);
+    for(let k=0;k<n;k++) o.frequency.setValueAtTime(k%2?740:960, t0+k*step);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(0.32, t0+0.04);
+    g.gain.setValueAtTime(0.32, t0+n*step-0.08);
+    g.gain.linearRampToValueAtTime(0.0001, t0+n*step);
+    o.start(t0); o.stop(t0+n*step+0.02);
+    return Math.round(n*step*1000)+150;
   }
   function say(text){
     if(!text || !("speechSynthesis" in window)) return;
@@ -7948,9 +7971,12 @@ const Alarm = (function(){
   }
   // "2026-09-26T18:30:00" (operator local time) -> "6:30 pm", "tomorrow at 9 am", "Monday at 2:15 pm"
   function pcWhen(iso){
-    const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso||""));
+    const str=String(iso||"");
+    const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(str);
     if(!m) return null;
-    const dt=new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    // a UTC "Z" or offset (SSEN, NPg) is honoured; a bare time is operator local time
+    const dt=/(Z|[+-]\d{2}:?\d{2})$/.test(str.trim()) ? new Date(str.trim()) : new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    if(isNaN(dt)) return null;
     const h=dt.getHours(), mi=dt.getMinutes(), h12=(h%12)||12;
     const t=h12+(mi?":"+String(mi).padStart(2,"0"):"")+(h<12?" am":" pm");
     const today=new Date(); today.setHours(0,0,0,0);
@@ -7964,8 +7990,10 @@ const Alarm = (function(){
   function pcNearOne(x){
     const nf=v=>Number(v||0).toLocaleString("en-GB");
     const now=new Date(), st=x.start?pcWhen(x.start):null;
-    const future=x.start && (function(){ const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(x.start);
-      return m && new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5])>now; })();
+    const future=x.start && (function(){ const s=String(x.start).trim(), m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s);
+      if(!m) return false;
+      const t=/(Z|[+-]\d{2}:?\d{2})$/.test(s) ? new Date(s) : new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
+      return t>now; })();
     let s=(x.planned?"planned works ":"unplanned fault ")+pcWhere(x);
     const n=x.off||(x.planned?x.pred:0);
     if(n) s+=", about "+nf(n)+" customer"+(n===1?"":"s")+(x.off?" off":" affected");
@@ -8007,6 +8035,90 @@ const Alarm = (function(){
     // one that left the "near" list for another reason (radius change, mute, feed down) is
     // kept silently; it is re-checked each poll and forgotten after 48 h
     pcNearSeenSave(seen);
+  }
+
+  // ---- monitored postcode areas ----
+  // Matches come from the server (powercuts.watch_matches), one per (area, incident). Each
+  // is announced once — siren, then speech — and remembered across reloads for 48 h; when an
+  // announced incident has left the feed (and its operator's feed is live, so an outage can't
+  // pass for a restoration) its area is announced as restored with a soft tone.
+  const PC_WATCH_SEEN_KEY="pcWatchSeen";
+  function pcWatchSeenLoad(){ try{ return JSON.parse(localStorage.getItem(PC_WATCH_SEEN_KEY)||"{}")||{}; }catch(e){ return {}; } }
+  function pcWatchSeenSave(o){ try{ localStorage.setItem(PC_WATCH_SEEN_KEY, JSON.stringify(o)); }catch(e){} }
+  // "PL3 5AA" -> "P L 3, 5 A A" so the speech engine reads it as a postcode
+  function pcSpoken(pc){
+    const p=String(pc||"").split(" "), sp=s=>s.replace(/([A-Z])/g," $1 ").replace(/\s+/g," ").trim();
+    return sp(p[0]||"")+(p[1]?", "+sp(p[1]):"");
+  }
+  function pcAreaName(a){ return pcSpoken(a.pc)+(a.place?", "+a.place:""); }
+  // the customer figure for an area's new incidents; null when none can be given (SPEN
+  // publishes no count, so its incidents never contribute — or the whole figure is dropped
+  // when only SPEN incidents are involved)
+  function pcWatchCount(A){
+    let n=0, any=false;
+    A.forEach(m=>{ if(m.dno==="SPEN") return; const v=m.off||(m.planned?m.predicted:0)||0; if(v){ n+=v; any=true; } });
+    return any?n:null;
+  }
+  function pcWatchArea(A){         // A: this area's new matches -> {name, planned, may, n, start, etr, spenOnly}
+    const unpl=A.filter(m=>!m.planned);
+    const lead=unpl[0]||A[0];
+    return {name:pcAreaName(lead), planned:!unpl.length, may:A.every(m=>m.level==="may"),
+            n:pcWatchCount(A), etr:lead.etr, start:lead.start, sector:(lead.hit||[])[0]};
+  }
+  function evaluatePowerCutsWatch(w){
+    const cat=CATS.pcwatch;
+    if(!armed || !(cat && cat.on) || !w) return;
+    const nf=v=>Number(v||0).toLocaleString("en-GB");
+    const now=Date.now(), seen=pcWatchSeenLoad(), live=new Set(w.liveOps||[]);
+    const areaSet=new Set((w.areas||[]).map(a=>a.pc));
+    // forget anything older than 48 h, or for an area no longer monitored
+    Object.keys(seen).forEach(k=>{ if(now-(seen[k].t||0)>PC_NEAR_KEEP_MS || !areaSet.has(seen[k].pc)) delete seen[k]; });
+    const key=m=>m.pc+"|"+m.dno+":"+m.id;
+    const cur=new Map((w.matches||[]).map(m=>[key(m),m]));
+    const fresh=(w.matches||[]).filter(m=>!seen[key(m)]);
+    const active=new Set(w.activeIds||[]);
+    const gone=Object.keys(seen).filter(k=>!cur.has(k) && !active.has(seen[k].dno+":"+seen[k].id) && live.has(seen[k].dno));
+    if(fresh.length){
+      const byArea=new Map();
+      fresh.forEach(m=>{ if(!byArea.has(m.pc)) byArea.set(m.pc,[]); byArea.get(m.pc).push(m); });
+      const S=[...byArea.values()].map(pcWatchArea);
+      let msg;
+      if(S.length===1){
+        const s=S[0];
+        if(s.planned) msg="A monitored postcode area "+(s.may?"may be affected by":"has")+" planned power works. The area is "+s.name+".";
+        else msg="A monitored postcode area "+(s.may?"may have":"has")+" suffered a power cut. The area is "+s.name+".";
+        if(s.may && s.sector) msg+=" The operator only gives the sector, "+pcSpoken(s.sector)+".";
+        if(s.n) msg+=" "+nf(s.n)+" customer"+(s.n===1?" is":"s are")+(s.planned?" affected.":" without power.");
+        const st=s.planned?pcWhen(s.start):null, et=pcWhen(s.etr);
+        if(st) msg+=" Starting "+(/^\d/.test(st)?"at ":"")+st+".";
+        if(et) msg+=" "+(s.planned?"Due to finish ":"Estimated back on ")+(/^\d/.test(et)?"at ":"")+et+".";
+      } else {
+        const allPl=S.every(s=>s.planned);
+        msg=(allPl?"Planned power works in ":"Power cuts in ")+S.length+" monitored postcode areas. "+
+          S.map(s=>s.name+(s.may?", may be affected":"")+": "+(s.planned?"planned works":"power cut")+
+            (s.n?", "+nf(s.n)+" customer"+(s.n===1?"":"s")+(s.planned?" affected":" without power"):"")).join(". ")+".";
+      }
+      const ms=siren(); flashBtn();
+      setTimeout(()=>say(msg), ms);
+      fresh.forEach(m=>{ seen[key(m)]={t:now, pc:m.pc, place:m.place, dno:m.dno, id:m.id, planned:!!m.planned}; });
+    }
+    if(gone.length){
+      const byArea=new Map();
+      gone.forEach(k=>{ const g=seen[k]; if(!byArea.has(g.pc)) byArea.set(g.pc,[]); byArea.get(g.pc).push(g); });
+      const stillOn=pc=>[...cur.values()].some(m=>m.pc===pc);
+      const R=[...byArea.values()].map(G=>({name:pcAreaName(G[0]), planned:G.every(g=>g.planned), more:stillOn(G[0].pc)}));
+      let msg;
+      if(R.length===1){
+        const r=R[0];
+        msg=r.planned ? "Planned power works in monitored area "+r.name+" have finished."
+                      : "Power has been restored in monitored area "+r.name+".";
+        if(r.more) msg+=" Another cut there is still in progress.";
+      } else msg=(R.every(r=>r.planned)?"Planned power works have finished in ":"Power has been restored in ")+
+                 R.length+" monitored postcode areas: "+R.map(r=>r.name).join("; ")+".";
+      tone("notice"); say(msg); flashBtn();
+      gone.forEach(k=>{ delete seen[k]; });
+    }
+    pcWatchSeenSave(seen);
   }
 
   // ---- evaluation from the main grid snapshot ----
@@ -8412,7 +8524,9 @@ const Alarm = (function(){
         '<button class="ac-test">test</button>'+
         '<button class="ac-toggle'+(c.on?' on':'')+'" aria-label="toggle"></button>';
       const [testBtn, tog]=[row.querySelector(".ac-test"), row.querySelector(".ac-toggle")];
-      testBtn.onclick=()=>{ ensureCtx(); tone(c.tier);
+      testBtn.onclick=()=>{ ensureCtx();
+        if(cat==="pcwatch"){ const ms=siren(); setTimeout(()=>say("A monitored postcode area has suffered a power cut. The area is "+pcSpoken("PL3 5")+", Plymouth. 53 customers are without power. Test."), ms); return; }
+        tone(c.tier);
         if(cat==="rain") say("Isolated heavy showers to the north-west, which may be with you soon. Test.");
         else if(cat==="nowcast") say("Weather nowcast: Rain is approaching from the south west and may arrive in twenty to thirty minutes. Test.");
         else if(cat==="sys") say("Warning. NESO system warning. Capacity Market Notice, from 16:30 Wed 08 Jan. Test.");
@@ -8486,7 +8600,7 @@ const Alarm = (function(){
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, evaluatePowerCuts, evaluatePowerCutsNear, rebaselinePowerCuts, clearEA,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, evaluatePowerCuts, evaluatePowerCutsNear, evaluatePowerCutsWatch, rebaselinePowerCuts, clearEA,
            rainWatchWanted, riverWatchWanted, nowcastWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();

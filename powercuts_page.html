@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 260929.6  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 261014.4  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -42,8 +42,12 @@
   .nearyou{font-size:12px;margin:2px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:7px}
   .nearyou .nh{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
   .nearyou .nr{display:flex;gap:8px;padding:2px 0}
+  .nearyou .ns{padding:0 0 3px;font-variant-numeric:tabular-nums}
   .nearyou .nr .d{min-width:92px;font-variant-numeric:tabular-nums}
   .nearyou .nr.un .d{color:var(--warn)} .nearyou .nr.pl .d{color:#6fb7ff}
+  /* border by nearest cut as a fraction of the set radius: <100% yellow, <50% amber, <20% red, <10% hot pink */
+  .nearyou.nb1{border:2px solid rgb(255,214,0)} .nearyou.nb2{border:2px solid rgb(255,150,0)}
+  .nearyou.nb3{border:2px solid var(--bad)} .nearyou.nb4{border:2px solid rgb(255,62,165)}
   .bar{height:8px;border-radius:4px;background:var(--accent);min-width:2px}
   .st{font-size:11px;padding:1px 6px;border-radius:9px;border:1px solid var(--line)}
   .st.ok{color:var(--ok);border-color:#1d4} .st.stale{color:var(--warn);border-color:#a72}
@@ -126,6 +130,18 @@
   .wcpred b{color:var(--ink);font-size:13px}
   .wc-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 8px}
   .modal.wide .card{max-width:1000px;width:94%;max-height:92vh;overflow:auto}
+  /* monitored postcode areas */
+  .btn.watch-hit{border-color:var(--bad);color:var(--bad)}
+  .wa-row{display:grid;grid-template-columns:22px 130px 1fr 28px;gap:8px;align-items:center;margin:5px 0}
+  .wa-row .n{color:var(--dim);font-size:11px;text-align:right}
+  .wa-row input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:6px;
+                padding:5px 8px;font:inherit;width:100%;text-transform:uppercase}
+  .wa-row .pl{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wa-row .pl.bad{color:var(--bad)}
+  .wa-row .pl.cut{color:var(--bad);font-weight:600}
+  .wa-x{background:#1a2430;border:1px solid var(--line);color:var(--dim);border-radius:6px;cursor:pointer;
+        font:inherit;font-size:12px;height:26px;padding:0}
+  .wa-x:hover{color:var(--bad);border-color:var(--bad)}
   #wcRegions{display:inline-flex;gap:4px;flex-wrap:wrap}
   #wcRegions button, .wc-seg button{font-size:11px;padding:3px 7px}
   .wc-note{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.45}
@@ -137,6 +153,7 @@
     <h1>⚡ UK &amp; IRELAND POWER CUTS</h1>
     <span class="muted" id="genline">loading…</span>
     <span style="flex:1"></span>
+    <button class="btn" id="waOpen" title="Postcode areas to alert on, in addition to your local area">📍 Monitored areas</button>
     <button class="btn" id="cog">⚙ feeds / keys</button>
   </div>
   <div class="feedstrip" id="feedstrip"></div>
@@ -315,6 +332,22 @@
       <span class="note" id="savemsg"></span>
       <button class="btn" id="cancel">Close</button>
       <button class="btn" id="save">Save keys</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="waModal">
+  <div class="card">
+    <h2>Enter postcode areas to monitor in addition to your local area eg EX23 4 or EX23 4AA</h2>
+    <p class="note">A sector (EX23 4) alerts for any cut in that sector; a full postcode (EX23 4AA) only for that
+       postcode — or, where the operator publishes sectors only (SP Energy Networks), its sector,
+       announced as “may be affected”. Electricity North West publishes no postcodes and ESB uses Eircodes, so areas
+       they supply can’t be matched. Alerts sound on the dashboard (alarm category “Monitored postcode areas”).</p>
+    <div id="waRows" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <span class="note" id="waMsg"></span>
+      <button class="btn" id="waClose">Close</button>
+      <button class="btn" id="waSave">Save</button>
     </div>
   </div>
 </div>
@@ -933,6 +966,7 @@ function pcWhenShort(iso){ var m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec
   return (d.getTime()===t.getTime()?"":["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" ")+m[4]+":"+m[5]; }
 function renderNear(incs){
   var box=$("nearyou"); if(!box) return;
+  box.className="nearyou";                       // clear any distance-band border
   var h=pcHome();
   if(!h){ box.style.display="block";
     box.innerHTML='<div class="nh">Near you</div><span class="muted">Set your location on the dashboard\'s EA page to see power cuts near you.</span>'; return; }
@@ -944,14 +978,33 @@ function renderNear(incs){
   });
   L.sort(function(a,b){ return a.d-b.d; });
   box.style.display="block";
+  // Border colour from the nearest cut (planned or unplanned) as a share of the radius,
+  // so the bands scale with the 5/10/20 km setting (10 km: <10 yellow, <5 amber, <2 red, <1 pink).
+  if(L.length){ var f=L[0].d/km; box.className="nearyou "+(f<0.1?"nb4":f<0.2?"nb3":f<0.5?"nb2":"nb1"); }
   var head='<div class="nh">Near you · within '+km+' km of '+String(h.label||"your location").replace(/</g,"&lt;")+'</div>';
   if(!L.length){ box.innerHTML=head+'<span class="muted">No power cuts within '+km+' km.</span>'; return; }
-  box.innerHTML=head+L.slice(0,6).map(function(x){
+  // 2+ cuts: totals line — cuts and customers off (unplanned/planned split; "+" when some cuts report no count)
+  // Totals over a list of cuts: customers off ("+" when some report no count) and the split.
+  function pcTot(A){ var off=0, nUn=0, nPl=0, noCnt=0;
+    A.forEach(function(x){ var i=x.i; if(i.planned) nPl++; else nUn++;
+      if(i.customers_off!=null) off+=(+i.customers_off||0); else noCnt++; });
+    return {off:fmt(off)+(noCnt?"+":""), split:'<span class="muted">('+
+      [nUn?nUn+" unplanned":"",nPl?nPl+" planned":""].filter(Boolean).join(", ")+
+      (noCnt?"; "+noCnt+" without a count":"")+')</span>'}; }
+  var sum="";
+  if(L.length>1){ var T=pcTot(L);
+    sum='<div class="ns"><b>'+L.length+' cuts</b> · <b>'+T.off+'</b> customers off '+T.split+'</div>'; }
+  // Nearest three listed individually; everything else inside the radius on one summary line.
+  var rest=L.slice(3), more="";
+  if(rest.length){ var R=pcTot(rest);
+    more='<div class="nr"><span class="d">'+(rest[0].d<1?"<1":rest[0].d.toFixed(1))+"–"+km+' km</span><span>'+
+      rest.length+' more cut'+(rest.length>1?"s":"")+" · "+R.off+" off "+R.split+"</span></div>"; }
+  box.innerHTML=head+sum+L.slice(0,3).map(function(x){
     var i=x.i, et=pcWhenShort(i.etr);
     return '<div class="nr '+(i.planned?"pl":"un")+'"><span class="d">'+(x.d<1?"<1":x.d.toFixed(1))+" km "+PC_ABBR[Math.round(x.b/45)%8]+
       '</span><span>'+(i.planned?"planned":"unplanned")+" · "+i.dno+
       (i.customers_off?(" · "+fmt(i.customers_off)+" off"):"")+(et?(' · <span class="muted">'+(i.planned?"until ":"est. back ")+et+"</span>"):"")+"</span></div>";
-  }).join("")+(L.length>6?'<div class="muted">and '+(L.length-6)+' more</div>':"");
+  }).join("")+more;
 }
 function fmt(n){ return (n==null?"–":Number(n).toLocaleString()); }
 function ago(ts){ if(!ts) return ""; var s=Math.max(0,Date.now()/1000-ts);
@@ -1021,7 +1074,8 @@ function render(d){
   renderFeedstrip(d.operators||[]);
   renderOps(d.operators||[]);
   renderNear(d.incidents||[]);
-  drawMap(d.incidents||[]);
+  try{ waBadge(); }catch(e){}
+  drawMap((d.incidents||[]).concat(d.overdue||[]));   // overdue: drawn greyed, never counted
   drawPlots(d.history||[]);
   $("footnote").textContent = d.attribution||"";
 }
@@ -1251,12 +1305,19 @@ function mapTipHtml(h, others){
              i.planned===false? '<span class="mt-u">unplanned</span>' : '<span class="mt-d">type not stated</span>';
   var cat = i.category && !/^(planned|fault|lv|hv|ehv)$/i.test(i.category)? " · "+esc(clip(i.category,60)) : "";
   L.push(kind+(i.voltage? " · "+esc(i.voltage):"")+cat);
-  if(i.customers_off!=null) L.push("<b>"+fmt(i.customers_off)+"</b> customers off"+
+  if(i.overdue) L.push('<span class="mt-d"><b>overdue</b> — estimated restoration was '+
+      (i.overdue_days!=null? i.overdue_days+" days ago":"over a week ago")+
+      '; possibly closed by '+esc(i.dno)+' but still listed, not confirmed. Not counted in any total.</span>');
+  if(i.overdue && i.customers_off!=null) L.push('<span class="mt-d">listed with '+fmt(i.customers_off)+" customers off</span>");
+  else if(i.customers_off!=null) L.push("<b>"+fmt(i.customers_off)+"</b> customers off"+
       (i.customers_predicted!=null? ' <span class="mt-d">('+fmt(i.customers_predicted)+" predicted)</span>":""));
+  else if(i.count_pending) L.push('<span class="mt-d">customer count not yet confirmed by '+esc(i.dno)+
+      (i.customers_predicted!=null? " · "+fmt(i.customers_predicted)+(i.planned?" planned":" predicted"):"")+"</span>");
   else L.push('<span class="mt-d">no customer count published'+(i.sectors? " · "+i.sectors+" postcode sector"+(i.sectors>1?"s":""):"")+"</span>");
   if(i.psr_customers) L.push(fmt(i.psr_customers)+" on the Priority Services Register");
   var st=pcWhenAny(i.start_ts), et=pcWhenAny(i.etr);
   if(st||et) L.push((st? "started "+esc(st):"")+(st&&et?" · ":"")+(et? (i.planned?"until ":"est. restore ")+esc(et):""));
+  if(i.end_unknown) L.push('<span class="mt-d">end time not given</span>');
   if(i.status){                        // ESB's stock apology: keep it whole up to "as quickly as possible", drop the rest
     var aq=/^([\s\S]*?as quickly as possible)/i.exec(String(i.status).replace(/\s+/g," "));
     L.push('<span class="mt-d">'+esc(aq? aq[1].trim()+"." : clipSentence(i.status,160))+"</span>"); }
@@ -1495,7 +1556,9 @@ function paintMap(incs){
     // affected onto the same bands: 1 sector -> smallest band, 2 -> next, etc. So SPEN dots
     // use the identical colour ramp and size scale as everyone else, just keyed on sectors.
     var off;
-    if(i.customers_off==null){
+    if(i.overdue){
+      off = SIZE_STOPS[0][0];                              // overdue: smallest, grey, no pulse
+    } else if(i.customers_off==null){
       var nsec = Math.max(1, i.sectors||1);
       off = SIZE_STOPS[Math.min(nsec-1, SIZE_STOPS.length-1)][0];
     } else {
@@ -1503,9 +1566,9 @@ function paintMap(incs){
     }
     var r = radiusFor(off)*dk;                       // absolute size scale = the map key
     var mdot = pcMutedHas(i.dno);                     // muted provider — greyed, no pulse
-    var col = mdot ? "90,100,116" : (i.planned ? "111,183,255" : heatRGB(off).join(","));   // planned = light blue
+    var col = (mdot||i.overdue) ? "90,100,116" : (i.planned ? "111,183,255" : heatRGB(off).join(","));   // planned = light blue
     var seen = firstSeen[i.dno+"|"+i.id];
-    var isNew = !mdot && seen && (nowms - seen) < PULSE_MS;
+    var isNew = !mdot && !i.overdue && seen && (nowms - seen) < PULSE_MS;
     if(isNew){
       anyPulse = true;                                     // outward ping: grows and fades
       x.beginPath(); x.arc(q[0],q[1], r+(1+9*phase)*ds, 0,7);
@@ -1901,6 +1964,90 @@ $("save").addEventListener("click",function(){
       if(j.ok){ setTimeout(function(){ closeModal(); load(); }, 800); } })
     .catch(function(e){ $("savemsg").textContent="error: "+e.message; });
 });
+
+// ---- monitored postcode areas (stored by the server: /api/powercut-watch) ----------------
+var WA_SLOTS=10, waAreas=[];
+function waEsc(s){ return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+// active cuts per monitored area, from the last /api/powercuts reply (muted providers and
+// finished incidents left out, as on the dashboard)
+function waActive(){
+  var w=last&&last.watch, by={};
+  if(!w||!w.matches) return by;
+  var muted=pcMutedGet();
+  w.matches.forEach(function(m){
+    if(muted.indexOf(m.dno)>=0 || PC_DONE_RE.test(m.status||"")) return;
+    (by[m.pc]=by[m.pc]||[]).push(m); });
+  return by;
+}
+function waNote(a, act){
+  if(!a) return "";
+  var A=act[a.pc];
+  if(A&&A.length){
+    var may=A.every(function(m){return m.level==="may";});
+    return {cls:"cut", t:(a.place?a.place+" · ":"")+(may?"may be affected — ":"")+A.length+" cut"+(A.length>1?"s":"")+" now"}; }
+  if(a.unverified) return {cls:"", t:(a.place||"")+" (not yet verified — lookup failed)"};
+  return {cls:"", t:a.place||""};
+}
+function waRender(){
+  var act=waActive(), byPc={}; waAreas.forEach(function(a){ byPc[a.pc]=a; });
+  var rows=[];
+  for(var i=0;i<WA_SLOTS;i++){
+    var a=waAreas[i], n=waNote(a, act);
+    rows.push('<div class="wa-row"><span class="n">'+(i+1)+'</span>'+
+      '<input data-i="'+i+'" maxlength="9" spellcheck="false" autocomplete="off" value="'+waEsc(a?a.pc:"")+'">'+
+      '<span class="pl '+(n.cls||"")+'" title="'+waEsc(n.t||"")+'">'+waEsc(n.t||"")+'</span>'+
+      '<button class="wa-x" data-i="'+i+'" title="Remove">✕</button></div>');
+  }
+  $("waRows").innerHTML=rows.join("");
+}
+function waLoad(cb){
+  fetch("/api/powercut-watch").then(function(r){ return r.ok?r.json():null; })
+    .then(function(d){ if(d&&d.areas) waAreas=d.areas; if(cb) cb(); waBadge(); })
+    .catch(function(){ if(cb) cb(); });
+}
+function waBadge(){
+  var b=$("waOpen"); if(!b) return;
+  var act=waActive(), n=0; Object.keys(act).forEach(function(k){ if(waAreas.some(function(a){return a.pc===k;})) n++; });
+  b.classList.toggle("watch-hit", n>0);
+  b.textContent="📍 Monitored areas"+(n?" · "+n+" with cuts":"");
+}
+$("waOpen").addEventListener("click",function(){
+  $("waMsg").textContent=""; waRender(); $("waModal").classList.add("show");
+  waLoad(function(){ if($("waModal").classList.contains("show")) waRender(); });
+});
+$("waClose").addEventListener("click",function(){ $("waModal").classList.remove("show"); });
+$("waRows").addEventListener("click",function(e){
+  var x=e.target.closest(".wa-x"); if(!x) return;
+  var row=x.parentNode, inp=row.querySelector("input"), pl=row.querySelector(".pl");
+  inp.value=""; pl.textContent=""; pl.className="pl"; inp.focus();
+  $("waMsg").textContent="removed — Save to keep the change";
+});
+$("waSave").addEventListener("click",function(){
+  var list=[];
+  Array.prototype.forEach.call(document.querySelectorAll("#waRows input"),function(inp){
+    var v=inp.value.trim().toUpperCase().replace(/\s+/g," "); if(v) list.push(v); });
+  $("waMsg").textContent="checking postcodes…";
+  fetch("/api/powercut-watch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({areas:list})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(j.areas) waAreas=j.areas;
+      waRender();
+      var rej=j.rejected||[];
+      // keep rejected entries visible (in the free slots) with the reason, so they can be fixed
+      if(rej.length){
+        var inputs=document.querySelectorAll("#waRows input"), k=waAreas.length;
+        rej.forEach(function(r){ if(k>=WA_SLOTS) return; var inp=inputs[k], pl=inp.parentNode.querySelector(".pl");
+          inp.value=r.input; pl.textContent=r.error; pl.title=r.error; pl.className="pl bad"; k++; });
+      }
+      $("waMsg").innerHTML = !j.ok ? '<span class="err">error: '+waEsc(j.error||"?")+'</span>'
+        : rej.length ? '<span class="err">saved '+waAreas.length+' — '+rej.length+' not recognised (not saved)</span>'
+        : "saved "+waAreas.length+" area"+(waAreas.length===1?"":"s");
+      waBadge(); load();
+    })
+    .catch(function(e){ $("waMsg").innerHTML='<span class="err">error: '+waEsc(e.message)+'</span>'; });
+});
+document.addEventListener("keydown",function(e){ if(e.key==="Escape" && $("waModal").classList.contains("show")){ $("waModal").classList.remove("show"); e.stopPropagation(); } });
+waLoad();
 
 // ===== wind vs power-cuts correlation ========================================
 var wc=null, wcRegion="ALL", wcMetric="faults";

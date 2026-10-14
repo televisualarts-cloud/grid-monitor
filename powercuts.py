@@ -29,7 +29,7 @@
 #
 # Python 3, stdlib only. No import of the live server.
 #
-# Build 260929.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261014.5  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ import urllib.request, urllib.parse, urllib.error
 _DIR = os.path.dirname(os.path.abspath(__file__))
 KEYS_FILE = os.path.join(_DIR, "powercut_keys.json")           # server-side key store
 LAST_IDS_FILE = os.path.join(_DIR, "powercut_last_ids.json")   # for new/cleared diffing across restarts
+WATCH_FILE = os.path.join(_DIR, "powercut_watch.json")         # monitored postcode areas (user list)
 HIST_PREFIX = os.path.join(_DIR, "powercuts-")                 # powercuts-YYYY-MM.jsonl
 UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 
@@ -74,6 +75,17 @@ FETCH_TIMEOUT = 20
 CACHE_TTL = 120           # per-source cache; feeds move every ~5-15 min, poll politely
 STALE_GRACE = 7200        # keep serving a feed's last good reading (incl. an empty 'no
                           # outages' one) for up to 2h after it stops responding, THEN 'down'
+# Frozen-feed detection. A feed can keep answering while its content stops moving (NPg,
+# 3–5 Oct 2026: 54 h of identical incidents, all reported 'ok'). When an operator's
+# incident set — ids, customers off, status text — has not changed for FROZEN_DAY_S of
+# DAYTIME (FROZEN_DAY_START–FROZEN_DAY_END UTC; quiet nights don't count), it is flagged
+# 'stale' with a reason. It stays in the totals (last reading, as for any stale feed) and
+# clears on the first change. Backtest over Sep–Oct 2026 (aggregate figures, a coarser
+# test than this): no flags on UKPN, SSEN, SPEN, ESB; flags on NPg 3–5 Oct, NIE 25–27 Sep,
+# NGED 19 Sep and several ENWL spells that look like real freezes.
+FROZEN_DAY_S = 3 * 3600
+FROZEN_DAY_START, FROZEN_DAY_END = 6, 22   # UTC hours counted as daytime
+FROZEN_MAX_STEP = 1800    # a gap longer than this between checks isn't counted as unchanged
 ODS_PAGE = 100            # OpenDataSoft records page size (max 100)
 ODS_MAX_PAGES = 60        # safety cap (6000 incidents) — GB rarely exceeds a few hundred
 
@@ -181,8 +193,11 @@ def adapter_nged():
             off=_num(r.get("confirmed_off")), predicted=_num(r.get("predicted_off")),
             planned=_truthy(r.get("planned")),
             category=_s(r.get("category")), voltage=_s(r.get("voltage")),
-            status=_s(r.get("status")), etr=_s(r.get("etr")),
-            start_ts=_s(r.get("date_of_reported_fault")),
+            status=_s(r.get("status")),
+            # planned works carry their window in planned_outage_*; 'etr' is blank for them
+            etr=_s(r.get("etr")) or (_s(r.get("planned_outage_end_date")) if _truthy(r.get("planned")) else None),
+            start_ts=(_s(r.get("planned_outage_start_date")) if _truthy(r.get("planned")) else None)
+                     or _s(r.get("date_of_reported_fault")),
             last_updated=_s(r.get("last_updated")),
             psr=_num(r.get("number_of_psr_customers")),
         ))
@@ -190,47 +205,88 @@ def adapter_nged():
 
 
 def adapter_ukpn(apikey=None):
+    """UK Power Networks — ODS 'ukpn-live-faults'. The dataset also carries restored
+    incidents (most of its rows) and 'MULT-…' rows that group incidents already listed on
+    their own; both are dropped, so only live incidents are counted and plotted.
+    Customer counts: 'nocustomeraffected' stays 0 until UKPN confirms a figure (its website's
+    'Est. N' comes from NoCustomersPredicted, which is not in this dataset), so a live 0 is
+    'not yet confirmed' — customers_off None + count_pending, never a real zero. Planned
+    works give their figure in 'noplannedcustomers' (-> customers_predicted).
+    'postcodesaffected' lists sectors; 'fullpostcodedata' the affected full postcodes
+    (compact, ';'-separated), kept as full_postcodes for monitored-area matching."""
     recs = _ods_records(*ODS["UKPN"][:2], apikey=apikey)
     out = []
     for r in recs:
+        ref = _s(r.get("incidentreference")) or ""
+        typ = (_s(r.get("powercuttype")) or "").lower()
+        if r.get("restoreddatetime") or typ in ("restored", "multiple") or ref.upper().startswith("MULT-"):
+            continue
         gp = r.get("geopoint") or {}
-        out.append(_incident(
-            "UKPN", "UKPN", _s(r.get("incidentreference")),
+        planned = _truthy(r.get("powercuttype"))
+        off = _num(r.get("nocustomeraffected"))
+        pending = not off                                  # 0 / missing on a live incident
+        pl = _num(r.get("noplannedcustomers"))
+        full = [t.strip() for t in str(r.get("fullpostcodedata") or "").split(";") if t.strip()]
+        inc = _incident(
+            "UKPN", "UKPN", ref or None,
             lat=gp.get("lat"), lon=gp.get("lon"),
             postcodes=_s(r.get("postcodesaffected")) or _s(r.get("fullpostcodedata")),
-            off=_num(r.get("nocustomeraffected")), predicted=None,   # UKPN gives no confirmed/predicted split
-            planned=_truthy(r.get("powercuttype")),
+            off=(None if pending else off),
+            predicted=(pl if (planned and pl) else None),
+            planned=planned,
             category=_s(r.get("incidenttypename")),
             voltage=None,
-            status=("restored" if r.get("restoreddatetime") else "active"),
+            status="active",
             etr=_s(r.get("estimatedrestorationdate")),
             start_ts=_s(r.get("creationdatetime")) or _s(r.get("receiveddate")),
-            last_updated=_s(r.get("restoreddatetime")) or _s(r.get("creationdatetime")),
+            last_updated=_s(r.get("creationdatetime")),
             psr=None,
-        ))
+        )
+        if pending:
+            inc["count_pending"] = True
+        if full:
+            inc["full_postcodes"] = full
+        out.append(inc)
     return out
 
 
 def adapter_npg(apikey=None):
+    """Northern Powergrid — ODS 'live-power-cuts-data', one row per postcode/stage (collapsed
+    by _dedup). The dataset keeps FINISHED incidents (incidentstatus 6, isaffected 0, "The
+    scheduled work has now been completed") — 31 of 38 on 14 Oct, 1,366 customers that were
+    not off — so those are dropped. Planned/unplanned comes from 'natureofoutage' ("Planned
+    Work on System" / "Localised Fault" / "Large Area Fault"); 'powercutcategory' is an
+    internal numeric code, so the nature is used as the category. A live 0 in
+    'totalconfirmedpowercut' means not yet confirmed: customers_off None + count_pending, the
+    predicted figure kept. Times carry a UTC offset."""
     recs = _ods_records(*ODS["NPg"][:2], apikey=apikey)
     out = []
     for r in recs:
+        if r.get("incidentstatus") == 6 or r.get("isaffected") == 0:
+            continue
         pcs = r.get("postcode")
         if isinstance(pcs, list):
             pcs = ", ".join(str(p) for p in pcs)
-        out.append(_incident(
+        nature = _s(r.get("natureofoutage"))
+        nl = (nature or "").lower()
+        planned = True if "planned" in nl else (False if ("fault" in nl or "unplanned" in nl) else None)
+        off = _num(r.get("totalconfirmedpowercut"))
+        inc = _incident(
             "NPg", _s(r.get("area")) or "NPg", _s(r.get("reference")) or _s(r.get("incidentid")),
             lat=r.get("lat"), lon=r.get("lng"),
             postcodes=_s(pcs),
-            off=_num(r.get("totalconfirmedpowercut")), predicted=_num(r.get("totalpredictedpowercut")),
-            planned=None,                                   # NPg feed carries no clear planned flag -> unknown
-            category=_s(r.get("powercutcategory")), voltage=_s(r.get("type")),
+            off=(off or None), predicted=(_num(r.get("totalpredictedpowercut")) or None),
+            planned=planned,
+            category=nature or _s(r.get("powercutcategory")), voltage=_s(r.get("type")),
             status=_s(r.get("customerstagesequencemessage")) or _s(r.get("incidentstatus")),
             etr=_s(r.get("estimatedtimetillresolution")),
             start_ts=_s(r.get("loggedtime")),
             last_updated=_s(r.get("updatedate")),
             psr=None,
-        ))
+        )
+        if not off:
+            inc["count_pending"] = True
+        out.append(inc)
     return out
 
 
@@ -354,6 +410,10 @@ def adapter_spen(apikey=None):
             continue
         if (_s(r.get("status")) or "").lower() in ("completed", "restored", "closed", "cancelled"):
             continue
+        # planned works whose end time is well past are finished, however they are still
+        # labelled (one from 24 Sep was still "Awaiting" on 14 Oct)
+        if _truthy(r.get("planned")) and _ended(_s(r.get("etr"))):
+            continue
         sectors = [s.strip() for s in str(r.get("post_code") or "").split(";") if s.strip()]
         inc = _incident(
             "SPEN", _s(r.get("region")) or "SPEN", _s(r.get("fault_id")),
@@ -364,7 +424,8 @@ def adapter_spen(apikey=None):
             category=None, voltage=_s(r.get("voltage")),
             status=_s(r.get("status")),
             etr=_s(r.get("etr")),
-            start_ts=_s(r.get("date_of_reported_fault")),
+            start_ts=(_s(r.get("planned_outage_start_date")) if _truthy(r.get("planned")) else None)
+                     or _s(r.get("date_of_reported_fault")),
             last_updated=_s(r.get("upload_date")), psr=None,
         )
         inc["sectors"] = len(sectors)                    # magnitude proxy: postcode sectors affected
@@ -446,9 +507,9 @@ def adapter_nie(apikey=None):
             off=_num(r.get("numcustaffected")), predicted=None,
             planned=planned, category=typ, voltage=None,
             status=_s(r.get("statusmessage")),
-            etr=_s(r.get("estrestorefulldatetime")),
-            start_ts=_s(r.get("starttime")),
-            last_updated=_s(r.get("updatedtimestamp")), psr=None,
+            etr=_nie_time(r.get("estrestorefulldatetime")) or _s(r.get("estrestorefulldatetime")),
+            start_ts=_nie_time(r.get("starttime")) or _s(r.get("starttime")),
+            last_updated=_nie_time(r.get("updatedtimestamp")) or _s(r.get("updatedtimestamp")), psr=None,
         ))
     return out
 
@@ -514,6 +575,71 @@ def _esb_detail(iid, key, now):
     return d
 
 
+ESB_PLANNED_GRACE_S = 3600   # a planned ESB outage this long past its end time is treated as finished
+PLANNED_GRACE_S = ESB_PLANNED_GRACE_S   # same rule for SPEN planned works
+OVERDUE_S = 7 * 86400        # an incident this far past its ETR is 'overdue' (probably left open)
+
+
+def _ended(iso, grace_s=PLANNED_GRACE_S):
+    """True when an ISO end time (naive = local, or with Z/offset) is more than grace_s past."""
+    if not iso:
+        return False
+    try:
+        t = datetime.datetime.fromisoformat(str(iso).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = datetime.datetime.now(t.tzinfo) if t.tzinfo else datetime.datetime.now()
+    return (now - t).total_seconds() > grace_s
+
+
+def _overdue_days(iso):
+    try:
+        t = datetime.datetime.fromisoformat(str(iso).strip().replace("Z", "+00:00"))
+        now = datetime.datetime.now(t.tzinfo) if t.tzinfo else datetime.datetime.now()
+        return int((now - t).total_seconds() // 86400)
+    except (ValueError, TypeError):
+        return None
+
+
+_NIE_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*([AP]M),\s*(\d{1,2})\s+([A-Za-z]{3})[a-z]*(?:\s+(\d{4}))?\s*$", re.I)
+_MON = {m: i + 1 for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split())}
+
+
+def _nie_time(v, ref=None):
+    """NIE '7:26 PM, 14 Oct' / '10:30 PM, 14 Oct 2026' (NI local = UK local) ->
+    'yyyy-mm-ddTHH:MM:00'. A missing year is the one that puts the time nearest `ref`
+    (now), so a late-December start read in January lands in the right year."""
+    m = _NIE_RE.match(str(v or ""))
+    if not m:
+        return None
+    h, mi, ap, d, mon, y = m.groups()
+    h = int(h) % 12 + (12 if ap.upper() == "PM" else 0)
+    mo = _MON.get(mon.lower()[:3])
+    if not mo:
+        return None
+    ref = ref or datetime.datetime.now()
+    years = [int(y)] if y else [ref.year - 1, ref.year, ref.year + 1]
+    best = None
+    for yy in years:
+        try:
+            t = datetime.datetime(yy, mo, int(d), h, int(mi))
+        except ValueError:
+            continue
+        if best is None or abs((t - ref).total_seconds()) < abs((best - ref).total_seconds()):
+            best = t
+    return best.strftime("%Y-%m-%dT%H:%M:00") if best else None
+
+
+def _esb_time(v):
+    """ESB 'dd/mm/yyyy HH:MM' (Irish local time, = UK local) -> 'yyyy-mm-ddTHH:MM:00',
+    the operator-local ISO form the pages and alarms read. None if absent/unparseable."""
+    m = re.match(r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", str(v or ""))
+    if not m:
+        return None
+    d, mo, y, h, mi = (int(x) for x in m.groups())
+    return f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:{mi:02d}:00"
+
+
 def adapter_esb(apikey=None):
     """ESB Networks PowerCheck (Republic of Ireland). Two-step: a light list endpoint
     (id 'i', type 't' in Planned/Fault/Restored, coord 'p.c' as "lat,lon") then one detail
@@ -561,16 +687,25 @@ def adapter_esb(apikey=None):
             except Exception:
                 pass
         reason = _s(d.get("plannedOutageReason"))
-        out.append(_incident(
+        st_iso, et_iso = _esb_time(d.get("startTime")), _esb_time(d.get("estRestoreTime"))
+        # ESB leaves finished PLANNED outages listed as 'Planned' after their window (Cong,
+        # 895 customers, still listed 5 h after its 17:00 end on 14 Oct): drop one whose end
+        # is more than ESB_PLANNED_GRACE_S past. One with no end time is kept, flagged.
+        if planned and _ended(et_iso, ESB_PLANNED_GRACE_S):
+            continue
+        inc = _incident(
             "ESB", _s(d.get("plannerGroup")) or _s(d.get("location")) or "ESB", _s(iid),
             lat=lat, lon=lon, postcodes=_s(d.get("location")),
             off=_num(d.get("numCustAffected")), predicted=None,
             planned=planned, category=(reason or typ), voltage=None,
             status=_s(d.get("statusMessage")) or typ,
-            etr=_s(d.get("estRestoreTime")),
-            start_ts=_s(d.get("startTime")),
-            last_updated=_s(d.get("restoreTime")) or _s(d.get("startTime")), psr=None,
-        ))
+            etr=et_iso or _s(d.get("estRestoreTime")),
+            start_ts=st_iso or _s(d.get("startTime")),
+            last_updated=_esb_time(d.get("restoreTime")) or st_iso, psr=None,
+        )
+        if planned and not et_iso:
+            inc["end_unknown"] = True
+        out.append(inc)
     return out
 
 
@@ -608,6 +743,183 @@ def save_keys(d):
         return False
 
 
+
+# ───────────────────────── monitored postcode areas ─────────────────────────
+# Up to WATCH_MAX postcode SECTORS ("PL3 5") or full postcodes ("PL3 5AA") the user wants
+# alerts for, beyond the near-you radius. Stored server-side (survives restarts, shared by
+# every browser). Each entry is checked against postcodes.io when saved, which also gives
+# the place name used in the spoken alert.
+#
+# Matching, per incident postcode token:
+#   monitored SECTOR  <- incident full postcode in that sector, or the same sector  = "affected"
+#   monitored FULL    <- the same full postcode                                     = "affected"
+#                     <- the incident only names the SECTOR (SPEN publishes no full
+#                        postcodes; UKPN's come from 'fullpostcodedata')                                            = "may" (may be affected)
+#   district-only tokens (outward code alone) never match: too coarse to say anything.
+# ENWL publishes no postcodes and ESB uses Eircodes, so neither can match.
+WATCH_MAX = 10
+_PC_FULL_RE = re.compile(r"^([A-Z]{1,2}\d[A-Z\d]?)(\d[A-Z]{2})$")
+_PC_SECTOR_RE = re.compile(r"^([A-Z]{1,2}\d[A-Z\d]?) (\d)$")
+_PC_UNIT_LETTERS = "ABDEFGHJLNPQRSTUWXYZ"     # letters that can start an inward unit
+_watch_lock = threading.Lock()
+
+
+def pc_parse(s):
+    """Normalise a postcode-ish string. Returns (kind, canonical) with kind 'full'
+    ('PL3 5AA') or 'sector' ('PL3 5'), or (None, None) if neither. A full postcode is
+    recognised with or without its space; a sector needs the space ('PL35' is a district)."""
+    t = " ".join(str(s or "").upper().split())
+    m = _PC_FULL_RE.match(t.replace(" ", ""))
+    if m:
+        return "full", m.group(1) + " " + m.group(2)
+    m = _PC_SECTOR_RE.match(t)
+    if m:
+        return "sector", m.group(1) + " " + m.group(2)
+    return None, None
+
+
+def _sector_of(full):
+    return full[:-2]                          # 'PL3 5AA' -> 'PL3 5'
+
+
+def load_watch():
+    try:
+        d = json.loads(open(WATCH_FILE, encoding="utf-8").read())
+        areas = [a for a in (d.get("areas") or []) if isinstance(a, dict) and a.get("pc")]
+        return {"areas": areas[:WATCH_MAX]}
+    except Exception:
+        return {"areas": []}
+
+
+def _pcio(path):
+    req = urllib.request.Request("https://api.postcodes.io" + path,
+                                 headers={"User-Agent": UA["User-Agent"]})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None                       # postcode not found
+        raise
+
+
+def _place_name(r):
+    """Spoken place for a postcodes.io record: a real civil parish (e.g. 'Bude-Stratton'),
+    else for Scotland / Wales / NI the ward (their councils cover large areas), else the
+    district ('Plymouth')."""
+    par = r.get("parish") or ""
+    if par and "unparished" not in par.lower():
+        return par
+    if (r.get("country") or "") in ("Scotland", "Wales", "Northern Ireland") and r.get("admin_ward"):
+        return r["admin_ward"]
+    return r.get("admin_district") or r.get("admin_ward") or None
+
+
+def pc_lookup(kind, pc):
+    """Confirm a postcode / sector exists and name its place. Returns
+    {'ok':True,'place':..} or {'ok':False,'error':..}; never raises."""
+    try:
+        if kind == "full":
+            d = _pcio("/postcodes/" + urllib.parse.quote(pc))
+            r = (d or {}).get("result")
+            if not r:
+                return {"ok": False, "error": "postcode not found"}
+            return {"ok": True, "place": _place_name(r)}
+        # sector: postcodes.io search ignores the space ('PL3 5' would also find PL35),
+        # so search on sector + first unit letter, which only a real sector can start with
+        for L in _PC_UNIT_LETTERS:
+            d = _pcio("/postcodes?" + urllib.parse.urlencode({"q": pc + L, "limit": 10}))
+            for r in (d or {}).get("result") or []:
+                if _sector_of(str(r.get("postcode") or "")) == pc:
+                    return {"ok": True, "place": _place_name(r)}
+        return {"ok": False, "error": "no postcodes found in this sector"}
+    except Exception as e:
+        return {"ok": False, "error": "lookup failed (" + type(e).__name__ + ")", "retry": True}
+
+
+def save_watch(entries):
+    """Validate + store the user's list. `entries` is a list of strings (blanks ignored,
+    duplicates dropped, max WATCH_MAX). Entries already stored keep their looked-up place
+    without a new lookup. Returns {'ok', 'areas', 'rejected':[{input,error}]}. An entry
+    whose lookup FAILED for network reasons is kept (marked unverified) rather than lost."""
+    old = {a["pc"]: a for a in load_watch()["areas"]}
+    areas, rejected, seen = [], [], set()
+    for raw in (entries or []):
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        kind, pc = pc_parse(s)
+        if not kind:
+            rejected.append({"input": s, "error": "not a postcode sector (e.g. EX23 4) or full postcode (e.g. EX23 4AA)"})
+            continue
+        if pc in seen:
+            continue
+        if len(areas) >= WATCH_MAX:
+            rejected.append({"input": s, "error": f"limit of {WATCH_MAX} areas"})
+            continue
+        seen.add(pc)
+        o = old.get(pc)
+        if o and o.get("place") and not o.get("unverified"):
+            areas.append(o); continue
+        lk = pc_lookup(kind, pc)
+        if lk.get("ok"):
+            areas.append({"pc": pc, "kind": kind, "place": lk.get("place")})
+        elif lk.get("retry"):
+            areas.append({"pc": pc, "kind": kind, "place": (o or {}).get("place"), "unverified": True})
+        else:
+            rejected.append({"input": s, "error": lk.get("error")})
+    with _watch_lock:
+        try:
+            tmp = WATCH_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"areas": areas}, fh, indent=1)
+            os.replace(tmp, WATCH_FILE)
+        except Exception as e:
+            return {"ok": False, "error": f"could not save ({type(e).__name__})",
+                    "areas": areas, "rejected": rejected}
+    return {"ok": True, "areas": areas, "rejected": rejected}
+
+
+def watch_matches(incidents, areas=None):
+    """Incidents touching a monitored area. One row per (area, incident):
+    {pc, place, kind, dno, id, planned, off, predicted, sectors, status, etr, start,
+     level:'affected'|'may', hit:[matching incident postcodes]}."""
+    if areas is None:
+        areas = load_watch()["areas"]
+    if not areas:
+        return []
+    out = []
+    for inc in incidents or []:
+        toks = []
+        for t in re.split(r"[;,]", str(inc.get("postcodes") or "")) + list(inc.get("full_postcodes") or []):
+            k, pc = pc_parse(t)
+            if k:
+                toks.append((k, pc))
+        if not toks:
+            continue
+        for a in areas:
+            apc, akind = a["pc"], a.get("kind") or pc_parse(a["pc"])[0]
+            level, hit = None, []
+            for k, pc in toks:
+                if akind == "sector":
+                    ok = (pc == apc) if k == "sector" else (_sector_of(pc) == apc)
+                    if ok:
+                        level = "affected"; hit.append(pc)
+                else:                                   # monitored full postcode
+                    if k == "full" and pc == apc:
+                        level = "affected"; hit.append(pc)
+                    elif k == "sector" and pc == _sector_of(apc):
+                        level = level or "may"; hit.append(pc)
+            if level:
+                out.append({"pc": apc, "place": a.get("place"), "kind": akind,
+                            "dno": inc.get("dno"), "id": inc.get("id"),
+                            "planned": inc.get("planned"), "off": inc.get("customers_off"),
+                            "predicted": inc.get("customers_predicted"),
+                            "sectors": inc.get("sectors"), "status": inc.get("status"),
+                            "etr": inc.get("etr"), "start": inc.get("start_ts"),
+                            "level": level, "hit": hit[:5]})
+    return out
+
 # ───────────────────────── collect + aggregate ──────────────────────────────
 _cache = {}         # dno -> {"incidents":[...], "ts":..., "error":None}
 _cache_lock = threading.Lock()
@@ -620,14 +932,24 @@ def _dedup(incs):
     one row per (dno,id), the one with the largest customers_off as representative. Feeds
     that are already one-row-per-incident (NGED, UKPN) are unaffected. Rows with no id are
     kept as-is (can't dedup safely)."""
-    best, noid = {}, []
+    best, noid, pcs = {}, [], {}
     for i in incs:
         if not i.get("id"):
             noid.append(i); continue
         k = (i["dno"], i["id"])
+        # every row's postcodes are kept (NPg puts one postcode per row), so postcode
+        # matching for monitored areas sees the whole incident, not just one row of it
+        for t in re.split(r"[;,]", str(i.get("postcodes") or "")):
+            t = " ".join(t.split())
+            if t and t not in pcs.setdefault(k, []):
+                pcs[k].append(t)
         c = best.get(k)
         if c is None or (i.get("customers_off") or 0) > (c.get("customers_off") or 0):
             best[k] = i
+    for k, i in best.items():
+        if len(pcs.get(k) or []) > 1:
+            i = best[k] = dict(i)
+            i["postcodes"] = ", ".join(pcs[k])
     return list(best.values()) + noid
 
 
@@ -663,32 +985,95 @@ def _fetch_operator(dno, keys, now):
         return "error", [], err
 
 
+_frozen = {}        # dno -> {"fp": fingerprint, "since": ts, "last": ts, "day_s": seconds}
+_frozen_lock = threading.Lock()
+
+
+def _daytime_seconds(a, b):
+    """Seconds of [a, b) that fall inside the FROZEN_DAY_START–END UTC window."""
+    total = 0.0
+    t = a
+    while t < b:
+        d = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
+        nxt = min(b, (d.replace(minute=0, second=0, microsecond=0)
+                      + datetime.timedelta(hours=1)).timestamp())
+        if FROZEN_DAY_START <= d.hour < FROZEN_DAY_END:
+            total += nxt - t
+        t = nxt
+    return total
+
+
+def _fingerprint(incs):
+    return tuple(sorted((str(i.get("id")), i.get("customers_off"), i.get("status") or "")
+                        for i in incs))
+
+
+def _frozen_check(dno, incs, now):
+    """Track how long an operator's content has been unchanged. Returns the time it last
+    changed if it now counts as frozen, else None."""
+    fp = _fingerprint(incs)
+    with _frozen_lock:
+        f = _frozen.get(dno)
+        if f is None or f["fp"] != fp:
+            _frozen[dno] = {"fp": fp, "since": now, "last": now, "day_s": 0.0}
+            return None
+        step = now - f["last"]
+        if 0 < step <= FROZEN_MAX_STEP:
+            f["day_s"] += _daytime_seconds(f["last"], now)
+        if step > 0:
+            f["last"] = now
+        return f["since"] if f["day_s"] >= FROZEN_DAY_S else None
+
+
 def collect(keys=None):
     """Fetch every operator, normalise, aggregate. Returns a snapshot dict. National totals
     sum ONLY operators currently reporting (ok/stale); the rest are named, not zeroed."""
     keys = keys if keys is not None else load_keys()
     now = time.time()
-    operators, all_incidents = [], []
+    operators, all_incidents, all_overdue = [], [], []
     nat_off = nat_pred = nat_inc = nat_psr = 0
     reporting = 0
     for dno in OPERATOR_ORDER:
         status, incs, err = _fetch_operator(dno, keys, now)
         incs = _dedup(incs)          # collapse multi-stage rows -> one per incident
+        # Overdue: estimated restoration more than OVERDUE_S past (a SPEN fault due back on
+        # 24 Sep still listed on 14 Oct). Probably closed by the operator but never removed —
+        # not confirmed either way, so it is neither counted as off NOR treated as restored:
+        # kept out of 'incidents' and every total, listed under 'overdue', and its id stays
+        # in the new/cleared diffing (log_sample) so going overdue never reads as a clearance.
+        overdue = []
+        if status in ("ok", "stale"):
+            live = []
+            for i in incs:
+                if _ended(i.get("etr"), OVERDUE_S):
+                    i = dict(i, overdue=True, overdue_days=_overdue_days(i.get("etr")))
+                    overdue.append(i)
+                else:
+                    live.append(i)
+            incs = live
+        frozen_since = _frozen_check(dno, incs, now) if status == "ok" else None
+        if frozen_since is not None:
+            status = "stale"
+            err = (f"feed content unchanged since {_iso(frozen_since)[11:16]} UTC "
+                   f"({_iso(frozen_since)[:10]}) — may be frozen")
         off = sum((i["customers_off"] or 0) for i in incs)
         pred = sum((i["customers_predicted"] or 0) for i in incs)
         psr = sum((i["psr_customers"] or 0) for i in incs)
         op = {
             "dno": dno, "status": status, "error": err,
+            "frozen_since": frozen_since,
             "incidents": len(incs), "customers_off": off,
             "customers_predicted": pred, "psr_customers": psr,
             "customers_tracked": CUSTOMERS_TRACKED.get(dno),
             "has_psr": any(i["psr_customers"] is not None for i in incs),
+            "overdue": len(overdue),
         }
         operators.append(op)
         if status in ("ok", "stale"):
             reporting += 1
             nat_off += off; nat_pred += pred; nat_inc += len(incs); nat_psr += psr
             all_incidents.extend(incs)
+            all_overdue.extend(overdue)
     national = {
         "customers_off": nat_off, "customers_predicted": nat_pred,
         "incidents": nat_inc, "psr_customers": nat_psr,
@@ -700,6 +1085,7 @@ def collect(keys=None):
         "national": national,
         "operators": operators,
         "incidents": all_incidents,
+        "overdue": all_overdue,          # past ETR by > OVERDUE_S: shown greyed, never counted
         "attribution": "Live power-cut data from the UK & Ireland distribution network operators: "
                        "NGED, UKPN, Northern Powergrid, ENWL, SPEN, SSEN, NIE Networks "
                        "(Northern Ireland) and ESB Networks PowerCheck (Republic of Ireland).",
@@ -772,7 +1158,8 @@ def log_sample(snapshot):
         cur_ids, per_op = {}, {}
         for op in snapshot["operators"]:
             dno = op["dno"]
-            ids = [i["id"] for i in snapshot["incidents"] if i["dno"] == dno and i["id"]]
+            ids = [i["id"] for i in (snapshot["incidents"] + (snapshot.get("overdue") or []))
+                   if i["dno"] == dno and i["id"]]
             cur_ids[dno] = ids
             ps = set(prev_ids.get(dno, []))
             cs = set(ids)
@@ -781,6 +1168,7 @@ def log_sample(snapshot):
             cleared = len(ps - cs) if op["status"] in ("ok", "stale") else 0
             per_op[dno] = {
                 "status": op["status"],
+                **({"frozen": True} if op.get("frozen_since") else {}),
                 "active": op["incidents"], "off": op["customers_off"],
                 "new": new, "cleared": cleared,
             }

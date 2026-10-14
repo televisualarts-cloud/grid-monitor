@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 260930.3  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261014.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -171,7 +171,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "260930.3"
+SERVER_BUILD = "261014.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -7564,6 +7564,22 @@ class Handler(BaseHTTPRequestHandler):
                                        "fails": 0, "err": None})
                 _cache["ts"] = 0     # force a fresh snapshot too
                 self._send_json({"ok": True})
+            elif self.path.startswith("/api/powercut-watch"):
+                # Monitored postcode areas: {"areas": ["PL3 5", "EX23 4AA", ...]} replaces
+                # the stored list; each new entry is checked on postcodes.io.
+                if _powercuts is None:
+                    self._send_json({"ok": False, "error": "powercuts module not installed"}, 503); return
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                ent = payload.get("areas")
+                if not isinstance(ent, list):
+                    self._send_json({"ok": False, "error": "areas list missing"}, 400); return
+                res = _powercuts.save_watch([str(x) for x in ent[:50]])
+                self._send_json(res, 200 if res.get("ok") else 500)
             elif self.path.startswith("/api/powercut-keys"):
                 if _powercuts is None:
                     self._send_json({"ok": False, "error": "powercuts module not installed"}, 503); return
@@ -7842,6 +7858,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"events": read_alert_history(limit=limit, level=level)})
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "events": []}, 500)
+        elif self.path.startswith("/api/powercut-watch"):
+            if _powercuts is None:
+                self._send_json({"error": "powercuts module not installed"}, 503); return
+            self._send_json(dict(_powercuts.load_watch(), max=_powercuts.WATCH_MAX))
         elif self.path.startswith("/api/powercuts"):
             if _powercuts is None:
                 self._send_json({"error": "powercuts module not installed"}, 503); return
@@ -7859,6 +7879,13 @@ class Handler(BaseHTTPRequestHandler):
                 out["stats"] = _powercuts.compute_stats(snap)
             except Exception:
                 out["stats"] = None
+            # Monitored postcode areas: incidents touching any of them (see powercuts.watch_matches)
+            try:
+                wl = _powercuts.load_watch()["areas"]
+                out["watch"] = {"areas": wl,
+                                "matches": _powercuts.watch_matches(snap.get("incidents") or [], wl)}
+            except Exception:
+                out["watch"] = None
             out["cache_age_s"] = int(time.time() - _powercuts_snap["ts"])
             self._send_json(out)
         elif self.path.startswith("/api/windcuts"):
