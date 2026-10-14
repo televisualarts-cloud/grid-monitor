@@ -427,6 +427,36 @@ throttled to your daily OpenWeather call budget, and if the key isn't subscribed
 to One Call 4.0 it simply doesn't appear — the standard rainfall panel keeps
 working on the free tier.
 
+### Rainfall prediction fine tuning
+
+In October 2026 the approaching-rain alerts were checked against two weeks of recorded
+data — radar, EA gauges and the engine's own decisions, logged side by side — using
+radar at your location as the referee for when rain actually arrived. The alerts
+themselves held up well, but the follow-up messages didn't: with only one EA gauge close
+enough to count as "at home", rain that arrived briefly or lightly often went unseen, and
+the engine said it had *fizzled out* while it was raining. Two changes followed:
+
+- **Radar counts as arrival.** Rain on a fresh radar frame at your location now ends an
+  approach as *arrived*, alongside the nearby gauge.
+- **"Fizzled out" only when radar agrees.** The engine only says rain has fizzled out
+  when radar shows the direction it was coming from is clear. If rain is still there,
+  it says nothing and waits — the approach ends on arrival, or quietly after three hours.
+
+Replayed over the same two weeks:
+
+| | Before | After |
+|---|---|---|
+| Spoken approach messages that were right | 67% | 89% |
+| "Fizzled out" messages that were wrong | 7 of 9 | none |
+| Alerts followed by rain at your location | 89% | 89% (unchanged) |
+| Rain starts warned beforehand | 43% | 43% (unchanged) |
+
+The remaining errors are alerts for rain that didn't arrive. The rain starts that went
+unwarned were mostly light, isolated showers; widening the alert distances to catch them
+would have raised more false alarms than it caught. These figures come from two weeks of
+autumn weather, so treat them as a guide (each message is worth about 5 points), not a
+guarantee.
+
 ### Forecast view
 
 **http://localhost:8412/forecast** (or **⚙ under the hood** on the Environment Agency

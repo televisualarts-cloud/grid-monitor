@@ -8,7 +8,7 @@ plausibility**. Estimated, derived, stale, or basis-mismatched data must be
 labelled as such; a display that is individually accurate but invites a
 misleading reading is treated as a bug.
 
-Last reviewed: 260930.
+Last reviewed: 261014.
 
 ---
 
@@ -20,13 +20,16 @@ Last reviewed: 260930.
 
 ---
 
-## Rain / forecast engine — how the sources are merged (OPEN; rebuild planned)
+## Rain / forecast engine — how the sources are merged (OPEN)
 
 Reviewed 260930 from the code (`rain_probe.py` 260929.4) and the September logs
 (`rain_threats-2026-09.jsonl`, `api_calls.jsonl`, `om_debug.jsonl`). The Forecast view,
-gauge radar and "Rainfall nearby" alerts all come from this engine. Live behaviour is
-unchanged until the rebuild below, apart from three stopgaps in `rain_probe.py` 260930.1 /
-`grid_server.py` 260930.2 (noted under R1, R3 and R6).
+gauge radar and "Rainfall nearby" alerts all come from this engine. Three stopgaps in
+`rain_probe.py` 260930.1 / `grid_server.py` 260930.2 (noted under R1, R3 and R6) and the
+rainfall prediction fine tuning in `rain_probe.py` 261014.1 (radar counts as arrival;
+"fizzled out" only when radar shows the upwind sector clear — see `CHANGELOG.md`) address
+the parts that affected what is spoken. No rebuild of the data layer is planned; the items
+below are documented limitations of how the sources are merged.
 
 **Summary.** Five inputs were added one at a time — EA gauges, Open-Meteo (public, then
 self-hosted), OpenWeather OC4 and RainViewer radar — each with its own timing, freshness
@@ -95,30 +98,6 @@ calls OK since).
 ### R9. Stale design note
 `WEATHER_ALERT_DESIGN.md` still says "Land probes are model, not radar"; since 260929.1 they
 read radar first.
-
-### Planned fix — rebuild the data layer, keep the voice logic
-- **One reading format.** An adapter per source (public and local Open-Meteo = one source,
-  two transports) emitting: source, kind (accumulation / instantaneous / forecast), position,
-  valid start–end, fetched time, mm/h, snow, quality.
-- **One fused field.** A fixed polar grid covering land and sea evenly, rebuilt on each radar
-  frame. Radar is the backbone, moved to "now" by the steering flow; EA gauges are ground
-  truth for confirmation and radar calibration, allowing for their lag; the model fills where
-  radar is missing; OC4 only when nothing else is available. Each cell carries value,
-  confidence and age.
-- **Consumers read only the field** (situation, tracks, approach, cards, radar plot), so
-  freshness and source choice are decided once.
-- **Cadence belongs to the source.** Radar every frame, always; quiet hours affect speech only.
-- **Approach from motion across frames**, projected by data age plus lead time; when the lag
-  exceeds the useful warning time, say "arriving now" rather than a 5–10 min ETA.
-- **Showery/steady from the radar time series**, so it survives an EA outage.
-- The approach episode, cadence, fizzle/suppression logic and Forecast view are kept.
-
-**Evidence first.** A standalone, read-only recorder (`rain_recorder.py` 260930.1, dev folder,
-not part of the app) logs every source at the same 409 points (home, a 5–50 km polar grid,
-every EA gauge) with valid and first-seen times, plus raw radar tiles and engine snapshots.
-Weights and thresholds for the rebuild are to be set from a week or more of its data. First
-readings (30 Sep): RainViewer frames seen ~2.5 min after frame time; EA readings 39–99 min
-late (median 54).
 
 ---
 
