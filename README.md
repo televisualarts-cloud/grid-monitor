@@ -83,7 +83,7 @@ Once running, the server writes these into the same folder as needed:
 - `gas_probe-YYYY-MM.jsonl` (when `gas_probe.py` is installed) — the gas probe's readings and the phrase it would have spoken.
 - `ring_sample_ts.json` — the last time the OpenWeather backup gauges (see *weather API limits*) were sampled, so their sampling interval survives a server restart and doesn't re-spend the quota on every restart.
 - A `captures/` folder — PNG images you save from the frequency-history viewer's **⭳ save** button.
-- Power-cuts data (when the power-cuts files are installed): `powercut_keys.json` — the operator API keys you enter on the page (git-ignored; sent only to the operator they belong to); `powercuts-YYYY-MM.jsonl` — the outage history; `powercut_last_ids.json` — the incident IDs seen last poll, for counting new and cleared cuts; and, for the wind-correlation model, `windcuts_binstats.json` and `windcuts_state.json` plus a `windcuts-YYYY-MM.jsonl` audit log. These are written by the server's background sampler whether or not the power-cuts page is open.
+- Power-cuts data (when the power-cuts files are installed): `powercut_keys.json` — the operator API keys you enter on the page (git-ignored; sent only to the operator they belong to); `powercuts-YYYY-MM.jsonl` — the outage history; `powercut_last_ids.json` — the incident IDs seen last poll, for counting new and cleared cuts; `powercut_watch.json` — your monitored postcode areas (git-ignored); and, for the wind-correlation model, `windcuts_binstats.json` and `windcuts_state.json` plus a `windcuts-YYYY-MM.jsonl` audit log. These are written by the server's background sampler whether or not the power-cuts page is open.
 
 After you enter an OpenWeather API key:
 - `openweather_key.json`, `openweather_budget.json`, `wind_budget.json`, `weather_last_good.json`.
@@ -256,13 +256,28 @@ is kept visible for up to **2 hours** after it stops responding, shown as *stale
 before it is marked *down* and dropped from the national totals. Each region's map
 label is coloured to match: **green** live, **amber** stale, **red** down.
 
+**Only live cuts are counted.** Several operators' feeds also carry incidents that are
+already over — restored faults (UKPN), completed work (Northern Powergrid), and planned
+works left listed after their finish time (ESB, SPEN) — and these are dropped, so they
+never reach the map or the totals. A planned outage is treated as finished an hour after
+its published end time. Where an operator hasn't confirmed a customer figure yet (UKPN and
+Northern Powergrid publish 0 until they do), the cut is shown as *customer count not yet
+confirmed* rather than as 0 off, with the predicted figure where one is given. UKPN's own
+website shows an "Est." figure that isn't in its open data, so it can't be shown here.
+
+**Overdue cuts.** A cut whose estimated restoration time is more than **7 days** past is
+probably closed by the operator but never removed from its feed — but that isn't
+confirmed either way. It is drawn as a small grey dot whose tooltip says so, and is left
+out of every total and every alert. It is never counted or announced as a restoration;
+if the operator updates it, it comes back as a normal cut.
+
 **Map.** Scroll to zoom and drag to pan; double-click resets. Borders, dots and
 region labels stay the same size on screen as you zoom, so zooming in separates
 nearby incidents rather than enlarging them. Hover over an incident for its details:
 operator and region, planned or unplanned, cause, customers off (or postcode sectors
 for SPEN), start and estimated restore time (or finish time for planned work), the
 operator's status text, postcodes, distance and direction from your location, and
-whether it is new or its operator is muted. Overlapping incidents are counted
+whether it is new, overdue, or its operator is muted. Overlapping incidents are counted
 ("+2 more here — zoom in to separate"). Times are shown as the operator publishes them.
 Clicking a region still opens that operator's own map.
 
@@ -279,8 +294,9 @@ whether a rise in cuts lines up with something on the grid. Hover over a mark fo
 title. If a window holds more than 40 events only the critical ones are shown, and the
 plot says so. Flood warnings are not included, as they are not kept historically.
 
-**API keys.** ESB works out of the box (a shared default key is built in); NIE
-Networks needs your own key, entered via the ⚙ on the page. Keys are stored
+**API keys.** NGED, UKPN, Northern Powergrid and SSEN need no key, and ESB works out of
+the box (a shared default key is built in). Electricity North West, SP Energy Networks and
+NIE Networks each need a free OpenDataSoft key, entered via **⚙ feeds / keys** on the page. Keys are stored
 server-side in `powercut_keys.json` and are sent only to the operator they belong to.
 
 **Wind vs power cuts (optional).** With `metar.py` and `windcuts.py` installed, the
@@ -309,6 +325,29 @@ only once, even across page reloads. An incident with no coordinates counts if o
 its postcodes is in your postcode district. Muted providers are skipped, and a cut is
 only called restored once it has actually left the operator's live feed — never because
 a feed went quiet, a provider was muted or the radius changed.
+
+**Monitored postcode areas.** Besides your own area, you can watch up to **10** other
+postcode areas — a sector such as `EX23 4` or a full postcode such as `EX23 4AA`. Click
+**📍 Monitored areas** at the top of the power-cuts page, enter them in the slots (✕
+clears a slot) and **Save**. Each entry is checked against postcodes.io when you save, and
+its place name is shown beside it (an entry that isn't a real postcode is shown in red
+with the reason, and not saved). The list is kept by the server in `powercut_watch.json`,
+so it survives restarts and is the same in every browser. While a monitored area has a
+cut, the button turns red and shows how many areas are affected.
+
+A sector matches any cut in that sector; a full postcode matches only that postcode — or,
+where the operator publishes sectors only (SP Energy Networks), its sector, announced as
+*may be affected*. Electricity North West publishes no postcodes and ESB uses Eircodes, so
+areas they supply can't be matched.
+
+With the **Monitored postcode areas** alarm category on (it is by default) and the alarms
+armed, a new cut or planned works in a monitored area sounds a two-tone siren followed by
+speech: "A monitored postcode area has suffered a power cut. The area is PL3 5, Plymouth.
+53 customers are without power." The customer figure is left out for SP Energy Networks
+(it publishes none) and when the operator hasn't confirmed one yet. Several areas at once
+become a single message, and each area is announced again, with a soft tone, when its
+power is restored. Muted providers are skipped, and each cut is announced only once, even
+across page reloads.
 
 ---
 
