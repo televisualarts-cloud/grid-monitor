@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261014.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -2874,6 +2874,18 @@ APPR_EPISODE_MAX_S   = 3 * 3600            # safety: an episode older than this 
 APPR_SUPP_MAX_S      = 6 * 3600            # safety: post-fizzle suppression never outlives this
 APPR_CAND_MAX_S      = 4 * 3600            # safety: a shadow candidate is resolved as 'expired' after this
 APPR_CAND_MAX_ROUNDS = 24                  # cap on per-reading snapshots kept in one candidate record
+# Radar at home and upwind (fine tuning 261014.1, from the 30 Sep - 13 Oct recorder data):
+#  - ARRIVAL: radar rain at home counts as arrival (only one EA gauge lies within 5 km, and
+#    short/light rain often doesn't tip it, so arrival went unseen and "fizzled" was spoken
+#    while it rained — 7 of 9 fizzle messages were wrong).
+#  - FIZZLE: "fizzled out" is only spoken when radar shows the upwind sector clear; with rain
+#    still upwind the episode is held open (it ends on arrival, a later clear check, or
+#    silently at APPR_EPISODE_MAX_S).
+APPR_RADAR_MAX_AGE_S  = 20 * 60             # a radar frame older than this is not used for either
+APPR_RADAR_HOME_KM    = 0.4                 # home + 8 points this far out, averaged (~1 km box)
+APPR_FIZZLE_RADAR_KM  = (5, 10, 15, 20, 25) # upwind ranges checked before saying "fizzled"
+APPR_FIZZLE_RADAR_HALF = 45                 # +/- deg of the steering flow
+APPR_FIZZLE_RADAR_STEP = 15                 # bearing step across that sector
 _BAND_MM = {0: 0.0, 1: 1.0, 2: 3.5, 3: 7.0, 4: 12.0}   # track peak band -> representative mm/h
 
 EPISODE_LOG_ENABLED = True
@@ -3128,15 +3140,62 @@ def _cand_resolve(state, now, outcome, truth=None):
     state.appr_cand = {}
 
 
+_rv_view = {"key": None, "out": None}
+
+
+def radar_home_view(home, from_deg, now=None):
+    """Radar rain at home (mean of a ~1 km box) and the wettest point in the upwind sector
+    (APPR_FIZZLE_RADAR_*), from the newest RainViewer frame:
+    {'frame_ts', 'home_mm', 'upwind_mm'} — upwind_mm None without a flow direction.
+    None when radar is disabled, unavailable or older than APPR_RADAR_MAX_AGE_S. Cached
+    per frame / home / flow (15 deg), so it costs at most a tile or two per 10-min frame.
+    Never raises."""
+    if not RADAR_ENABLED or not home:
+        return None
+    now = now or time.time()
+    try:
+        _host, fr = _rv_newest_frame(now)
+    except Exception:
+        return None
+    ft = fr.get("time")
+    if not ft or now - ft > APPR_RADAR_MAX_AGE_S:
+        return None
+    dkey = None if from_deg is None else int(round(from_deg / 15.0)) * 15 % 360
+    key = (ft, round(home[0], 3), round(home[1], 3), dkey)
+    if _rv_view["key"] == key:
+        return _rv_view["out"]
+    pts = [{"lat": home[0], "lon": home[1]}]
+    for b in range(0, 360, 45):
+        la, lo = offset_latlon(home[0], home[1], b, APPR_RADAR_HOME_KM)
+        pts.append({"lat": la, "lon": lo})
+    n_home = len(pts)
+    if dkey is not None:
+        for d in APPR_FIZZLE_RADAR_KM:
+            for off in range(-APPR_FIZZLE_RADAR_HALF, APPR_FIZZLE_RADAR_HALF + 1, APPR_FIZZLE_RADAR_STEP):
+                la, lo = offset_latlon(home[0], home[1], (dkey + off) % 360, d)
+                pts.append({"lat": la, "lon": lo})
+    r = fetch_radar_precip(pts, now)
+    if r is None:
+        return None
+    hm = [x.get("mm") or 0.0 for x in r[:n_home]]
+    out = {"frame_ts": ft, "home_mm": round(sum(hm) / len(hm), 2),
+           "upwind_mm": (round(max(x.get("mm") or 0.0 for x in r[n_home:]), 2) if dkey is not None else None)}
+    _rv_view.update(key=key, out=out)
+    return out
+
+
 def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, now,
                          home=None, gauges=None, wind_from=None, wind_kmh=None,
-                         cone_from=None, steering=None, n_flagged=0):
+                         cone_from=None, steering=None, n_flagged=0, upwind_mm=None):
     """Advance the approach episode (and its shadow candidate) one cycle. Returns
     [{tier,key,phrase}] (0 or 1 item) and mutates state. `th` is approach_threat() output
     (or None); `obs_ts` is the newest field-reading timestamp — state machine transitions
     that need 'another reading' only happen when it advances; `arrived` is True when rain
-    is measured at home (the at-home voice announces that, so arrival is silent here)."""
+    is measured at home (the at-home voice announces that, so arrival is silent here).
+    `upwind_mm` is the radar's wettest upwind point (radar_home_view) or None: while it is
+    wet, a due fizzle is held rather than spoken."""
     out = []
+    held = False
     new_read = obs_ts is not None and obs_ts > (state.appr_obs_ts or 0)
     if new_read:
         state.appr_obs_ts = obs_ts
@@ -3221,7 +3280,9 @@ def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, n
         eta_ceiling = (ep.get("eta_hi") or APPR_OVERDUE_DEFAULT_MIN) * 60
         overdue = age > eta_ceiling + APPR_OVERDUE_GRACE_S
         closer = bool(th) and th["edge_km"] <= ep.get("alert_edge", 99) * (1 - APPR_CONFIRM_FRAC)
-        if cleared or (overdue and not closer):
+        fizzle_due = cleared or (overdue and not closer)
+        held = fizzle_due and upwind_mm is not None and upwind_mm >= APPR_WET_MMH
+        if fizzle_due and not held:
             phrase = _appr_fizzle_phrase(ep)
             out.append({"tier": "notice", "key": "appr_fizzle", "phrase": phrase})
             cause = ("cone empty %d readings" % state.appr_empty_reads) if cleared else "overdue, not closer"
@@ -3238,6 +3299,16 @@ def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, n
         elif age > APPR_EPISODE_MAX_S:
             _episode_log({"ts": now, "event": "expired", "ep": ep.get("id"), "after_s": int(age), "threat": _snap(th)})
             state.appr_ep = {}
+        elif held:
+            # radar still shows rain upwind: "fizzled" would likely be wrong — say nothing, keep
+            # the episode open (logged once per episode)
+            if not ep.get("fizzle_held"):
+                ep["fizzle_held"] = now
+                _episode_log({"ts": now, "event": "fizzle_held", "ep": ep.get("id"), "after_s": int(age),
+                              "cause": ("cone empty %d readings" % state.appr_empty_reads) if cleared
+                                       else "overdue, not closer",
+                              "upwind_mm": upwind_mm, "threat": _snap(th)})
+            decision = "fizzle held: radar rain upwind"
         elif st == "alerted" and th and new_read and ep.get("reads", 0) >= 1 and not th["weakening"]:
             closed_km = ep.get("alert_edge", 0) - th["edge_km"]
             if closed_km >= max(APPR_CONFIRM_MIN_KM, APPR_CONFIRM_FRAC * ep.get("alert_edge", 0)):
@@ -3258,7 +3329,7 @@ def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, n
         cur_round["decision"] = decision or ("episode " + (state.appr_ep or {}).get("state", "idle"))
     if state.appr_cand:
         c = state.appr_cand
-        if cleared:
+        if cleared and not held:
             _cand_resolve(state, now, "no_arrival")
         elif now - c["first_ts"] > APPR_CAND_MAX_S:
             _cand_resolve(state, now, "expired")
@@ -3270,7 +3341,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
               now=None, sample_fn=None, net_sample_fn=fetch_om_precip,
               track_sample_fn=None, landsea_fn=fetch_landsea, forward_precip=None,
               cadence_mult=1.0, sampling_mult=1.0, pressure_change_3h=None,
-              steer_fn=fetch_om_steering):
+              steer_fn=fetch_om_steering, radar_fn=radar_home_view):
     """Evaluate everything for one cycle. Read-only: mutates only `state`.
     Returns a diagnostic dict incl. `would_speak` (transitions this cycle) and
     `virtual_gauges` (marked, modelled). Nothing here plays a tone."""
@@ -3545,9 +3616,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # Arrival truth: a measured gauge at home (nearest wet gauge <= GAUGE_CONFIRM_KM, or
     # the situational 'here' < 5 km) is strong; the home weather model alone is weaker and
     # labelled as such in the shadow log so a learner can weight it.
+    _rvv = None
+    if radar_fn and home:
+        try:
+            _rvv = radar_fn(home, _wf, now)
+        except Exception:
+            _rvv = None
     _arrived_src = None
     if situational.get("here") or confirmed:
         _arrived_src = "gauge"
+    elif _rvv and (_rvv.get("home_mm") or 0) >= APPR_WET_MMH:
+        _arrived_src = "radar"                 # measured rain at home on a fresh radar frame
     elif rain_mm_h is not None and rain_mm_h >= APPR_WET_MMH:
         _arrived_src = "home_model"
     # Newest field READING (EA 15-min buckets; offshore net / home ring sample times): the
@@ -3564,7 +3643,8 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     appr_speak = run_approach_episode(state, _threat, arrived=bool(_arrived_src), arrived_src=_arrived_src,
                                       obs_ts=_obs_ts, now=now, home=home, gauges=gauges,
                                       wind_from=wind_from, wind_kmh=wind_kmh, cone_from=_wf,
-                                      steering=situational["steering"], n_flagged=len(_flagged))
+                                      steering=situational["steering"], n_flagged=len(_flagged),
+                                      upwind_mm=(_rvv or {}).get("upwind_mm"))
     would.extend(appr_speak)            # the nowcast channel hears it too (client de-dupes vs RAIN)
     _ep = state.appr_ep or {}
     situational["approach_episode"] = {
