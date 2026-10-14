@@ -16,6 +16,32 @@ exact tag.
 
 ---
 
+## 2026-10-14
+
+- **Power cuts: monitored postcode areas.** Up to 10 postcode sectors (`EX23 4`) or full postcodes (`EX23 4AA`) can be monitored in addition to the near-you radius, set from a new **Monitored areas** button on the power-cuts page (10 slots, ✕ to clear a slot, Save). Each entry is checked on postcodes.io when saved, which also gives the place name (civil parish, else ward in Scotland/Wales/NI, else district); unrecognised entries are shown with the reason and not saved; an entry whose lookup fails on the network is kept, marked unverified. The list is stored server-side in `powercut_watch.json` (git-ignored), so it survives restarts and is shared by every browser. New `GET/POST /api/powercut-watch`. (`powercuts.py` 261014.1, `grid_server.py` 261014.1, `powercuts_page.html` 261014.1)
+- **Monitored areas: matching.** The server matches each incident's postcodes against the list and returns the hits in `/api/powercuts` as `watch.matches` (area, place, operator, incident, customers off, `level`). A sector matches any full postcode in it or the same sector; a full postcode matches only itself, or — where the operator publishes sectors only (UKPN, SPEN) — its sector, as `level: "may"` ("may be affected"). Outward-code-only tokens never match. ENWL publishes no postcodes and ESB uses Eircodes, so neither can match. The button shows the number of monitored areas with a cut now. (`powercuts.py` 261014.1, `grid_server.py` 261014.1, `powercuts_page.html` 261014.1)
+- **Power cuts: NPg incidents keep all their postcodes.** Collapsing NPg's one-row-per-stage records to one incident kept only the representative row's postcode; the postcodes of all collapsed rows are now kept on the incident. Customers-off handling is unchanged. (`powercuts.py` 261014.1)
+- **Monitored areas: alarm.** New alarm category "Monitored postcode areas" (on by default): a two-tone siren (~2.7 s), then speech, when an unplanned cut or planned works start in a monitored area — "A monitored postcode area has suffered a power cut. The area is PL3 5, Plymouth. 53 customers are without power." Customer figures are summed over the area's new incidents and omitted for SPEN (no published count). Several areas at once become one message. Planned works name the start/finish time when within a week. A soft tone and speech when an announced incident leaves the feed with its operator's feed live ("Power has been restored in monitored area …"). Each incident is announced once, remembered for 48 h (`pcWatchSeen`); muted providers are skipped. Test button plays the siren and a sample message. (`grid_dashboard.html` 261014.1)
+- **Power cuts: UKPN live incidents only, counts honest.** The UKPN dataset also carries restored incidents (73 of 107 rows on 14 Oct) and `MULT-` rows grouping incidents already listed; both were counted in the UKPN and national incident totals and plotted as "0 off". They are now dropped. `nocustomeraffected` is 0 until UKPN confirms a figure (the "Est. N" on UKPN's website comes from `NoCustomersPredicted`, which the dataset lacks; the website's own API refuses scripted access), so a live 0 is now `customers_off: null` with `count_pending: true`, and the map tooltip says "customer count not yet confirmed by UKPN". Planned works take `noplannedcustomers` as the predicted figure. `fullpostcodedata` is kept as `full_postcodes`, so monitored full postcodes match UKPN incidents exactly rather than as "may be affected". (`powercuts.py` 261014.2, `powercuts_page.html` 261014.2)
+- **Power cuts: Northern Powergrid finished incidents dropped.** The NPg dataset keeps completed incidents (`incidentstatus` 6, `isaffected` 0, "The scheduled work has now been completed"): 31 of 38 on 14 Oct, carrying 1,366 customers counted as off in the national total, history and alarms. They are now dropped. Planned/unplanned is taken from `natureofoutage` (was always "type not stated"), which also replaces the numeric `powercutcategory` code as the category. A live 0 confirmed is `customers_off: null` + `count_pending`, with the predicted figure kept. (`powercuts.py` 261014.3)
+- **Power cuts: ESB finished planned outages dropped.** ESB leaves planned outages listed as "Planned" after their window (four on 14 Oct, ~1,000 customers, one ended 6 Oct). A planned outage more than 1 h past its end time is now dropped; one with no end time is kept with `end_unknown` ("end time not given" in the tooltip). ESB's `dd/mm/yyyy HH:MM` times are converted to ISO local time, so the dashboard can speak them. (`powercuts.py` 261014.3, `powercuts_page.html` 261014.3)
+- **Power cuts: NGED planned works window.** Planned works take their start and end from `planned_outage_start_date` / `planned_outage_end_date` (`etr` is blank for them), so tooltips and alerts give "until …". (`powercuts.py` 261014.3)
+- **Spoken power-cut times honour UTC offsets.** The near-you and monitored-area alerts read every time as operator local time, so SSEN (`…Z`) and NPg (`+00:00`) restoration times were spoken an hour early during BST. Times with a zone are now converted; bare times are still local. (`grid_dashboard.html` 261014.2)
+- **Power cuts: SPEN finished planned works dropped; NIE times readable.** Checked with keys: ENWL (1 live incident) clean; SPEN's restored filter works (58 of 66 rows dropped), but a planned outage due to end at 12:00 on 24 Sep was still listed as "Awaiting" on 14 Oct — SPEN planned works more than 1 h past their end time are now dropped (same rule as ESB, shared `_ended()`), and take their start from `planned_outage_start_date`. NIE is clean, but its times come as `7:26 PM, 14 Oct`; now converted to ISO local time (missing year inferred as the one nearest now), so the dashboard can speak them. (`powercuts.py` 261014.4)
+- **Power cuts: overdue incidents.** An incident whose estimated restoration is more than 7 days past (e.g. a SPEN fault due back on 24 Sep, still listed as "Awaiting" on 14 Oct) is probably closed but never removed by the operator — not confirmed either way. It is now moved out of `incidents` into a new `overdue` list (with `overdue_days`): left out of every total, the monitored-area matches and the near-you list, but its id stays in the new/cleared diffing and in the dashboard's active set, so going overdue is never counted or announced as a restoration. Applies to all operators. Operators carry an `overdue` count. Map: drawn as a small grey dot, no pulse; tooltip "overdue — estimated restoration was N days ago; possibly closed by … but still listed, not confirmed. Not counted in any total." (`powercuts.py` 261014.5, `powercuts_page.html` 261014.4, `grid_dashboard.html` 261014.3)
+
+## 2026-10-06
+
+- **Wind gusts: London has a station; foreign stations out of the rollups.** The AWC bbox query returns a thinned set (~56) without London City, Gatwick, Biggin Hill, Northolt, Luton or Southend, so the London licence area had no gust in any sample since 260917.1. These are now fetched by id in a second call and merged. London rests on EGLC alone (the only METAR inside the area), which is silent while the airport is shut (Sat midday – Sun midday). French, Norwegian and Channel Islands stations (8 today) were filed under England/Scotland by the nearest-country fallback, so a Brittany gust could stand as England's; they are now kept but feed no region, ALL included. METARs older than 3 h are dropped. `status()` counts UK/IE stations and reports `foreign` separately. (`metar.py` 261006.1)
+- **Wind gusts: Heathrow stands in for London.** While EGLC has no current report, the London area takes Heathrow's (EGLL) gust, marked `stand_in: "EGLL"` with `n_stations: 0`. Added to the London area key only, so Heathrow still counts once in Southern England, England and ALL. Observed, so it feeds the learned curves as well as the display; no model fallback. (`metar.py` 261006.2)
+- **Power cuts: frozen-feed detection.** NPg's feed answered normally but repeated identical incidents from 01:09 on 3 Oct to 07:47 on 5 Oct, reported `ok` throughout. An operator whose incident set (ids, customers off, status text) is unchanged for 3 h of daytime (06–22 UTC) is now flagged `stale` with the reason and the time it last changed (`frozen_since`); it stays in the totals and clears on the first change. History rows carry `"frozen": true`. Backtest on Sep–Oct aggregates: no flags on UKPN, SSEN, SPEN, ESB; flags NPg 3–5 Oct, NIE 25–27 Sep, NGED 19 Sep and several ENWL spells. Tracking is in memory and restarts with the server. (`powercuts.py` 261006.1)
+
+## 2026-10-01
+
+- **Power cuts near you: distance-coloured border.** The Near-you box on the power-cuts page takes a 2 px border coloured by the nearest listed cut (planned or unplanned) as a share of the set radius: under 100% yellow, under 50% amber, under 20% red, under 10% hot pink — so at 10 km: <10 / <5 / <2 / <1 km; at 5 and 20 km the bands scale. No cuts in range: the plain border as before. (`powercuts_page.html` 261001.1)
+- **Power cuts near you: totals line.** With two or more cuts in range, the Near-you box shows the number of cuts and total customers off under its heading, with the unplanned/planned split; cuts reporting no customer count are listed and the total gets a "+". (`powercuts_page.html` 261001.2)
+- **Power cuts near you: nearest three, then a summary.** The Near-you box lists the three nearest cuts individually, in order of distance (was up to six plus "and N more"). Any others inside the radius are totalled on one line: their distance band, count, customers off and unplanned/planned split. (`powercuts_page.html` 261001.3)
+
 ## 2026-09-30
 
 - **System risk: CGRI no longer alarms inside the operational band on a normal grid.** The inertia multiplier was 1 + notional RoCoF/0.5 at all times (~1.4× on a typical day), so CGRI reached its 0.2 amber cut at ~0.14 Hz off nominal. Replayed over September's logs: 386 amber episodes (amber 11% of the time), only 14 with frequency outside 49.8–50.2 Hz. Inertia now amplifies CGRI only when reduced (notional RoCoF ≥ 0.25 Hz/s, the inertia band's amber cut): same replay gives 24 episodes (0.5% of the time), all 19 band excursions still alerted, 5 more on weak-inertia grids. (`grid_server.py` 260930.1)
@@ -280,7 +306,9 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **260930.1** (2026-09-30) — Spoken frequency alarm mentions inertia only when the inertia estimate is reduced; "limited reserve" dropped; CGRI tooltip.
 - **260930.2** (2026-09-30) — Footer shows the port the page is served from.
 - **260930.3** (2026-09-30) — 850 hPa wind on the wind dials: second compass arrow (green dotted outline, faint fill) and a green dash on the speed dial, with direction/speed lines and hover detail.
-
+- **261014.1** (2026-10-14) — New "Monitored postcode areas" alarm category: siren then speech when a cut or planned works start in a monitored area (combined message for several areas; no customer count for SPEN), soft tone + speech on restoration.
+- **261014.2** (2026-10-14) — Spoken power-cut times (near you, monitored areas) honour a UTC "Z"/offset; SSEN and NPg times were an hour early in BST.
+- **261014.3** (2026-10-14) — Overdue incidents count as still present, so going overdue is never announced as a restoration.
 ### `powercuts_page.html`
 
 Header history began at 260916.1; earlier builds are in the dated entries above.
@@ -303,7 +331,13 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **260929.4** (2026-09-29) — Other operators' status text ends at a sentence.
 - **260929.5** (2026-09-29) — Customers off by operator (stacked bands); grid-event strip under both plots.
 - **260929.6** (2026-09-29) — By-operator view moved from a switch to a pop-up.
-
+- **261001.1** (2026-10-01) — Near-you box border coloured by nearest cut as a share of the set radius (yellow <100%, amber <50%, red <20%, hot pink <10%)
+- **261001.2** (2026-10-01) — Near-you box: totals line (cuts, customers off, unplanned/planned split) when 2+ cuts are in range
+- **261001.3** (2026-10-01) — Near-you box: nearest three cuts listed, the rest inside the radius summarised on one line
+- **261014.1** (2026-10-14) — "Monitored areas" button and popup: 10 postcode slots with ✕ buttons and Save, place names from the server, cut count on the button.
+- **261014.2** (2026-10-14) — Map tooltip says "customer count not yet confirmed" for incidents whose count is pending (UKPN); monitored-areas note updated.
+- **261014.3** (2026-10-14) — Tooltip: pending counts show the predicted figure as "predicted" (or "planned"); "end time not given" for planned outages without one.
+- **261014.4** (2026-10-14) — Overdue incidents drawn as small grey dots with an explanatory tooltip.
 ### `powercuts.py`
 
 Header history began at 260916.1; earlier builds are in the dated entries above.
@@ -315,7 +349,12 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **260917.3** (2026-09-17) — History log now records national un_new (new UNPLANNED incidents/sample) and un_off (unplanned customers off) so the dashboard's storm/power-cuts alarm can track non-planned cuts and restorations. Older rows lack them; readers tolerate.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md.
 - **260929.1** (2026-09-29) — Decompress gzip responses sent without being requested (ESB list endpoint).
-
+- **261006.1** (2026-10-06) — Frozen-feed detection: unchanged incident set for 3 h of daytime → `stale` with reason, `frozen_since`; history rows flag `frozen`.
+- **261014.1** (2026-10-14) — Monitored postcode areas: `powercut_watch.json` store, postcodes.io validation and place names, `watch_matches()`; NPg incidents keep the postcodes of all collapsed rows.
+- **261014.2** (2026-10-14) — UKPN: restored and `MULT-` group rows dropped; unconfirmed counts null with `count_pending`; planned customer figure; full postcodes kept for monitored-area matching.
+- **261014.3** (2026-10-14) — NPg: finished incidents dropped, planned flag from `natureofoutage`, pending counts. ESB: finished planned outages dropped, times to ISO, `end_unknown`. NGED: planned works window.
+- **261014.4** (2026-10-14) — SPEN: planned works past their end time dropped, planned start date used. NIE: times converted to ISO local.
+- **261014.5** (2026-10-14) — Incidents > 7 days past their ETR moved to `overdue` (uncounted; ids kept in new/cleared diffing).
 ### `windcuts.py`
 
 New module at 260917.1.
@@ -354,6 +393,8 @@ New module at 260917.1. File unchanged by the 260926.1 tidy (no history to move)
 
 - **260917.1** (2026-09-17) — New module.
 - **260929.1** (2026-09-29) — Header build line in the standard format (was `Build: 260917.1`). No code changes.
+- **261006.1** (2026-10-06) — Second by-id call for stations the bbox omits (London City etc.); non-UK/IE stations untagged and excluded from rollups; METARs over 3 h old dropped; `status()` reports `foreign`.
+- **261006.2** (2026-10-06) — `STAND_INS`: Heathrow supplies the London area's gust while EGLC has no current report, marked `stand_in`.
 
 ### `gas_probe.py`
 
