@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 261014.4  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 261015.1  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -132,10 +132,12 @@
   .modal.wide .card{max-width:1000px;width:94%;max-height:92vh;overflow:auto}
   /* monitored postcode areas */
   .btn.watch-hit{border-color:var(--bad);color:var(--bad)}
-  .wa-row{display:grid;grid-template-columns:22px 130px 1fr 28px;gap:8px;align-items:center;margin:5px 0}
+  .wa-row{display:grid;grid-template-columns:22px 100px 130px 1fr 28px;gap:8px;align-items:center;margin:5px 0}
+  .wa-head{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin:8px 0 2px}
   .wa-row .n{color:var(--dim);font-size:11px;text-align:right}
   .wa-row input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:6px;
                 padding:5px 8px;font:inherit;width:100%;text-transform:uppercase}
+  .wa-row input.wa-al{text-transform:none}
   .wa-row .pl{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .wa-row .pl.bad{color:var(--bad)}
   .wa-row .pl.cut{color:var(--bad);font-weight:600}
@@ -342,7 +344,8 @@
     <p class="note">A sector (EX23 4) alerts for any cut in that sector; a full postcode (EX23 4AA) only for that
        postcode — or, where the operator publishes sectors only (SP Energy Networks), its sector,
        announced as “may be affected”. Electricity North West publishes no postcodes and ESB uses Eircodes, so areas
-       they supply can’t be matched. Alerts sound on the dashboard (alarm category “Monitored postcode areas”).</p>
+       they supply can’t be matched. Alerts sound on the dashboard (alarm category “Monitored postcode areas”).
+       Add an optional name (e.g. “Les”) to hear “Les in Plymouth” instead of the postcode.</p>
     <div id="waRows" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px;justify-content:flex-end">
       <span class="note" id="waMsg"></span>
@@ -1990,11 +1993,12 @@ function waNote(a, act){
 }
 function waRender(){
   var act=waActive(), byPc={}; waAreas.forEach(function(a){ byPc[a.pc]=a; });
-  var rows=[];
+  var rows=['<div class="wa-row wa-head"><span></span><span>Postcode</span><span>Name (optional)</span><span>Place</span><span></span></div>'];
   for(var i=0;i<WA_SLOTS;i++){
     var a=waAreas[i], n=waNote(a, act);
     rows.push('<div class="wa-row"><span class="n">'+(i+1)+'</span>'+
-      '<input data-i="'+i+'" maxlength="9" spellcheck="false" autocomplete="off" value="'+waEsc(a?a.pc:"")+'">'+
+      '<input class="wa-pc" data-i="'+i+'" maxlength="9" spellcheck="false" autocomplete="off" value="'+waEsc(a?a.pc:"")+'">'+
+      '<input class="wa-al" data-i="'+i+'" maxlength="30" spellcheck="false" autocomplete="off" placeholder="e.g. Les" value="'+waEsc(a&&a.alias?a.alias:"")+'">'+
       '<span class="pl '+(n.cls||"")+'" title="'+waEsc(n.t||"")+'">'+waEsc(n.t||"")+'</span>'+
       '<button class="wa-x" data-i="'+i+'" title="Remove">✕</button></div>');
   }
@@ -2018,14 +2022,16 @@ $("waOpen").addEventListener("click",function(){
 $("waClose").addEventListener("click",function(){ $("waModal").classList.remove("show"); });
 $("waRows").addEventListener("click",function(e){
   var x=e.target.closest(".wa-x"); if(!x) return;
-  var row=x.parentNode, inp=row.querySelector("input"), pl=row.querySelector(".pl");
-  inp.value=""; pl.textContent=""; pl.className="pl"; inp.focus();
+  var row=x.parentNode, inp=row.querySelector(".wa-pc"), al=row.querySelector(".wa-al"), pl=row.querySelector(".pl");
+  inp.value=""; al.value=""; pl.textContent=""; pl.className="pl"; inp.focus();
   $("waMsg").textContent="removed — Save to keep the change";
 });
 $("waSave").addEventListener("click",function(){
-  var list=[];
-  Array.prototype.forEach.call(document.querySelectorAll("#waRows input"),function(inp){
-    var v=inp.value.trim().toUpperCase().replace(/\s+/g," "); if(v) list.push(v); });
+  var list=[], orphan=0;
+  Array.prototype.forEach.call(document.querySelectorAll("#waRows .wa-row:not(.wa-head)"),function(row){
+    var v=row.querySelector(".wa-pc").value.trim().toUpperCase().replace(/\s+/g," ");
+    var al=row.querySelector(".wa-al").value.replace(/\s+/g," ").trim();
+    if(v) list.push(al?{pc:v, alias:al}:v); else if(al) orphan++; });
   $("waMsg").textContent="checking postcodes…";
   fetch("/api/powercut-watch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({areas:list})})
     .then(function(r){ return r.json(); })
@@ -2035,13 +2041,14 @@ $("waSave").addEventListener("click",function(){
       var rej=j.rejected||[];
       // keep rejected entries visible (in the free slots) with the reason, so they can be fixed
       if(rej.length){
-        var inputs=document.querySelectorAll("#waRows input"), k=waAreas.length;
-        rej.forEach(function(r){ if(k>=WA_SLOTS) return; var inp=inputs[k], pl=inp.parentNode.querySelector(".pl");
-          inp.value=r.input; pl.textContent=r.error; pl.title=r.error; pl.className="pl bad"; k++; });
+        var rowsEl=document.querySelectorAll("#waRows .wa-row:not(.wa-head)"), k=waAreas.length;
+        rej.forEach(function(r){ if(k>=WA_SLOTS) return; var row=rowsEl[k], pl=row.querySelector(".pl");
+          row.querySelector(".wa-pc").value=r.input; row.querySelector(".wa-al").value=r.alias||"";
+          pl.textContent=r.error; pl.title=r.error; pl.className="pl bad"; k++; });
       }
       $("waMsg").innerHTML = !j.ok ? '<span class="err">error: '+waEsc(j.error||"?")+'</span>'
         : rej.length ? '<span class="err">saved '+waAreas.length+' — '+rej.length+' not recognised (not saved)</span>'
-        : "saved "+waAreas.length+" area"+(waAreas.length===1?"":"s");
+        : "saved "+waAreas.length+" area"+(waAreas.length===1?"":"s")+(orphan?" — a name without a postcode was ignored":"");
       waBadge(); load();
     })
     .catch(function(e){ $("waMsg").innerHTML='<span class="err">error: '+waEsc(e.message)+'</span>'; });

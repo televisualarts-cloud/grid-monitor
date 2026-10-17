@@ -29,7 +29,7 @@
 #
 # Python 3, stdlib only. No import of the live server.
 #
-# Build 261014.5  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261015.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 
 from __future__ import annotations
@@ -837,37 +837,60 @@ def pc_lookup(kind, pc):
         return {"ok": False, "error": "lookup failed (" + type(e).__name__ + ")", "retry": True}
 
 
+WATCH_ALIAS_MAX = 30
+
+
+def _clean_alias(v):
+    """Optional spoken name for a monitored area ("Les"): printable text, single spaces,
+    at most WATCH_ALIAS_MAX characters; '' when absent."""
+    t = "".join(ch for ch in str(v or "") if ch.isprintable())
+    return " ".join(t.split())[:WATCH_ALIAS_MAX].strip()
+
+
 def save_watch(entries):
-    """Validate + store the user's list. `entries` is a list of strings (blanks ignored,
-    duplicates dropped, max WATCH_MAX). Entries already stored keep their looked-up place
-    without a new lookup. Returns {'ok', 'areas', 'rejected':[{input,error}]}. An entry
-    whose lookup FAILED for network reasons is kept (marked unverified) rather than lost."""
+    """Validate + store the user's list. `entries` is a list of postcode strings or
+    {'pc': ..., 'alias': ...} dicts (blank postcodes ignored, duplicates dropped, max
+    WATCH_MAX). Entries already stored keep their looked-up place without a new lookup;
+    the alias is always taken from this save. Returns {'ok', 'areas', 'rejected':[{input,
+    alias, error}]}. An entry whose lookup FAILED for network reasons is kept (marked
+    unverified) rather than lost."""
     old = {a["pc"]: a for a in load_watch()["areas"]}
     areas, rejected, seen = [], [], set()
     for raw in (entries or []):
-        s = str(raw or "").strip()
+        if isinstance(raw, dict):
+            s, alias = str(raw.get("pc") or "").strip(), _clean_alias(raw.get("alias"))
+        else:
+            s, alias = str(raw or "").strip(), ""
         if not s:
             continue
         kind, pc = pc_parse(s)
         if not kind:
-            rejected.append({"input": s, "error": "not a postcode sector (e.g. EX23 4) or full postcode (e.g. EX23 4AA)"})
+            rejected.append({"input": s, "alias": alias,
+                             "error": "not a postcode sector (e.g. EX23 4) or full postcode (e.g. EX23 4AA)"})
             continue
         if pc in seen:
             continue
         if len(areas) >= WATCH_MAX:
-            rejected.append({"input": s, "error": f"limit of {WATCH_MAX} areas"})
+            rejected.append({"input": s, "alias": alias, "error": f"limit of {WATCH_MAX} areas"})
             continue
         seen.add(pc)
         o = old.get(pc)
         if o and o.get("place") and not o.get("unverified"):
-            areas.append(o); continue
+            a = {k: v for k, v in o.items() if k != "alias"}
+            if alias:
+                a["alias"] = alias
+            areas.append(a); continue
         lk = pc_lookup(kind, pc)
         if lk.get("ok"):
-            areas.append({"pc": pc, "kind": kind, "place": lk.get("place")})
+            a = {"pc": pc, "kind": kind, "place": lk.get("place")}
         elif lk.get("retry"):
-            areas.append({"pc": pc, "kind": kind, "place": (o or {}).get("place"), "unverified": True})
+            a = {"pc": pc, "kind": kind, "place": (o or {}).get("place"), "unverified": True}
         else:
-            rejected.append({"input": s, "error": lk.get("error")})
+            rejected.append({"input": s, "alias": alias, "error": lk.get("error")})
+            continue
+        if alias:
+            a["alias"] = alias
+        areas.append(a)
     with _watch_lock:
         try:
             tmp = WATCH_FILE + ".tmp"
@@ -911,7 +934,7 @@ def watch_matches(incidents, areas=None):
                     elif k == "sector" and pc == _sector_of(apc):
                         level = level or "may"; hit.append(pc)
             if level:
-                out.append({"pc": apc, "place": a.get("place"), "kind": akind,
+                out.append({"pc": apc, "place": a.get("place"), "alias": a.get("alias") or None, "kind": akind,
                             "dno": inc.get("dno"), "id": inc.get("id"),
                             "planned": inc.get("planned"), "off": inc.get("customers_off"),
                             "predicted": inc.get("customers_predicted"),
