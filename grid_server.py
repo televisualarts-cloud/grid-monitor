@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261014.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261017.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -89,6 +89,22 @@ try:
 except Exception:
     _windcuts = None
 
+# Reservoir storage for the EA page (optional companion; reads EA reports in a
+# background thread, so it never blocks a request).
+try:
+    import reservoirs as _reservoirs
+    _reservoirs._kick()               # start the first build now, not on the first page view
+except Exception:
+    _reservoirs = None
+
+# Balancing costs (NESO confirmed + Elexon provisional) for the dashboard's
+# balancing card; refreshes in its own background thread, never blocks a request.
+try:
+    import balancing as _balancing
+    _balancing._kick()
+except Exception:
+    _balancing = None
+
 # Background sampler: fetch + log one history row every POWERCUTS_SAMPLE_S and cache the
 # latest snapshot, so the endpoint is instant and history rows land at the sample cadence
 # (not once per browser request). Aligned to the slowest DNO feed (~15 min); 300 s is safe.
@@ -171,7 +187,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261014.1"
+SERVER_BUILD = "261017.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -7565,8 +7581,8 @@ class Handler(BaseHTTPRequestHandler):
                 _cache["ts"] = 0     # force a fresh snapshot too
                 self._send_json({"ok": True})
             elif self.path.startswith("/api/powercut-watch"):
-                # Monitored postcode areas: {"areas": ["PL3 5", "EX23 4AA", ...]} replaces
-                # the stored list; each new entry is checked on postcodes.io.
+                # Monitored postcode areas: {"areas": ["PL3 5", {"pc": "EX23 4AA", "alias": "Les"}, ...]}
+                # replaces the stored list; each new entry is checked on postcodes.io.
                 if _powercuts is None:
                     self._send_json({"ok": False, "error": "powercuts module not installed"}, 503); return
                 n = int(self.headers.get("Content-Length") or 0)
@@ -7578,7 +7594,7 @@ class Handler(BaseHTTPRequestHandler):
                 ent = payload.get("areas")
                 if not isinstance(ent, list):
                     self._send_json({"ok": False, "error": "areas list missing"}, 400); return
-                res = _powercuts.save_watch([str(x) for x in ent[:50]])
+                res = _powercuts.save_watch([x if isinstance(x, dict) else str(x) for x in ent[:50]])
                 self._send_json(res, 200 if res.get("ok") else 500)
             elif self.path.startswith("/api/powercut-keys"):
                 if _powercuts is None:
@@ -7804,6 +7820,29 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/gauge-mutes"):
             self._send_json({"gauge_mutes": dict(_gauge_mutes),
                              "gauge_mute_partial_mmh": GAUGE_MUTE_PARTIAL_MMH})
+        elif self.path.startswith("/api/balancing"):
+            if _balancing is None:
+                self._send_json({"status": "unavailable", "error": "balancing module not installed"}, 503)
+                return
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send_json(_balancing.get_balancing(detail=qs.get("detail", ["0"])[0] == "1"))
+            except Exception as e:
+                self._send_json({"status": "error", "error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/reservoirs"):
+            if _reservoirs is None:
+                self._send_json({"status": "unavailable", "error": "reservoirs module not installed"}, 503)
+                return
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                lat = qs.get("lat", [None])[0]
+                lon = qs.get("lon", [None])[0]
+                self._send_json(_reservoirs.get_reservoirs(
+                    float(lat) if lat else None, float(lon) if lon else None,
+                    qs.get("country", [None])[0] or None,
+                    series=qs.get("series", [None])[0] or None))
+            except Exception as e:
+                self._send_json({"status": "error", "error": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/ea-floods"):
             try:
                 self._send_json(get_ea_floods())

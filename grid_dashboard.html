@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 261014.3  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261017.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -229,6 +229,66 @@
   .wn .alert-src{margin-top:8px}
 
   /* ---- Grid layout ---- */
+  /* ---- Balancing costs card + pop-out (balancing.py). Tokens scoped to .bal so the
+     brighter greys and series colours stay local to these charts. ---- */
+  .bal{--b-dim:#c0cddc;--b-faint:#8193b2;
+    --b-cons:#3987e5;--b-imb:#d95926;--b-res:#199e70;--b-freq:#e2c84a;--b-oth:#8a96a8;--b-flow:#a07ee6;
+    --b-gas:#d95926;--b-bio:#199e70;--b-wind:#3987e5;--b-other:#6b7a8f}
+  .bal-tiles{clear:both;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:8px}
+  .bal-kpi{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;min-width:0}
+  .bal-kpi .k{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--b-faint)}
+  .bal-kpi .v{font-family:var(--mono);font-size:20px;font-weight:500;margin-top:4px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .bal-kpi .s{font-size:11.5px;color:var(--b-faint);margin-top:3px;line-height:1.35}
+  .bal .pill{display:inline-block;font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--line2);color:var(--b-dim);vertical-align:2px;margin-left:5px}
+  .bal .pill.est{border-style:dashed}
+  .bv-g{color:var(--ok)} .bv-w{color:#ffffff} .bv-y{color:#f2d24b} .bv-o{color:#f5934a} .bv-r{color:var(--crit)} .bv-p{color:#ff4fbf}
+  .bal-inline{margin-top:12px}
+  .bal-inline[hidden]{display:none}
+  .bal-err{color:var(--warn)}
+  .bal .bal-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--b-dim);margin:2px 0 4px}
+  .bal .bal-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .bal .bal-legend i.hatch{background:repeating-linear-gradient(135deg,var(--b-dim) 0 2px,transparent 2px 5px)!important;border:1px dashed var(--b-dim)}
+  .bal .bal-legend i.none{display:none}
+  .bal .bal-legend i.tri-up,.bal .bal-legend i.tri-down{width:0;height:0;border-radius:0;background:none!important;border-left:5px solid transparent;border-right:5px solid transparent}
+  .bal .bal-legend i.tri-up{border-bottom:9px solid currentColor}.bal .bal-legend i.tri-down{border-top:9px solid currentColor}
+  .bal-chart{width:100%;overflow-x:auto}
+  .bal-chart svg{display:block;max-width:none;font-family:var(--mono)}
+  .bal-chart svg text{fill:var(--b-faint);font-size:10.5px}
+  .bal-chart .hit{fill:transparent;cursor:crosshair}
+  .bal-chart .hit:focus{outline:none}
+  .bal-chart .hit:focus-visible{stroke:var(--accent);stroke-width:1}
+  .bal-sec{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px 14px;margin-bottom:18px;min-width:0}
+  .bal-sec h3{font-size:16px;font-weight:600;margin:0 0 4px}
+  .bal-sec .why{color:var(--b-dim);font-size:13px;line-height:1.5;margin:4px 0 12px;max-width:95ch}
+  .bal-pt{font-size:13px;color:var(--b-dim);text-transform:uppercase;letter-spacing:.06em;margin:12px 0 4px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .bal-pt .muted{text-transform:none;letter-spacing:0;color:var(--b-faint)}
+  .bal-totals{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;color:var(--b-dim);margin:4px 0 2px;padding:6px 0 2px;border-top:1px solid var(--line)}
+  .bal-totals b{color:var(--ink);font-weight:600}.bal-totals em{font-style:normal;color:var(--b-faint)}
+  .bal-totals i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .bal-totals .tl{margin-right:6px}
+  .bal table.corr{border-collapse:collapse;font-size:14px;min-width:560px;width:100%}
+  .bal .corr th,.bal .corr td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
+  .bal .corr th{font-size:12px;color:var(--b-dim);text-transform:uppercase;letter-spacing:.06em;font-weight:500}
+  .bal .corr td.r{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .bal .corr .bar{display:inline-block;height:6px;border-radius:3px;background:var(--accent);vertical-align:1px;margin-left:8px}
+  .bal .note{font-size:12px;color:var(--b-faint);line-height:1.5;margin-top:8px}
+  .bal-notes{color:var(--b-dim);font-size:13px;line-height:1.6}
+  .bal-notes ul{margin:0;padding-left:18px}
+  #balOverlay .bal-tiles{grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:10px;margin-bottom:18px}
+  #balOverlay .bal-kpi .v{font-size:22px}
+  #balTip{position:fixed;pointer-events:none;background:#0b1119;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.45;color:var(--ink);max-width:300px;z-index:400;display:none;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  #balTip b{font-family:var(--mono);font-weight:500}
+  #balTip .r{display:flex;justify-content:space-between;gap:14px;font-variant-numeric:tabular-nums}
+  #balTip .r span:first-child{color:var(--b-dim)}
+  #balTip i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+  #balTip .ev{margin-top:6px;padding-top:5px;border-top:1px solid var(--line2)}
+  #balTip .ev div{margin:2px 0}
+  #balTip .sub{margin-top:4px;padding-top:4px;border-top:1px solid var(--line)}
+  #balTip .muted2{color:var(--b-faint);margin:1px 0 3px}
+  #balTip .pill{display:inline-block;font-family:var(--mono);font-size:10px;padding:1px 6px;border-radius:999px;border:1px dashed var(--line2);color:var(--b-dim)}
+  .bal-tri{display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;margin-right:6px;vertical-align:1px}
+  .bal-tri.up.bad{border-bottom:8px solid var(--crit)}.bal-tri.down.bad{border-top:8px solid var(--crit)}
+  .bal-tri.up.good{border-bottom:8px solid var(--ok)}.bal-tri.down.good{border-top:8px solid var(--ok)}
   .grid{display:flex;gap:14px;margin-top:16px;align-items:flex-start}
   .col{display:flex;flex-direction:column;gap:14px;min-width:0}
   .col-l{flex:7 1 0}
@@ -1052,6 +1112,108 @@
   .ea-sec-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
   .ea-sec-title .note{text-transform:none;letter-spacing:0;font-size:10.5px}
+  /* ---- Reservoirs section (top of the EA page) ---- */
+  .rsv{--rsv-low:#f5934a;--rsv-na:var(--ink-faint);background:var(--panel2);border:1px solid var(--line);
+    border-radius:11px;margin-bottom:18px}
+  .rsv-head{display:flex;align-items:flex-start;gap:12px;padding:10px 14px;flex-wrap:wrap}
+  .rsv-title{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);
+    padding-top:6px;white-space:nowrap}
+  .rsv-rows{display:flex;flex-direction:column;gap:7px;flex:1 1 520px;min-width:0}
+  .rsv-row{display:flex;align-items:flex-start;gap:7px}
+  .rsv-bs{display:flex;flex-wrap:wrap;gap:7px;flex:1 1 auto;min-width:0}
+  .rsv-lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);
+    width:44px;flex:0 0 auto;padding-top:6px}
+  .rsv-tog{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line2);
+    border-radius:7px;padding:5px 10px;cursor:pointer;align-self:flex-start;white-space:nowrap}
+  .rsv-tog:hover,.rsv-tog:focus-visible{color:var(--ink);border-color:var(--accent);outline:none}
+  .rsv-b{--c:var(--ink-dim);display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;
+    padding:4px 10px 4px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--c) 45%,transparent);
+    background:color-mix(in srgb,var(--c) 9%,transparent);color:var(--c);cursor:pointer;position:relative;
+    letter-spacing:.03em;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rsv-b:hover,.rsv-b:focus-visible{border-color:var(--c);outline:none}
+  .rsv-b b{color:var(--ink);font-weight:600}
+  .rsv-b .dt{color:var(--ink-faint);font-size:10px}
+  .rsv-b .dl{font-size:10px}
+  .rsv-g{width:30px;height:7px;border-radius:2px;background:var(--line2);position:relative;overflow:hidden;flex:0 0 auto}
+  .rsv-g i{position:absolute;inset:0 auto 0 0;background:var(--c);border-radius:2px}
+  .rsv-b.ok{--c:var(--ok)} .rsv-b.warn{--c:var(--warn)} .rsv-b.low{--c:var(--rsv-low)} .rsv-b.crit{--c:var(--crit)}
+  .rsv-b.na{--c:var(--rsv-na)}
+  .rsv-b.alert{font-weight:600}
+  .rsv-b .pulse{width:7px;height:7px;border-radius:50%;background:var(--c);animation:pulse 1.4s infinite}
+  @media (prefers-reduced-motion:reduce){.rsv-b .pulse{animation:none}}
+  .rsv-tip{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:30;width:max-content;max-width:320px;
+    white-space:normal;background:var(--panel);border:1px solid var(--line2);border-radius:8px;padding:9px 11px;
+    color:var(--ink-dim);font-size:11px;line-height:1.5;font-weight:400;box-shadow:0 8px 24px rgba(0,0,0,.45);text-align:left}
+  .rsv-tip b{color:var(--ink)}
+  .rsv-b:hover .rsv-tip,.rsv-b:focus-visible .rsv-tip{display:block}
+  .rsv-note{font-family:var(--mono);font-size:11px;color:var(--ink-dim);border:1px dashed var(--line2);border-radius:999px;
+    padding:4px 11px}
+  .rsv-wait{font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+  .rsv-det{border-top:1px solid var(--line);padding:12px 14px 16px;display:flex;flex-direction:column;gap:14px}
+  .rsv-tabs{display:flex;gap:6px;flex-wrap:wrap}
+  .rsv-tabs button{font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel);
+    border:1px solid var(--line2);border-radius:7px;padding:5px 10px;cursor:pointer}
+  .rsv-tabs button.on{color:var(--ink);border-color:var(--accent);background:rgba(63,182,201,.10)}
+  .rsv-tabs button.home::after{content:" ⌂"}
+  .rsv-tabs button.off{opacity:.55}
+  .rsv-tabs .sep{width:1px;background:var(--line2);margin:0 4px}
+  .rsv-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:18px}
+  @media (max-width:900px){.rsv-grid{grid-template-columns:minmax(0,1fr)}}
+  .rsv-card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 13px;min-width:0}
+  .rsv-h{font-size:13px;font-weight:600;margin:0 0 8px;color:var(--ink)}
+  .rsv-h span{font-family:var(--mono);font-weight:400;font-size:10px;color:var(--ink-faint);margin-left:6px}
+  .rsv-kpi{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+  .rsv-kpi .big{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums}
+  .rsv-kpi .full{font-size:15px;color:var(--ink-dim);margin-left:-6px}
+  .rsv-kpi .sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+  .rsv-bars{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:5px 10px;align-items:center;
+    font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+  .rsv-bars .n{color:var(--ink-dim);white-space:nowrap}
+  .rsv-bars .n.home{color:var(--ink)}
+  .rsv-bars .v{text-align:right;color:var(--ink);white-space:nowrap;min-width:34px}
+  .rsv-bars .bar{--c:var(--ink-dim);height:9px;background:var(--line);border-radius:2px;position:relative}
+  .rsv-bars .bar i{position:absolute;inset:0 auto 0 0;background:var(--c);border-radius:2px}
+  .rsv-bars .bar.ok{--c:var(--ok)} .rsv-bars .bar.warn{--c:var(--warn)} .rsv-bars .bar.low{--c:var(--rsv-low)}
+  .rsv-bars .bar.crit{--c:var(--crit)}
+  .rsv-bars .bar s{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink);opacity:.75}
+  .rsv-bars .bar.old,.rsv-bars .n.old{opacity:.5}
+  .rsv-bars .v em,.rsv-mon em{font-style:normal;color:var(--ink-faint);font-size:9.5px;margin-left:4px}
+  .rsv-bars [data-rsvsite]{cursor:pointer}
+  .rsv-bars .n[data-rsvsite]:hover{color:var(--ink);text-decoration:underline dotted}
+  .rsv-selchart{grid-column:1/-1;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:2px 0 6px}
+  .rsv-sub{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin:10px 0 5px}
+  .rsv-more{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);background:none;border:1px solid var(--line2);border-radius:6px;
+    padding:3px 8px;margin-top:8px;cursor:pointer}
+  .rsv-more:hover{color:var(--ink);border-color:var(--accent)}
+  .rsv-cos{display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:14px;align-items:start}
+  @media (max-width:520px){.rsv-cos{grid-template-columns:minmax(0,1fr)}}
+  .rsv-mon{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+  .rsv-mon th{text-align:left;color:var(--ink-faint);font-weight:400;border-bottom:1px solid var(--line);padding:4px 8px}
+  .rsv-mon td{padding:4px 8px;border-bottom:1px solid var(--line);color:var(--ink-dim);white-space:nowrap}
+  .rsv-mon td.ok{color:var(--ok)} .rsv-mon td.warn{color:var(--warn)} .rsv-mon td.low{color:var(--rsv-low)}
+  .rsv-mon .crit,.rsv-mon td.crit{color:var(--crit)} .rsv-mon a{color:var(--accent)}
+  .rsv-svg{width:100%;height:auto;display:block}
+  .rsv-svg text{fill:var(--ink-faint);font-family:var(--mono);font-size:9px}
+  .rsv-leg{display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-top:4px}
+  .rsv-leg i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:5px}
+  .rsv-area{font-size:12px;line-height:1.55;color:var(--ink-dim);border-top:1px solid var(--line);padding-top:8px;margin-top:8px}
+  .rsv-area:first-of-type{border-top:0;padding-top:0;margin-top:0}
+  .rsv-area b{color:var(--ink);font-weight:600}
+  .rsv-area a{color:var(--accent);font-family:var(--mono);font-size:10px}
+  .rsv-area .pc{color:var(--ink);font-variant-numeric:tabular-nums}
+  .rsv-st{display:flex;flex-direction:column;gap:5px;font-family:var(--mono);font-size:11px}
+  .rsv-st div{display:flex;gap:8px;align-items:baseline}
+  .rsv-st .s{min-width:150px}
+  .rsv-st .s.severe{color:var(--crit)} .rsv-st .s.drought{color:var(--rsv-low)} .rsv-st .s.pdw{color:var(--warn)}
+  .rsv-gauges{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .rsv-gc{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+  .rsv-gc.bad{opacity:.6}
+  .rsv-gc .n{font-size:12px;color:var(--ink);display:flex;justify-content:space-between;gap:6px}
+  .rsv-gc .n span{font-family:var(--mono);font-size:10px;color:var(--ink-faint);white-space:nowrap}
+  .rsv-gc .v{font-family:var(--mono);font-size:11px;color:var(--ink-dim);font-variant-numeric:tabular-nums}
+  .rsv-gc .p{font-family:var(--mono);font-size:10px;color:var(--warn)}
+  .rsv-src{font-family:var(--mono);font-size:10px;color:var(--ink-faint);line-height:1.6}
+  .rsv-src a{color:var(--accent)}
   .ea-layout{display:grid;grid-template-columns:0.72fr 1.28fr;gap:22px}
   @media(max-width:900px){.ea-layout{grid-template-columns:1fr}}
   .ea-riverblock{margin-bottom:16px}
@@ -1375,6 +1537,20 @@
         <div class="fuelmix" id="fuelmix"></div>
       </section>
 
+      <!-- Balancing costs: NESO confirmed, Elexon-based estimate for recent days (balancing.py) -->
+      <section class="card bal" id="balCard">
+        <h2>Balancing costs · NESO
+          <button class="keybtn" id="balDetailBtn" title="Open balancing costs: summary and charts">⤢ details</button>
+          <button class="keybtn" id="balChartBtn" title="Show the daily cost chart in this panel" aria-expanded="false" style="margin-right:6px">▾ chart</button>
+        </h2>
+        <div class="bal-tiles" id="balTiles"><div class="sub-line skeleton">loading…</div></div>
+        <div class="bal-inline" id="balInline" hidden>
+          <div class="bal-legend" id="balLegCard"></div>
+          <div class="bal-chart"><svg id="balChartCard" role="img" aria-label="Daily balancing cost: confirmed and provisional"></svg></div>
+        </div>
+        <div class="sub-line" id="balNote" style="margin-top:8px"></div>
+      </section>
+
       <!-- Weather-driven resource conditions (OpenWeather, per location) -->
       <section class="card">
         <h2>Resource conditions · by location
@@ -1489,7 +1665,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 261014.3 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 261017.1 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1690,6 +1866,61 @@
     </div>
   </div>
 </div>
+
+<!-- Balancing costs pop-out: summary tiles, daily cost, other services, drivers, who was paid, heatmap -->
+<div class="as-overlay bal" id="balOverlay">
+  <div class="ea-bar">
+    <h1>£ Balancing costs</h1>
+    <span class="ea-sub">what NESO spends each day to keep the system balanced · confirmed and provisional</span>
+    <button class="gen-close" id="balClose" title="Close (Esc)" style="margin-left:auto">✕</button>
+  </div>
+  <div class="ea-body" id="balBody">
+    <div class="bal-tiles" id="balDTiles"><div class="octo-loading">Loading…</div></div>
+    <section class="bal-sec">
+      <h3>Daily cost: confirmed and provisional</h3>
+      <p class="why">Bars show the total: confirmed in solid blue, provisional hatched with a whisker for the likely range. Hover a day for NESO’s breakdown. Constraint payments are about 95% of the cost, so the smaller services get their own strip on their own scale. Underneath, on their own scales and lined up by day: how far planned flows exceed the Scottish network limits, how much wind was turned down, and wind output for comparison.</p>
+      <div class="bal-legend" id="balLegA"></div>
+      <div class="bal-chart"><svg id="balChartA" role="img" aria-label="Daily balancing cost"></svg></div>
+      <div class="bal-totals" id="balTotA"></div>
+      <div class="bal-pt"><span>Other balancing services · £m per day</span><span class="muted">NESO confirmed categories, excluding constraints · own scale</span></div>
+      <div class="bal-legend" id="balLegAs"></div>
+      <div class="bal-chart"><svg id="balChartAs" role="img" aria-label="Daily cost of energy imbalance, reserve, frequency response and other services"></svg></div>
+      <div class="bal-pt"><span>Planned flow over Scottish boundary limits · GWh per day</span><span class="muted">NESO day-ahead flows and limits · known the day before</span></div>
+      <div class="bal-chart"><svg id="balChartAo" role="img" aria-label="Planned flow over Scottish boundary limits"></svg></div>
+      <div class="bal-pt"><span>Wind turned down · GWh per day</span><span class="muted">Elexon accepted bids on wind units · about a day after</span></div>
+      <div class="bal-chart"><svg id="balChartAc" role="img" aria-label="Wind turned down per day"></svg></div>
+      <div class="bal-pt"><span>Wind output · daily mean (GW)</span><span class="muted">local logs · for comparison</span></div>
+      <div class="bal-chart"><svg id="balChartAw" role="img" aria-label="Daily mean wind output"></svg></div>
+      <div class="bal-pt"><span>Which measure tracks the cost</span><span class="muted" id="balCorrSub"></span></div>
+      <div class="bal-chart"><table class="corr" id="balCorrT"></table></div>
+      <p class="note">The boundaries are the transmission bottlenecks between the Scottish wind and demand further south: SSE-SP and SSHARN inside Scotland, SCOTEX (Scotland to England, also called B6) and their neighbours. Hover a confirmed day for the costliest boundary that day.</p>
+    </section>
+    <section class="bal-sec">
+      <h3>Who was paid: turn-up versus turn-down</h3>
+      <p class="why">Splits the Balancing Mechanism money by what it bought. Above the line: generators paid to increase output, mostly gas. Below: wind farms paid to reduce. The diamond is the net Balancing Mechanism cost for the day. All of this comes from Elexon, so it is available a day after the event, but it leaves out NESO’s trades and contracts (about 5–15% of the total).</p>
+      <div class="bal-legend" id="balLegB"></div>
+      <div class="bal-chart"><svg id="balChartB" role="img" aria-label="Balancing Mechanism payments by fuel"></svg></div>
+    </section>
+    <section class="bal-sec">
+      <h3>When in the day: half-hour heatmap</h3>
+      <p class="why">Each column is a day, each row a half-hour settlement period. Brighter means more spent in that half-hour. It shows whether costs pile up overnight on windy days or at the evening peak. Provisional days are to the right of the gap.</p>
+      <div class="bal-legend" id="balLegC"></div>
+      <div class="bal-chart"><svg id="balChartC" role="img" aria-label="Half-hourly balancing cost heatmap"></svg></div>
+    </section>
+    <section class="bal-sec bal-notes">
+      <h3>How the figures are made</h3>
+      <ul>
+        <li><b>Confirmed:</b> NESO Data Portal, “Daily Balancing Costs” (BSUoS cost data), per half-hour, summed per settlement day. Published about five days after the event.</li>
+        <li><b>Provisional:</b> Elexon indicative cashflows for every accepted bid and offer in the Balancing Mechanism, about a day behind. Elexon’s figure leaves out NESO’s trades and contracts, so it is scaled up by the ratio seen on recent confirmed days: <span id="balRatioTxt"></span>. The whisker shows the 10th–90th percentile of that ratio. A provisional day is replaced by NESO’s figure when it is published.</li>
+        <li><b>Highest estimate colour:</b> compared with the average of the last 30 confirmed days: green more than 10% below, white within ±10%, yellow up to 25% above, orange up to 50%, red up to 75%, hot pink beyond.</li>
+        <li><b>Event markers:</b> ▲ a notable high or record, ▼ a notable low; red is bad news for cost or the system, green is good news. Records are the highest since the start of the stored history. Frequency events come from the local logs: a “major infeed loss” marker appears when frequency falls by 0.2 Hz or more within 30 seconds to 49.85 Hz or below, or goes below 49.6 Hz; otherwise a day whose lowest reading is below 49.76 Hz gets a “frequency low” marker.</li>
+        <li><b>Today</b> is part of a day and is marked “so far”. Days are UK settlement days (local clock).</li>
+      </ul>
+    </section>
+  </div>
+  <div class="ea-attrib" id="balAttrib"></div>
+</div>
+<div id="balTip" role="tooltip"></div>
 
 <!-- Alert history & statistics pop-out -->
 <div class="as-overlay" id="asOverlay">
@@ -6057,6 +6288,7 @@ async function eaFetch(){
     ]);
     gaugeMutesAdopt(ov);
     eaData=ov; eaFloods=fl; eaRender();
+    rsvFetch(false);               // reservoirs: refetches on a new location or every 30 min
     eaLastFetchTs=Date.now();   // let the background watcher skip a redundant poll
     // river + rainfall alarms can only run while EA station data is loaded
     if(eaData && eaData.stations){
@@ -6835,10 +7067,409 @@ function oc4NudgeHtml(){
     '<a class="oc4-up" href="'+L+'" target="_blank" rel="noopener">Upgrade \u2192</a></div>'+
     '<button class="oc4-x" title="Dismiss" onclick="dismissOc4Nudge(this)">\u00d7</button></div>';
 }
+/* ---------- Reservoirs (top of the EA page) ----------
+   Data from /api/reservoirs (reservoirs.py): EA national monthly regional table,
+   EA weekly drought summaries, EA area summaries, live EA reservoir gauges and
+   the London Datastore Thames groups. Rendered into #rsvBox, which eaRender()
+   re-creates on every EA refresh, so the section repaints from rsvData. */
+let rsvData=null, rsvLastFetch=0, rsvRetry=null, rsvLocKey="";
+const RSV_UI_KEY="ukgrid.rsv.ui";
+let rsvUi={open:false, region:null};
+try{ const o=JSON.parse(localStorage.getItem(RSV_UI_KEY)||"null"); if(o) rsvUi=Object.assign(rsvUi,o); }catch(e){}
+function rsvSaveUi(){ try{ localStorage.setItem(RSV_UI_KEY, JSON.stringify(rsvUi)); }catch(e){} }
+const RSV_MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const rsvEsc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const rsvYm=ym=>{ const [y,m]=ym.split("-"); return RSV_MON[+m-1]+" "+y; };
+const rsvDay=d=>{ if(!d) return ""; const x=new Date(d+(d.length===10?"T12:00:00Z":"")); return x.getUTCDate()+" "+RSV_MON[x.getUTCMonth()]; };
+
+async function rsvFetch(force){
+  const key=eaLoc.lat.toFixed(2)+","+eaLoc.lon.toFixed(2);
+  if(rsvLocKey && key!==rsvLocKey) rsvUi.region=null;   // new home: open on its own region
+  if(!force && rsvData && key===rsvLocKey && Date.now()-rsvLastFetch<30*60*1000) { rsvPaint(); return; }
+  try{
+    const q="/api/reservoirs?lat="+eaLoc.lat+"&lon="+eaLoc.lon+"&country="+encodeURIComponent(eaLoc.country||"");
+    const d=await fetch(q).then(r=>r.json());
+    if(d && d.status==="building"){                 // first run after start-up: server is fetching
+      rsvData=rsvData||{building:true};
+      if(rsvRetry) clearTimeout(rsvRetry);
+      rsvRetry=setTimeout(()=>rsvFetch(true), 20000);
+    } else if(d && !d.error){
+      rsvData=d; rsvLastFetch=Date.now(); rsvLocKey=key;
+      if(d.status==="refreshing"){ if(rsvRetry) clearTimeout(rsvRetry); rsvRetry=setTimeout(()=>rsvFetch(true), 60000); }
+    } else {
+      rsvData=rsvData||{failed:(d&&d.error)||"no data"};
+    }
+  }catch(e){ rsvData=rsvData||{failed:e.message}; }
+  rsvPaint();
+}
+
+// colour class: vs-normal wording wins where we have it, else % full bands
+function rsvCls(pct, vs){
+  if(pct==null) return "na";
+  const v=(vs||"").toLowerCase();
+  if(pct<30) return "crit";
+  if(/below/.test(v)) return "low";
+  if(/above|normal|average/.test(v)) return pct>=50?"ok":"warn";
+  return pct>=70?"ok":pct>=50?"warn":"low";
+}
+function rsvBadge(cls, inner, tip, act){
+  return '<button type="button" class="rsv-b '+cls+'" data-rsv="'+rsvEsc(act||"")+'">'+inner+
+         (tip?'<span class="rsv-tip">'+tip+'</span>':'')+'</button>';
+}
+function rsvGauge(pct){ return '<span class="rsv-g"><i style="width:'+Math.max(0,Math.min(100,pct||0))+'%"></i></span>'; }
+function rsvLatestMonth(){ const ks=Object.keys((rsvData&&rsvData.monthly)||{}).sort(); return ks[ks.length-1]; }
+function rsvDist(a,b,c,d){ const k=Math.PI/180, x=(d-b)*k*Math.cos((a+c)/2*k), y=(c-a)*k; return 6371*Math.hypot(x,y); }
+const RSV_STATUS={"severe drought":["Severe drought","crit","severe"],"drought":["Drought","low","drought"],
+  "prolonged dry weather":["Prolonged dry weather","warn","pdw"],"recovering from drought":["Recovering from drought","warn","pdw"]};
+
+function rsvSigned(v){ const r=Math.round(v*100)/100; return (r>0?"+":r<0?"−":"±")+Math.abs(r).toFixed(2); }
+function rsvGaugeText(g){
+  const s=g.scale||{};
+  if(s.typ_low!=null && g.value<s.typ_low) return (s.typ_low-g.value).toFixed(2)+" m below typical";
+  if(s.typ_high!=null && g.value>s.typ_high) return (g.value-s.typ_high).toFixed(2)+" m above typical";
+  if(g.spillway!=null) return (g.spillway-g.value).toFixed(2)+" m below spillway";
+  if(g.change_7d!=null) return rsvSigned(g.change_7d)+" "+g.unit+" in 7 days";
+  return "";
+}
+function rsvLocalRow(){
+  const d=rsvData, h=d.home||{};
+  const ctry=h.country||eaLoc.country||"England";
+  if(ctry!=="England")
+    return '<span class="rsv-note">Reservoir data not available in '+rsvEsc(ctry)+'</span>';
+  const reg=h.region; if(!reg) return '<span class="rsv-wait">Home region not known</span>';
+  let out="";
+  // drought status. A severe-drought declaration names counties, so it shows only when
+  // home's county is one of them; area statuses show for the region, naming the areas.
+  const places=(h.places||[]).map(p=>p.toLowerCase());
+  const sts=(d.drought||[]).filter(n=>n.region===reg && (n.status!=="severe drought" ||
+            places.some(p=>n.area.toLowerCase().includes(p))));
+  if(sts.length && RSV_STATUS[sts[0].status]){
+    const top=sts[0].status, same=sts.filter(n=>n.status===top), [lab,cls]=RSV_STATUS[top];
+    const names=same.map(n=>n.area.replace(/^parts of /,"")).join(", ");
+    const short=names.length>38?names.slice(0,36).replace(/[ ,]+[^ ,]*$/,"")+"…":names;
+    const hot=(cls==="crit"||cls==="low");
+    out+=rsvBadge(cls+(hot?" alert":""), (hot?'<span class="pulse"></span>':'')+lab+' · '+rsvEsc(short)+
+      (same[0].when?' <span class="dt">since '+rsvEsc(same[0].when)+'</span>':''),
+      same.map(n=>'<b>'+lab+'</b>: '+rsvEsc(n.area)+(n.when?', from '+rsvEsc(n.when):'')).join('<br>')+
+      '<br>Read from the EA weekly and area reports (latest '+rsvDay(same[0].report)+').', reg);
+  }
+  const ym=rsvLatestMonth(), r=ym && d.monthly[ym][reg];
+  if(r) out+=rsvBadge(rsvCls(r.pct,r.vs), rsvEsc(reg)+' '+rsvGauge(r.pct)+'<b>'+r.pct+'%</b> full<span class="dl">· '+rsvEsc(r.vs.toLowerCase())+'</span><span class="dt">'+rsvYm(ym)+'</span>',
+      'EA <b>'+rsvEsc(reg)+'</b> region, end of '+rsvYm(ym)+': <b>'+r.pct+'% full</b>, '+rsvEsc(r.vs.toLowerCase())+' for the time of year. Areas: '+rsvEsc((d.region_areas[reg]||[]).slice(0,3).join("; "))+'. Source: EA national monthly water situation report.', reg);
+  else if(!d.pypdf) out+=rsvBadge("na", rsvEsc(reg)+' <b>—</b>', 'Regional figures need the <b>pypdf</b> package on the server (<b>pip install pypdf</b>), then restart.', reg);
+  // water-company figures for the home region: company totals, nearest reservoir, lowest large one
+  const cs=rsvCompaniesIn(reg);
+  cs.forEach(({c,T})=>{
+    if(T && !T.stale) out+=rsvBadge(rsvCls(T.pct), rsvEsc(c.company)+' '+rsvGauge(T.pct)+'<b>'+rsvR(T.pct)+'%</b> full<span class="dt">'+rsvDay(T.date)+'</span>',
+      rsvEsc(c.company)+(reg!==c.region?' ('+rsvEsc(reg)+' part)':'')+' total storage <b>'+T.pct+'% full</b> on '+rsvDay(T.date)+'. '+rsvTotalSrc(T)+(T.last_year!=null?' Same date last year: '+T.last_year+'%.':''), reg);
+  });
+  const all=[].concat(...cs.map(({c,sites})=>sites.filter(x=>!x.stale && x.kind==="reservoir").map(x=>Object.assign({co:c.company},x))));
+  const near=all.filter(x=>x.lat!=null).map(x=>Object.assign({km:rsvDist(eaLoc.lat,eaLoc.lon,x.lat,x.lon)},x)).sort((a,b)=>a.km-b.km)[0];
+  if(near && near.km<=40) out+=rsvBadge(rsvCls(near.pct), rsvEsc(near.name)+' '+rsvGauge(near.pct)+'<b>'+rsvR(near.pct)+'%</b> full<span class="dt">'+rsvDay(near.date)+'</span>',
+      '<b>'+rsvEsc(near.name)+'</b> ('+rsvEsc(near.co)+'), the reservoir nearest home, about '+Math.round(near.km)+' km away: <b>'+near.pct+'% full</b> on '+rsvDay(near.date)+(near.last_year!=null?'; '+near.last_year+'% a year earlier':'')+'.', reg);
+  const big=all.filter(x=>(x.capacity||0)>=2000), pool=big.length?big:all;
+  const low=pool.slice().sort((a,b)=>a.pct-b.pct)[0];
+  if(low && (!near || near.km>40 || low.key!==near.key)) out+=rsvBadge(rsvCls(low.pct), 'Lowest: '+rsvEsc(low.name)+' '+rsvGauge(low.pct)+'<b>'+rsvR(low.pct)+'%</b> full<span class="dt">'+rsvDay(low.date)+'</span>',
+      'Lowest '+(big.length?'of the reservoirs over 2,000 Ml ':'')+'in the region: <b>'+rsvEsc(low.name)+'</b> ('+rsvEsc(low.co)+') '+low.pct+'% full on '+rsvDay(low.date)+'.', reg);
+  // London groups (Thames Water) when home is within 60 km of central London
+  if(d.london && rsvDist(eaLoc.lat,eaLoc.lon,51.51,-0.13)<60){
+    const L=d.london.latest;
+    out+=rsvBadge(rsvCls(L.thames), 'Lower Thames '+rsvGauge(L.thames)+'<b>'+L.thames+'%</b> full<span class="dt">'+rsvDay(L.date)+'</span>',
+      'Thames Water London groups, % of usable capacity on '+rsvDay(L.date)+': <b>Lower Thames '+L.thames+'%</b>, Lower Lee '+L.lee+'%. Published monthly via the London Datastore.', reg);
+  }
+  // nearest working live gauge in the region
+  const gs=(d.gauges||[]).filter(g=>g.ok)
+     .map(g=>Object.assign({km:rsvDist(eaLoc.lat,eaLoc.lon,g.lat,g.lon)},g)).filter(g=>g.km<=60).sort((a,b)=>a.km-b.km);
+  if(gs.length){
+    const g=gs[0], t=rsvGaugeText(g), s=g.scale||{};
+    const below=s.typ_low!=null && g.value<s.typ_low;
+    out+=rsvBadge(below?"low":"ok", rsvEsc(g.name.replace(/ Reservoir$/,""))+' live <b>'+g.value.toFixed(2)+' '+rsvEsc(g.unit)+'</b>'+(t?'<span class="dl">'+rsvEsc(t)+'</span>':'')+'<span class="dt">'+rsvDay(g.time.slice(0,10))+'</span>',
+      'EA gauge, '+Math.round(g.km)+' km from home. Water level <b>'+g.value.toFixed(2)+' '+rsvEsc(g.unit)+'</b> (a level, not % full)'+
+      (s.typ_low!=null?'; typical range '+s.typ_low.toFixed(2)+'–'+(s.typ_high!=null?s.typ_high.toFixed(2):"?")+' m':'')+
+      (s.rec_low!=null?', record low '+s.rec_low.toFixed(2)+' m':'')+
+      (g.change_7d!=null?'. 7-day change '+rsvSigned(g.change_7d)+' '+rsvEsc(g.unit):'')+'.', reg);
+  }
+  return out||'<span class="rsv-wait">No figures for this region yet</span>';
+}
+function rsvUkRow(){
+  const d=rsvData, w=(d.weekly||[]).slice(-1)[0];
+  let out="";
+  if(w) out+=rsvBadge(rsvCls(w.pct, w.below_lta>0?"below":""), 'England '+rsvGauge(w.pct)+'<b>'+Math.round(w.pct)+'%</b> full'+(w.below_lta!=null?'<span class="dl">· normal ≈'+Math.round(w.pct+w.below_lta)+'%</span>':'')+'<span class="dt">'+rsvDay(w.date)+'</span>',
+      'England storage <b>'+w.pct+'%</b>'+(w.below_lta!=null?', '+Math.abs(w.below_lta)+'% '+(w.below_lta>0?'below':'above')+' the long-term average':'')+
+      (w.u50!=null?'. <b>'+w.u50+'</b> reservoirs or groups under 50%':'')+'. EA weekly drought summary, week to '+rsvDay(w.date)+'.', "England");
+  else { const ym=rsvLatestMonth(), e=ym&&d.monthly[ym].England;
+    if(e) out+=rsvBadge(rsvCls(e.pct,e.vs), 'England '+rsvGauge(e.pct)+'<b>'+e.pct+'%</b> full<span class="dt">'+rsvYm(ym)+'</span>', 'England, end of '+rsvYm(ym)+' (EA monthly report; no weekly report this week).', "England"); }
+  const N=d.nations||{};
+  out+=rsvBadge("na",'Scotland <b>n/a</b>',rsvEsc(N.Scotland||""),"");
+  out+=rsvBadge("na",'Wales <b>not published</b>',rsvEsc(N.Wales||""),"");
+  out+=rsvBadge("na",'N. Ireland <b>n/a</b>',rsvEsc(N["Northern Ireland"]||""),"");
+  return out;
+}
+
+/* ---- charts (inline SVG, drawn to one scale) ---- */
+function rsvLineChart(o){
+  // o: {W,H, xs:[labels], series:[{pts:[[i,v]], color, dash, w}], band:{lo:[[i,v]],hi:[[i,v]]}, ymin, ymax, ticks:[...], marks:[{y,label}], xlab:[[i,text]]}
+  const W=o.W||520,H=o.H||170,L=30,R=8,T=8,B=20, n=o.n;
+  const x=i=>L+(n<=1?0:i*(W-L-R)/(n-1)), y=v=>T+(o.ymax-v)*(H-T-B)/(o.ymax-o.ymin);
+  let s='';
+  (o.ticks||[]).forEach(v=>{ s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(v)+'" y2="'+y(v)+'" stroke="var(--line)" />'+
+     '<text x="'+(L-5)+'" y="'+(y(v)+3)+'" text-anchor="end">'+v+(o.unit||"")+'</text>'; });
+  (o.marks||[]).forEach(m=>{ s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(m.y)+'" y2="'+y(m.y)+'" stroke="var(--line2)" stroke-dasharray="3 3"/>'+
+     '<text x="'+(W-R)+'" y="'+(y(m.y)-3)+'" text-anchor="end">'+rsvEsc(m.label)+'</text>'; });
+  if(o.band && o.band.lo.length){
+    const up=o.band.hi.map(p=>x(p[0]).toFixed(1)+","+y(p[1]).toFixed(1));
+    const dn=o.band.lo.slice().reverse().map(p=>x(p[0]).toFixed(1)+","+y(p[1]).toFixed(1));
+    s+='<polygon points="'+up.concat(dn).join(" ")+'" fill="var(--accent)" fill-opacity=".10" stroke="none"/>';
+  }
+  (o.series||[]).forEach(se=>{
+    if(!se.pts.length) return;
+    const pts=se.pts.map(p=>x(p[0]).toFixed(1)+","+y(p[1]).toFixed(1)).join(" ");
+    if(se.fill) s+='<polygon points="'+x(se.pts[0][0]).toFixed(1)+','+y(o.ymin)+' '+pts+' '+x(se.pts[se.pts.length-1][0]).toFixed(1)+','+y(o.ymin)+'" fill="'+se.color+'" fill-opacity=".12" stroke="none"/>';
+    s+='<polyline points="'+pts+'" fill="none" stroke="'+se.color+'" stroke-width="'+(se.w||1.8)+'"'+(se.dash?' stroke-dasharray="'+se.dash+'"':'')+'/>';
+    if(se.end){ const p=se.pts[se.pts.length-1]; s+='<circle cx="'+x(p[0])+'" cy="'+y(p[1])+'" r="3" fill="var(--ink)"/>'; }
+  });
+  (o.xlab||[]).forEach(([i,t],k,arr)=>{ s+='<text x="'+x(i)+'" y="'+(H-5)+'" text-anchor="'+(k===0?"start":k===arr.length-1?"end":"middle")+'">'+rsvEsc(t)+'</text>'; });
+  return '<svg class="rsv-svg" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+rsvEsc(o.label||"chart")+'">'+s+'</svg>';
+}
+function rsvMonthlyChart(reg){
+  const M=rsvData.monthly||{}, ks=Object.keys(M).sort(); if(ks.length<2) return '<div class="rsv-wait">Not enough monthly history yet.</div>';
+  const pts=k=>ks.map((ym,i)=>M[ym][k]?[i,M[ym][k].pct]:null).filter(Boolean);
+  const series=[{pts:pts(reg),color:"var(--accent)",end:true,fill:true}];
+  if(reg!=="England") series.unshift({pts:pts("England"),color:"var(--ink-faint)",dash:"4 3",w:1.2});
+  const xl=[]; ks.forEach((ym,i)=>{ if(ym.endsWith("-01")||i===0||i===ks.length-1) xl.push([i, i===ks.length-1||i===0?rsvYm(ym):ym.slice(0,4)]); });
+  // drop a January label that would collide with the first/last label
+  const xlab=xl.filter((p,k)=>k===0||k===xl.length-1||(p[0]-xl[0][0]>3&&xl[xl.length-1][0]-p[0]>3));
+  return rsvLineChart({n:ks.length,series,ymin:0,ymax:100,ticks:[0,25,50,75,100],unit:"%",xlab,label:reg+" monthly storage"})+
+    '<div class="rsv-leg"><span><i style="background:var(--accent)"></i>'+rsvEsc(reg)+' % full, end of month</span>'+(reg!=="England"?'<span><i style="background:var(--ink-faint)"></i>England</span>':'')+'</div>';
+}
+function rsvWeeklyChart(){
+  const W=(rsvData.weekly||[]); if(W.length<2) return "";
+  const t0=Date.parse(W[0].date), t1=Date.parse(W[W.length-1].date), span=Math.max(1,(t1-t0)/86400000);
+  const n=Math.round(span)+1, pts=W.map(w=>[Math.round((Date.parse(w.date)-t0)/86400000), w.pct]);
+  const lta=W.filter(w=>w.below_lta!=null).map(w=>[Math.round((Date.parse(w.date)-t0)/86400000), w.pct+w.below_lta]);
+  const xlab=[[0,rsvDay(W[0].date)+" "+W[0].date.slice(0,4)],[n-1,rsvDay(W[W.length-1].date)+" "+W[W.length-1].date.slice(0,4)]];
+  return rsvLineChart({n,series:[{pts:lta,color:"var(--ink-faint)",dash:"2 3",w:1.2},{pts,color:"var(--accent)",end:true,fill:true}],ymin:0,ymax:100,ticks:[0,25,50,75,100],unit:"%",xlab,label:"England weekly storage"})+
+    '<div class="rsv-leg"><span><i style="background:var(--accent)"></i>England % full, weekly</span><span><i style="background:var(--ink-faint)"></i>long-term average (where the report gives it)</span></div>';
+}
+function rsvLondonChart(key, name){
+  const S=rsvData.london && rsvData.london.series[key]; if(!S) return "";
+  const lo=S.range.map(r=>[r[0]-1,r[1]]), hi=S.range.map(r=>[r[0]-1,r[3]]), med=S.range.map(r=>[r[0]-1,r[2]]);
+  const xlab=[[0,"Jan"],[90,"Apr"],[181,"Jul"],[273,"Oct"],[364,"Dec"]];
+  return '<div class="rsv-h">'+name+' <span>% of usable capacity · '+S.year+' against 1989–'+(S.year-1)+'</span></div>'+
+    rsvLineChart({n:365,band:{lo,hi},series:[{pts:med,color:"var(--ink-faint)",dash:"4 3",w:1.1},{pts:S.prev.map(p=>[p[0]-1,p[1]]),color:"var(--accent2)",w:1.1},{pts:S["this"].map(p=>[p[0]-1,p[1]]),color:"var(--accent)",end:true}],
+      ymin:0,ymax:100,ticks:[0,25,50,75,100],unit:"%",xlab,H:150,label:name})+
+    '<div class="rsv-leg"><span><i style="background:var(--accent)"></i>'+S.year+'</span><span><i style="background:var(--accent2)"></i>'+(S.year-1)+'</span><span><i style="background:var(--ink-faint)"></i>median</span><span><i style="background:rgba(63,182,201,.35);height:7px"></i>lowest–highest</span></div>';
+}
+function rsvGaugeCard(g){
+  const D=g.daily||[]; let chart="";
+  if(D.length>=3){
+    const vs=D.map(p=>p[1]), s=g.scale||{};
+    let lo=Math.min(...vs), hi=Math.max(...vs);
+    if(s.typ_low!=null && s.typ_low>lo-1.5 && s.typ_low<hi+1.5){ lo=Math.min(lo,s.typ_low); hi=Math.max(hi,s.typ_low); }
+    const pad=Math.max(0.05,(hi-lo)*0.15); lo-=pad; hi+=pad;
+    const marks=(s.typ_low!=null && s.typ_low>=lo && s.typ_low<=hi)?[{y:s.typ_low,label:"typical low"}]:[];
+    chart=rsvLineChart({n:D.length,W:240,H:80,series:[{pts:D.map((p,i)=>[i,p[1]]),color:g.ok?"var(--accent)":"var(--ink-faint)",end:true,fill:true}],
+      ymin:lo,ymax:hi,ticks:[],marks,xlab:[[0,rsvDay(D[0][0])],[D.length-1,rsvDay(D[D.length-1][0])]],label:g.name+" level"});
+  }
+  const t=rsvGaugeText(g);
+  return '<div class="rsv-gc'+(g.ok?'':' bad')+'"><div class="n">'+rsvEsc(g.name)+'<span>'+rsvDay(g.time.slice(0,10))+'</span></div>'+
+    '<div class="v">'+g.value.toFixed(2)+' '+rsvEsc(g.unit)+(t?' · '+rsvEsc(t):'')+'</div>'+chart+
+    (g.ok?'':'<div class="p">Suspect sensor ('+rsvEsc(g.problem)+'), not used in the badges</div>')+'</div>';
+}
+let rsvSel=null;                     // {co,key,name,data} — reservoir picked in a company card
+const rsvR=v=>Math.round(v*10)/10;
+function rsvCompaniesIn(reg){
+  return ((rsvData&&rsvData.companies)||[]).map(c=>({c, sites:(c.sites||[]).filter(x=>x.region===reg), T:(c.totals||{})[reg]}))
+    .filter(x=>x.sites.length||x.T);
+}
+function rsvTotalSrc(T){
+  if(!T) return "";
+  if(T.src==="computed") return "Capacity-weighted across the reservoirs it reports (our calculation).";
+  return "As published by the company"+(T.computed_before?"; earlier history is our capacity-weighted calculation":"")+".";
+}
+// one line per year on a Jan–Dec axis: this year bold, last year second, earlier years faint
+function rsvYearsChart(series, opts){
+  opts=opts||{};
+  if(!series || series.length<2) return "";
+  const by={};
+  series.forEach(([d,v])=>{ const y=d.slice(0,4), t=Date.UTC(+y,+d.slice(5,7)-1,+d.slice(8,10)), doy=Math.round((t-Date.UTC(+y,0,1))/86400000);
+    (by[y]=by[y]||[]).push([Math.min(364,doy),v]); });
+  const years=Object.keys(by).sort(), cur=years[years.length-1];
+  const fade=["#3a4a5e","#46586d","#53667c","#61758b","#70849a"];
+  const shown=years.slice(-6);
+  const series2=shown.map((y,i)=>({pts:by[y], color:y===cur?"var(--accent)":(i===shown.length-2?"var(--accent2)":fade[i%fade.length]), w:y===cur?2.2:1.2, end:y===cur}));
+  const xlab=[[0,"Jan"],[90,"Apr"],[181,"Jul"],[273,"Oct"],[364,"Dec"]];
+  return rsvLineChart({n:365,series:series2,ymin:0,ymax:100,ticks:[0,25,50,75,100],unit:"%",xlab,H:opts.H||150,label:opts.label||"history"})+
+    '<div class="rsv-leg">'+shown.slice().reverse().map((y,i)=>'<span><i style="background:'+series2[shown.length-1-i].color+'"></i>'+y+'</span>').join("")+'</div>';
+}
+function rsvSourcesFor(co){
+  return ((rsvData&&rsvData.company_status)||[]).filter(s=>s.company===co);
+}
+function rsvSrcLine(co){
+  const ss=rsvSourcesFor(co); if(!ss.length) return "";
+  const st=ss.filter(s=>s.kind==="stream"), wb=ss.filter(s=>s.kind==="web");
+  const newest=a=>a.map(s=>s.newest||"").sort().pop()||"";
+  const bits=[];
+  if(st.length) bits.push('Stream to '+rsvDay(newest(st))+' '+newest(st).slice(0,4)+(st.some(s=>!s.ok)?' (a layer failed)':''));
+  wb.forEach(s=>bits.push('<a href="'+rsvEsc(s.url)+'" target="_blank" rel="noopener">website</a> '+(s.ok?'to '+rsvDay(s.newest):'<span style="color:var(--warn)">fetch failed</span>')));
+  return bits.join(' · ');
+}
+function rsvCompanyCard(c, reg, sites, T){
+  const ui=(rsvUi.showAll=rsvUi.showAll||{}), key=c.key+"|"+reg;
+  const groups=sites.filter(x=>x.kind==="group"), res=sites.filter(x=>x.kind!=="group");
+  const near=res.filter(x=>x.lat!=null&&!x.stale).map(x=>[rsvDist(eaLoc.lat,eaLoc.lon,x.lat,x.lon),x.key]).sort((a,b)=>a[0]-b[0])[0];
+  const homeKey=near&&near[0]<=40?near[1]:null;
+  let h='<div class="rsv-card"><div class="rsv-h">'+rsvEsc(c.company)+(reg!==c.region?' <span>'+rsvEsc(reg)+' reservoirs</span>':'')+
+        (T?'<span>total '+T.pct+'% on '+rsvDay(T.date)+(T.stale?' (out of date)':'')+'</span>':'')+'</div>';
+  if(T && T.series && T.series.length>8) h+=rsvYearsChart(T.series,{label:c.company+" total"});
+  const allOld=res.length && res.every(x=>x.stale);
+  const row=x=>{
+    const sel=rsvSel&&rsvSel.co===c.key&&rsvSel.key===x.key;
+    return '<span class="n'+(x.key===homeKey?' home':'')+(x.stale?' old':'')+'" data-rsvsite="'+rsvEsc(c.key+"|"+x.key)+'" title="Click for history">'+rsvEsc(x.name)+(x.key===homeKey?' ⌂':'')+'</span>'+
+      '<span class="bar '+rsvCls(x.pct)+(x.stale?' old':'')+'" data-rsvsite="'+rsvEsc(c.key+"|"+x.key)+'"><i style="width:'+Math.min(100,x.pct)+'%"></i>'+
+      (x.last_year!=null?'<s style="left:'+Math.min(100,x.last_year)+'%" title="a year earlier: '+x.last_year+'%"></s>':'')+'</span>'+
+      '<span class="v">'+Math.round(x.pct)+'%'+(x.stale&&!allOld?'<em>'+rsvDay(x.date)+' '+x.date.slice(2,4)+'</em>':'')+'</span>'+
+      (sel?'<div class="rsv-selchart">'+rsvSelChart()+'</div>':'');
+  };
+  if(groups.length){
+    h+='<div class="rsv-sub">Groups, latest published</div><div class="rsv-bars">'+groups.map(row).join("")+'</div>';
+  }
+  if(res.length){
+    let list=res.slice();
+    const LIM=16, many=list.length>LIM && !ui[key];
+    if(many) list=list.slice().sort((a,b)=>(b.capacity||0)-(a.capacity||0)).slice(0,LIM).sort((a,b)=>b.pct-a.pct);
+    const allOld=res.every(x=>x.stale), lastUp=res.map(x=>x.date).sort().pop();
+    h+=((groups.length||allOld)?'<div class="rsv-sub">Reservoirs'+(allOld?' · last open-data upload '+rsvDay(lastUp)+' '+lastUp.slice(0,4):'')+'</div>':'')+
+       '<div class="rsv-bars">'+list.map(row).join("")+'</div>';
+    if(res.length>LIM) h+='<button type="button" class="rsv-more" data-rsvmore="'+rsvEsc(key)+'">'+(many?'show all '+res.length+' (largest '+LIM+' shown)':'show the largest '+LIM)+'</button>';
+  }
+  h+='<div class="rsv-src" style="margin-top:6px">'+(res.some(x=>x.last_year!=null)?'White tick: same week last year. ':'')+'Click a reservoir for its history. '+rsvSrcLine(c.key)+'</div></div>';
+  return h;
+}
+function rsvSelChart(){
+  if(!rsvSel) return "";
+  if(!rsvSel.data) return '<div class="rsv-wait">Loading history…</div>';
+  const S=rsvSel.data.series||[];
+  return '<div class="rsv-h" style="margin:6px 0 2px">'+rsvEsc(rsvSel.data.name)+' <span>'+S.length+' readings since '+rsvDay(S[0]&&S[0][0])+' '+(S[0]?S[0][0].slice(0,4):'')+
+         (rsvSel.data.capacity?' · capacity '+Math.round(rsvSel.data.capacity).toLocaleString()+' Ml':'')+'</span></div>'+
+         (S.length>1?rsvYearsChart(S,{H:130,label:rsvSel.data.name}):'<div class="rsv-wait">Only one reading so far.</div>');
+}
+async function rsvPick(ref){
+  const [co,key]=ref.split("|");
+  if(rsvSel && rsvSel.co===co && rsvSel.key===key){ rsvSel=null; rsvPaint(); return; }
+  rsvSel={co,key,data:null}; rsvPaint();
+  try{ const d=await fetch("/api/reservoirs?series="+encodeURIComponent(ref)).then(r=>r.json());
+       if(rsvSel && rsvSel.co===co && rsvSel.key===key){ rsvSel.data=d; rsvPaint(); } }
+  catch(e){ if(rsvSel) { rsvSel.data={name:key,series:[]}; rsvPaint(); } }
+}
+function rsvMonitorCard(){
+  const ss=((rsvData&&rsvData.company_status)||[]);
+  if(!ss.length) return "";
+  const now=Date.now()/1000, names={};
+  ((rsvData&&rsvData.companies)||[]).forEach(c=>names[c.key]=c.company);
+  const merged={};
+  ss.forEach(s=>{ const k=s.company+"|"+(s.kind==="stream"?"stream":s.source);
+    const m=merged[k];
+    if(!m){ merged[k]=Object.assign({layers:s.kind==="stream"?1:0},s); return; }
+    m.layers++; if((s.newest||"")>(m.newest||"")){ m.newest=s.newest; }
+    m.ok=m.ok&&s.ok; if(!s.ok) m.error=s.error; m.at=Math.max(m.at||0,s.at||0); });
+  const rows=Object.values(merged).sort((a,b)=>(names[a.company]||"").localeCompare(names[b.company]||"")||a.kind.localeCompare(b.kind)).map(s=>{
+    const lag=s.newest?Math.round((Date.now()-Date.parse(s.newest+"T12:00:00Z"))/86400000):null;
+    const cls=!s.ok?"crit":lag==null?"na":lag>45?"low":lag>14?"warn":"ok";
+    return '<tr><td>'+rsvEsc(names[s.company]||s.company)+'</td><td>'+(s.kind==="stream"?'Stream open data'+(s.layers>1?' · '+s.layers+' layers':''):'<a href="'+rsvEsc(s.url)+'" target="_blank" rel="noopener">website</a>')+'</td>'+
+      '<td class="'+cls+'">'+(s.newest?rsvDay(s.newest)+' '+s.newest.slice(0,4):'—')+(lag!=null?' <em>('+lag+' d)</em>':'')+'</td>'+
+      '<td>'+(s.ok?'ok':'<span class="crit" title="'+rsvEsc(s.error||"")+'">failed</span>')+' · '+(s.at?Math.round((now-s.at)/60)+' min ago':'')+'</td></tr>';
+  }).join("");
+  return '<div class="rsv-card"><div class="rsv-h">Data sources <span>newest value held from each source · checked every 6 h · everything read is kept in reservoir_store.json</span></div>'+
+    '<div style="overflow-x:auto"><table class="rsv-mon"><thead><tr><th>Company</th><th>Source</th><th>Newest data</th><th>Last check</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+function rsvCompanySummary(){
+  const items=[];
+  ((rsvData&&rsvData.companies)||[]).forEach(c=>Object.entries(c.totals||{}).forEach(([reg,T])=>{ if(!T.stale) items.push({name:c.company+(reg!==c.region?' ('+reg+')':''),T,reg}); }));
+  if(!items.length) return "";
+  items.sort((a,b)=>b.T.pct-a.T.pct);
+  return '<div class="rsv-card"><div class="rsv-h">Water company totals <span>% full · latest</span></div><div class="rsv-bars">'+
+    items.map(x=>'<span class="n">'+rsvEsc(x.name)+'</span><span class="bar '+rsvCls(x.T.pct)+'"><i style="width:'+x.T.pct+'%"></i></span><span class="v">'+Math.round(x.T.pct)+'%<em>'+rsvDay(x.T.date)+'</em></span>').join("")+
+    '</div><div class="rsv-src" style="margin-top:6px">Companies with no current total (Southern, SES, South Staffs, and Northumbrian until its next upload) are left out.</div></div>';
+}
+function rsvAreaText(t){ t=String(t||""); t=t.charAt(0).toUpperCase()+t.slice(1); return rsvEsc(t).replace(/(\d{1,3}(?:\.\d+)?\s?%)/g,'<span class="pc">$1</span>'); }
+function rsvRegionView(reg){
+  const d=rsvData, ym=rsvLatestMonth(), r=ym&&d.monthly[ym][reg];
+  let left='<div class="rsv-card"><div class="rsv-h">'+rsvEsc(reg==="England"?"England":reg+" region")+(ym?'<span>end of '+rsvYm(ym)+'</span>':'')+'</div>';
+  if(r) left+='<div class="rsv-kpi"><span class="big">'+r.pct+'%</span><span class="full">full</span><span class="sub">· '+rsvEsc(r.vs.toLowerCase())+' for the time of year</span></div>';
+  else if(!d.pypdf) left+='<div class="rsv-wait">Monthly regional figures need <b>pypdf</b> on the server: <code>pip install pypdf</code>, then restart.</div>';
+  left+=rsvMonthlyChart(reg);
+  if(reg==="England"){ const wc=rsvWeeklyChart(); if(wc) left+='<div class="rsv-h" style="margin-top:12px">Weekly <span>EA drought summaries</span></div>'+wc; }
+  left+='</div>';
+  if(reg==="England"){ left+=rsvCompanySummary(); }
+  if(reg==="South-east" && d.london) left+='<div class="rsv-card">'+rsvLondonChart("thames","Lower Thames group")+'<div style="height:10px"></div>'+rsvLondonChart("lee","Lower Lee group")+'</div>';
+  // right column: drought status, area notes
+  const seenSt={};
+  const st=[];
+  (d.drought||[]).filter(n=>reg==="England"||n.region===reg).forEach(n=>{ const k=n.area+"|"+n.status;
+    if(seenSt[k]) seenSt[k].region+=", "+n.region; else { seenSt[k]=Object.assign({},n); st.push(seenSt[k]); } });
+  let right='<div class="rsv-card"><div class="rsv-h">Drought status <span>EA weekly and area reports</span></div>';
+  right+= st.length? '<div class="rsv-st">'+st.map(n=>{ const S=RSV_STATUS[n.status]||[n.status,"",""];
+      return '<div><span class="s '+S[2]+'">'+S[0]+'</span><span>'+rsvEsc(n.area)+(n.when?' · since '+rsvEsc(n.when):'')+(reg==="England"?' · '+rsvEsc(n.region):'')+'</span></div>'; }).join("")+'</div>'
+    : '<div class="rsv-wait">No dry-weather status found in the recent reports.</div>';
+  right+='</div>';
+  const areas=(d.areas||[]).filter(a=>a.region===reg);
+  if(areas.length){
+    right+='<div class="rsv-card"><div class="rsv-h">Area reports <span>EA monthly, reservoir paragraph</span></div>';
+    areas.forEach(a=>{ right+='<div class="rsv-area"><b>'+rsvEsc(a.area)+'</b> · '+(a.month?rsvYm(a.month):'')+' · <a href="'+rsvEsc(a.url)+'" target="_blank" rel="noopener">report</a><br>'+rsvAreaText(a.text)+'</div>'; });
+    right+='</div>';
+  }
+  let html='<div class="rsv-grid"><div style="display:flex;flex-direction:column;gap:14px;min-width:0">'+left+'</div><div style="display:flex;flex-direction:column;gap:14px;min-width:0">'+right+'</div></div>';
+  if(reg!=="England"){
+    const cs=rsvCompaniesIn(reg);
+    if(cs.length) html+='<div class="rsv-cos">'+cs.map(({c,sites,T})=>rsvCompanyCard(c,reg,sites,T)).join("")+'</div>';
+  } else html+=rsvMonitorCard();
+  const gs=(d.gauges||[]).filter(g=>reg==="England"||g.region===reg)
+     .sort((a,b)=>(b.ok-a.ok)||rsvDist(eaLoc.lat,eaLoc.lon,a.lat,a.lon)-rsvDist(eaLoc.lat,eaLoc.lon,b.lat,b.lon));
+  if(gs.length) html+='<div class="rsv-card"><div class="rsv-h">Live reservoir levels <span>EA gauges · water level in metres, not % full · nearest first</span></div><div class="rsv-gauges">'+gs.map(rsvGaugeCard).join("")+'</div></div>';
+  return html;
+}
+function rsvNationView(n){
+  const N=(rsvData&&rsvData.nations)||{};
+  return '<div class="rsv-card"><div class="rsv-h">'+rsvEsc(n)+'</div><div class="rsv-wait">'+rsvEsc(N[n]||"No data.")+'</div></div>';
+}
+function rsvPaint(){
+  const box=document.getElementById("rsvBox"); if(!box) return;
+  const d=rsvData;
+  let html='<div class="rsv-head"><span class="rsv-title">Reservoirs</span><div class="rsv-rows">';
+  if(!d || d.building){ html+='<span class="rsv-wait">Fetching reservoir reports… (the first run after start-up takes a minute or two)</span></div></div>'; box.innerHTML=html; return; }
+  if(d.failed){ html+='<span class="rsv-wait">Reservoir data unavailable: '+rsvEsc(d.failed)+'</span></div></div>'; box.innerHTML=html; return; }
+  html+='<div class="rsv-row"><span class="rsv-lbl">Local</span><div class="rsv-bs">'+rsvLocalRow()+'</div></div>';
+  html+='<div class="rsv-row"><span class="rsv-lbl">UK</span><div class="rsv-bs">'+rsvUkRow()+'</div></div>';
+  html+='</div><button type="button" class="rsv-tog" id="rsvTog" aria-expanded="'+rsvUi.open+'">'+(rsvUi.open?'▴ hide detail':'▾ detail')+'</button></div>';
+  if(rsvUi.open){
+    const home=(d.home||{}).region;
+    const sel=rsvUi.region||home||"England";
+    html+='<div class="rsv-det"><div class="rsv-tabs">';
+    (d.regions||[]).concat(["England"]).forEach(r=>{ html+='<button type="button" data-rsvtab="'+rsvEsc(r)+'" class="'+(r===sel?'on ':'')+(r===home?'home':'')+'">'+rsvEsc(r)+'</button>'; });
+    html+='<span class="sep"></span>';
+    ["Scotland","Wales","Northern Ireland"].forEach(r=>{ html+='<button type="button" data-rsvtab="'+r+'" class="off'+(r===sel?' on':'')+'">'+r+'</button>'; });
+    html+='</div>';
+    html+=(["Scotland","Wales","Northern Ireland"].includes(sel))?rsvNationView(sel):rsvRegionView(sel);
+    html+='<div class="rsv-src">Sources: EA national monthly and weekly water situation reports, EA area monthly reports (GOV.UK, OGL v3) · EA flood-monitoring API · Thames Water via London Datastore (OGL v2) · water company figures from Stream (streamwaterdata.co.uk, CC BY 4.0) and company websites. Reports are published monthly or weekly; each figure carries the date it applies to.'+
+          (d.errors && Object.keys(d.errors).length?' Last refresh had problems with: '+rsvEsc(Object.keys(d.errors).join(", "))+' (showing the last good data).':'')+'</div></div>';
+  }
+  box.innerHTML=html;
+  const tog=document.getElementById("rsvTog");
+  if(tog) tog.onclick=()=>{ rsvUi.open=!rsvUi.open; rsvSaveUi(); rsvPaint(); };
+  box.querySelectorAll("[data-rsvtab]").forEach(b=>b.onclick=()=>{ rsvUi.region=b.dataset.rsvtab; rsvSaveUi(); rsvPaint(); });
+  box.querySelectorAll("[data-rsvsite]").forEach(b=>b.onclick=()=>rsvPick(b.dataset.rsvsite));
+  box.querySelectorAll("[data-rsvmore]").forEach(b=>b.onclick=()=>{ const k=b.dataset.rsvmore; rsvUi.showAll=rsvUi.showAll||{}; rsvUi.showAll[k]=!rsvUi.showAll[k]; rsvSaveUi(); rsvPaint(); });
+  box.querySelectorAll(".rsv-b[data-rsv]").forEach(b=>b.onclick=()=>{ const r=b.dataset.rsv; if(!r) return;
+    if(rsvUi.open && rsvUi.region===r){ rsvUi.open=false; } else { rsvUi.open=true; rsvUi.region=r; }
+    rsvSaveUi(); rsvPaint(); });
+}
+
 function eaRender(){
   if(!eaData){ return; }
   const b=$("#eaBody");
   let html="";
+  html+='<div id="rsvBox" class="rsv"></div>';   // reservoirs section, painted by rsvPaint()
 
   // ---- flood warning strip ----
   const fc=(eaFloods&&eaFloods.counts)||{};
@@ -7037,6 +7668,7 @@ function eaRender(){
   html+='</div></div>';  // ea-detail, ea-layout
 
   b.innerHTML=html;
+  rsvPaint();
   $("#eaAttrib").textContent="Source: "+(eaData.attribution||"Environment Agency")+". Readings transfer at varying frequencies (often 1–2×/day when calm), so ages vary — each is stamped.";
 
   // wire station clicks
@@ -7375,7 +8007,7 @@ const Alarm = (function(){
     pcnear:{name:"Power cut near you", tier:"warn", on:false,
             desc:"Speaks when a power cut starts within your chosen radius of your location (set on the EA page) — an unplanned fault as a warning, planned works as a quieter notice — naming how far away, which direction, customers off and the estimated restoration, and again when it's back on. Muted providers are skipped. Set the radius below."},
     pcwatch:{name:"Monitored postcode areas", tier:"warn", on:true,
-            desc:"Siren, then speech, when a power cut (unplanned or planned) starts in one of your monitored postcode areas — set with the <b>Monitored areas</b> button on the power-cuts page (up to 10 sectors such as EX23 4, or full postcodes such as EX23 4AA). Names the area, its place and customers without power (not for SP Energy Networks, which publishes no count). A full postcode whose operator only publishes sectors is announced as “may be affected”. Several areas at once become one message. Speaks again, with a soft tone, when power is restored. Muted providers are skipped."},
+            desc:"Siren, then speech, when a power cut (unplanned or planned) starts in one of your monitored postcode areas — set with the <b>Monitored areas</b> button on the power-cuts page (up to 10 sectors such as EX23 4, or full postcodes such as EX23 4AA). Names the area — its alias and place if you gave it one (“Les in Plymouth”), otherwise the postcode and place — and customers without power (not for SP Energy Networks, which publishes no count). A full postcode whose operator only publishes sectors is announced as “may be affected”. Several areas at once become one message. Speaks again, with a soft tone, when power is restored. Muted providers are skipped."},
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
@@ -8050,7 +8682,11 @@ const Alarm = (function(){
     const p=String(pc||"").split(" "), sp=s=>s.replace(/([A-Z])/g," $1 ").replace(/\s+/g," ").trim();
     return sp(p[0]||"")+(p[1]?", "+sp(p[1]):"");
   }
-  function pcAreaName(a){ return pcSpoken(a.pc)+(a.place?", "+a.place:""); }
+  // spoken area: with an alias "Les in Plymouth", otherwise the postcode and place "P L 3, 5, Plymouth"
+  function pcAreaName(a){
+    if(a.alias) return a.alias+(a.place?" in "+a.place:"");
+    return pcSpoken(a.pc)+(a.place?", "+a.place:"");
+  }
   // the customer figure for an area's new incidents; null when none can be given (SPEN
   // publishes no count, so its incidents never contribute — or the whole figure is dropped
   // when only SPEN incidents are involved)
@@ -8062,7 +8698,7 @@ const Alarm = (function(){
   function pcWatchArea(A){         // A: this area's new matches -> {name, planned, may, n, start, etr, spenOnly}
     const unpl=A.filter(m=>!m.planned);
     const lead=unpl[0]||A[0];
-    return {name:pcAreaName(lead), planned:!unpl.length, may:A.every(m=>m.level==="may"),
+    return {name:pcAreaName(lead), alias:!!lead.alias, planned:!unpl.length, may:A.every(m=>m.level==="may"),
             n:pcWatchCount(A), etr:lead.etr, start:lead.start, sector:(lead.hit||[])[0]};
   }
   function evaluatePowerCutsWatch(w){
@@ -8085,8 +8721,9 @@ const Alarm = (function(){
       let msg;
       if(S.length===1){
         const s=S[0];
-        if(s.planned) msg="A monitored postcode area "+(s.may?"may be affected by":"has")+" planned power works. The area is "+s.name+".";
-        else msg="A monitored postcode area "+(s.may?"may have":"has")+" suffered a power cut. The area is "+s.name+".";
+        const where=(s.alias?"This affects ":"The area is ")+s.name+".";
+        if(s.planned) msg="A monitored postcode area "+(s.may?"may be affected by":"has")+" planned power works. "+where;
+        else msg="A monitored postcode area "+(s.may?"may have":"has")+" suffered a power cut. "+where;
         if(s.may && s.sector) msg+=" The operator only gives the sector, "+pcSpoken(s.sector)+".";
         if(s.n) msg+=" "+nf(s.n)+" customer"+(s.n===1?" is":"s are")+(s.planned?" affected.":" without power.");
         const st=s.planned?pcWhen(s.start):null, et=pcWhen(s.etr);
@@ -8100,18 +8737,21 @@ const Alarm = (function(){
       }
       const ms=siren(); flashBtn();
       setTimeout(()=>say(msg), ms);
-      fresh.forEach(m=>{ seen[key(m)]={t:now, pc:m.pc, place:m.place, dno:m.dno, id:m.id, planned:!!m.planned}; });
+      fresh.forEach(m=>{ seen[key(m)]={t:now, pc:m.pc, place:m.place, alias:m.alias||null, dno:m.dno, id:m.id, planned:!!m.planned}; });
     }
     if(gone.length){
       const byArea=new Map();
       gone.forEach(k=>{ const g=seen[k]; if(!byArea.has(g.pc)) byArea.set(g.pc,[]); byArea.get(g.pc).push(g); });
       const stillOn=pc=>[...cur.values()].some(m=>m.pc===pc);
-      const R=[...byArea.values()].map(G=>({name:pcAreaName(G[0]), planned:G.every(g=>g.planned), more:stillOn(G[0].pc)}));
+      // current alias for the area (it may have been renamed since the cut was announced)
+      const aliasNow=pc=>{ const a=(w.areas||[]).find(x=>x.pc===pc); return a ? (a.alias||null) : undefined; };
+      const R=[...byArea.values()].map(G=>{ const g=Object.assign({}, G[0]); const an=aliasNow(g.pc); if(an!==undefined) g.alias=an;
+        return {name:pcAreaName(g), alias:!!g.alias, planned:G.every(x=>x.planned), more:stillOn(g.pc)}; });
       let msg;
       if(R.length===1){
         const r=R[0];
-        msg=r.planned ? "Planned power works in monitored area "+r.name+" have finished."
-                      : "Power has been restored in monitored area "+r.name+".";
+        msg=r.planned ? "Planned power works "+(r.alias?"for ":"in monitored area ")+r.name+" have finished."
+                      : "Power has been restored "+(r.alias?"for ":"in monitored area ")+r.name+".";
         if(r.more) msg+=" Another cut there is still in progress.";
       } else msg=(R.every(r=>r.planned)?"Planned power works have finished in ":"Power has been restored in ")+
                  R.length+" monitored postcode areas: "+R.map(r=>r.name).join("; ")+".";
@@ -8620,6 +9260,243 @@ eaWatchSync();
     +"<br><strong>The app developer is not affiliated with any of the data providers which contribute to the application. "
     +"Grid Monitor is provided for educational and hobby purposes only. It is not to be used for operational or safety of life decisions. "
     +"The author bares no liability whatsoever for the accuracy or inaccuracy of the data displayed</strong>";
+})();
+/* ---------- Balancing costs: card (tiles + optional daily chart) and details pop-out ----------
+   Data: /api/balancing (balancing.py). Confirmed days are NESO's figures; later days are
+   estimates scaled from Elexon's indicative Balancing Mechanism cashflows and are always
+   drawn hatched, with a whisker for the likely range. */
+const BAL_POLL_MS = 10*60*1000;
+const BAL_CAT=[["constraints","Constraints","--b-cons"],["imbalance","Energy imbalance","--b-imb"],["reserve","Reserve","--b-res"],["frequency","Frequency response","--b-freq"],["other","Other","--b-oth"]];
+// Highest-estimate colour against the mean of the last 30 confirmed days
+// (% difference): < -10 green, ±10 white, ≤ +25 yellow, ≤ +50 orange, ≤ +75 red, above hot pink.
+const BAL_BANDS=[[-Infinity,-10,"bv-g","more than 10% below"],[-10,10,"bv-w","within ±10% of"],[10,25,"bv-y","10–25% above"],[25,50,"bv-o","25–50% above"],[50,75,"bv-r","50–75% above"],[75,Infinity,"bv-p","more than 75% above"]];
+let balSum=null, balDet=null, balOpen=false, balPollT=null, balDetT=null, balChartOn=false;
+try{ balChartOn = localStorage.getItem("balChartOpen")==="1"; }catch(e){}
+const BAL_NS="http://www.w3.org/2000/svg";
+function balVar(n){ const el=$("#balCard")||document.body; return getComputedStyle(el).getPropertyValue(n).trim(); }
+function balM(v,dp){ if(v==null||!isFinite(v)) return "—"; return (v<0?"−£":"£")+(Math.abs(v)/1e6).toFixed(dp==null?1:dp)+"m"; }
+function balDl(s){ const t=new Date(s+"T12:00:00Z"); return t.toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short",timeZone:"UTC"}); }
+function balShort(s){ return balDl(s).split(" ").slice(1).join(" "); }
+function balEl(tag,at,par){ const e=document.createElementNS(BAL_NS,tag); for(const k in at) e.setAttribute(k,at[k]); if(par) par.appendChild(e); return e; }
+function balTx(par,x,y,s,at){ const t=balEl("text",Object.assign({x:x,y:y},at||{}),par); t.textContent=s; return t; }
+function balRow(k,v,col){ return '<div class="r"><span>'+(col?'<i style="background:'+col+'"></i>':'')+k+'</span><b>'+v+'</b></div>'; }
+function balBand(p){ if(p==null||!isFinite(p)) return null; const B=BAL_BANDS; return p<-10?B[0]:p<=10?B[1]:p<=25?B[2]:p<=50?B[3]:p<=75?B[4]:B[5]; }
+function balNice(v){ if(!(v>0)) return 1; const p=Math.pow(10,Math.floor(Math.log10(v))); for(const k of [1,1.5,2,2.5,3,4,5,6,8,10]) if(k*p>=v) return k*p; return 10*p; }
+function balTicks(max,n){ const raw=max/n,p=Math.pow(10,Math.floor(Math.log10(raw))); const s=[1,2,2.5,5,10].map(k=>k*p).find(k=>k>=raw); const out=[]; for(let v=0;v<=max+1e-9;v+=s) out.push(v); return out; }
+// ---- tooltip (one shared, above every overlay)
+function balShowTip(ev,html){ const tip=$("#balTip"); tip.innerHTML=html; tip.style.display="block";
+  const w=tip.offsetWidth,h=tip.offsetHeight; let x=ev.clientX+14,y=ev.clientY+14;
+  if(x+w>innerWidth-8) x=ev.clientX-w-14; if(y+h>innerHeight-8) y=ev.clientY-h-14;
+  tip.style.left=Math.max(4,x)+"px"; tip.style.top=Math.max(4,y)+"px"; }
+function balHideTip(){ const t=$("#balTip"); if(t) t.style.display="none"; }
+function balHit(par,x,y,w,h,html,label){ const r=balEl("rect",{x:x,y:y,width:Math.max(1,w),height:Math.max(1,h),class:"hit",tabindex:"0","aria-label":label},par);
+  r.addEventListener("mousemove",e=>balShowTip(e,html)); r.addEventListener("mouseleave",balHideTip);
+  r.addEventListener("focus",()=>{const b=r.getBoundingClientRect(); balShowTip({clientX:b.right,clientY:b.top},html);}); r.addEventListener("blur",balHideTip); return r; }
+function balHatch(svg,id,col){ const defs=svg.querySelector("defs")||balEl("defs",{},svg);
+  const p=balEl("pattern",{id:id,width:6,height:6,patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"},defs);
+  balEl("rect",{width:6,height:6,fill:balVar("--panel")},p); balEl("rect",{width:2.2,height:6,fill:col},p); }
+function balLegend(id,items){ const el=document.getElementById(id); if(!el) return;
+  el.innerHTML=items.map(i=>'<span><i class="'+(i[2]||"")+'" style="background:'+i[1]+';color:'+i[1]+'"></i>'+i[0]+'</span>').join(""); }
+// ---- shared x geometry: drawn at the container's real width so text stays true size
+function balGeom(svg,H,n,compact){
+  const W=Math.max(300,Math.round(svg.parentNode.clientWidth||600)), L=compact?52:72, R=compact?8:14;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H); svg.setAttribute("width",W); svg.setAttribute("height",H);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  const step=(W-L-R)/Math.max(1,n), bw=Math.max(2,step-(step>8?4:2));
+  return {W,H,L,R,step,bw,xc:i=>L+i*step+step/2};
+}
+function balXlabels(svg,g,days,y){ const wide=g.step*7>=30;
+  days.forEach((d,i)=>{ const dd=+d.date.slice(8);
+    if(dd===1||(wide?(dd%7===1&&dd<28):dd===15)) balTx(svg,g.xc(i),y,dd===1?balShort(d.date):String(dd),{"text-anchor":"middle"}); }); }
+// ---- events and tooltip helpers
+function balEvFor(D,date,lane){ return (D.events||[]).filter(e=>e.d===date&&(!lane||e.lane===lane)); }
+function balEvHtml(D,date,lane){ const e=balEvFor(D,date,lane); return e.length?'<div class="ev">'+e.map(x=>'<div><span class="bal-tri '+x.c+' '+x.dir+'"></span>'+x.t+'</div>').join("")+'</div>':""; }
+function balMarks(svg,g,D,days,lane,yTop){
+  const byDay={}; (D.events||[]).filter(e=>e.lane===lane).forEach(e=>{(byDay[e.d]=byDay[e.d]||[]).push(e);});
+  Object.keys(byDay).forEach(dt=>{ const i=days.findIndex(d=>d.date===dt); if(i<0) return;
+    const cx=g.xc(i), gg=balEl("g",{},svg);
+    byDay[dt].forEach((e,k)=>{ const yy=yTop+k*10,s=4.5,col=balVar(e.c==="good"?"--ok":"--crit");
+      const pts=e.dir==="up"?[cx-s,yy+s,cx+s,yy+s,cx,yy-s]:[cx-s,yy-s,cx+s,yy-s,cx,yy+s];
+      balEl("polygon",{points:pts.join(" "),fill:col,stroke:balVar("--panel"),"stroke-width":1},gg); });
+    balHit(svg,cx-8,yTop-7,16,byDay[dt].length*10+4,'<b>'+balDl(dt)+'</b>'+balEvHtml(D,dt,lane),balDl(dt)+" event"); }); }
+function balRankFn(days){ const all=days.filter(d=>d.total!=null&&!d.partial).map(d=>({d:d.date,v:d.total})).sort((a,b)=>b.v-a.v);
+  return date=>{ const r=all.findIndex(x=>x.d===date)+1; if(!r) return ""; const n=all.length;
+    const sfx=r%10===1&&r!==11?"st":r%10===2&&r!==12?"nd":r%10===3&&r!==13?"rd":"th";
+    return (r===1?"highest":r===n?"lowest":r+sfx+" highest")+" of "+n+" days"; }; }
+function balVsAvg(days,d){ const p=days.filter(x=>x.confirmed&&x.date<d.date).slice(-30); if(p.length<5||d.total==null) return "";
+  const a=p.reduce((s,x)=>s+x.total,0)/p.length, r=d.total/a;
+  return " · "+(r>=1?r.toFixed(1)+"× the 30-day average":Math.round(100*r)+"% of the 30-day average"); }
+function balTopB(d){ if(!d.tcc) return null; const k=Object.keys(d.tcc).sort((a,b)=>d.tcc[b]-d.tcc[a])[0]; return k&&d.tcc[k]>0?[k,d.tcc[k]]:null; }
+function balDrivers(d){ let h=""; if(d.over_sc_gwh!=null) h+=balRow("Planned flow over limits",d.over_sc_gwh.toFixed(0)+" GWh");
+  if(d.curt_gwh!=null) h+=balRow("Wind turned down",d.curt_gwh.toFixed(0)+" GWh");
+  if(d.wind!=null) h+=balRow("Mean wind",(d.wind/1000).toFixed(1)+" GW"); return h?'<div class="sub">'+h+'</div>':""; }
+function balDayTip(D,d,rank){ let html='<b>'+balDl(d.date)+'</b>'+(d.partial?' <span class="pill est">so far</span>':'');
+  if(d.confirmed){
+    html+=balRow("Total (confirmed)",balM(d.total,2))+'<div class="muted2">'+rank(d.date)+balVsAvg(D.days,d)+'</div>'
+      +BAL_CAT.map(c=>balRow(c[1],balM(d.confirmed[c[0]],2),balVar(c[2]))).join("");
+    if(d.cons) html+='<div class="muted2">constraints: thermal '+balM(d.cons.thermal)+' · voltage '+balM(d.cons.voltage)+' · inertia '+balM(d.cons.inertia)+'</div>';
+    const tb=balTopB(d); if(tb) html+='<div class="muted2">costliest boundary: '+tb[0]+' '+balM(tb[1])+'</div>';
+  } else if(d.est!=null){
+    html+=balRow("Estimate",balM(d.est))+balRow("Likely range",balM(d.est_lo)+" – "+balM(d.est_hi))
+      +(d.partial?"":'<div class="muted2">'+rank(d.date)+balVsAvg(D.days,d)+'</div>')+balRow("Elexon BM net",balM(d.bm_net,2))
+      +'<div class="sub">'+balRow("Paid to turn wind down",balM(d.wind_down))+balRow("Paid to turn gas up",balM(d.gas_up))+'</div>';
+  } else html+='<div class="muted2">No data yet.</div>';
+  html+=balDrivers(d)+balEvHtml(D,d.date,"cost");
+  if(!d.confirmed&&d.est!=null) html+='<div class="muted2" style="margin-top:4px">'+(d.partial?"Part day: data so far. ":"")+'NESO’s confirmed figure is due about 5 days after.</div>';
+  return html; }
+// ---- the daily cost chart (card and pop-out)
+function balDrawCost(svgId,legId,D,compact){
+  const svg=document.getElementById(svgId); if(!svg||!D||!D.days) return;
+  const days=D.days, H=compact?172:197, T=compact?42:46, B=compact?150:174, g=balGeom(svg,H,days.length,compact);
+  balHatch(svg,svgId+"H",balVar("--b-dim"));
+  const hc=D.tiles&&D.tiles.highest_confirmed, rank=balRankFn(days);
+  const max=Math.max(1e6,...days.map(d=>d.est_hi||d.total||0),hc?hc.value:0)*1.08, y=v=>B-(B-T)*v/max;
+  balTicks(max,3).forEach(v=>{ balEl("line",{x1:g.L,x2:g.W-g.R,y1:y(v),y2:y(v),stroke:balVar("--line"),"stroke-width":1},svg); balTx(svg,g.L-6,y(v)+3,"£"+(v/1e6)+"m",{"text-anchor":"end"}); });
+  if(hc){ balEl("line",{x1:g.L,x2:g.W-g.R,y1:y(hc.value),y2:y(hc.value),stroke:balVar("--crit"),"stroke-dasharray":"4 4","stroke-width":1},svg);
+    balTx(svg,g.L+4,y(hc.value)-5,"highest confirmed "+balM(hc.value)+" ("+balShort(hc.date)+")",{fill:balVar("--crit")}); }
+  const fi=days.findIndex(d=>!d.confirmed&&d.est!=null);
+  if(fi>0){ const fx=g.L+fi*g.step; balEl("line",{x1:fx,x2:fx,y1:2,y2:B,stroke:balVar("--line2"),"stroke-dasharray":"2 3"},svg);
+    if(g.W-g.R-fx>=84) balTx(svg,fx+4,12,"provisional →",{fill:balVar("--b-dim")}); balTx(svg,fx-4,12,compact?"← NESO":"← confirmed (NESO)",{"text-anchor":"end",fill:balVar("--b-dim")}); }
+  const lab=days.map((d,i)=>(!d.confirmed&&d.est!=null&&hc&&d.est>hc.value)?i:-1).filter(i=>i>=0);
+  days.forEach((d,i)=>{ const x=g.xc(i)-g.bw/2;
+    if(d.confirmed){ balEl("rect",{x:x,y:y(d.total),width:g.bw,height:Math.max(1,B-y(d.total)),rx:1.5,fill:balVar("--b-cons")},svg); }
+    else if(d.est!=null){ const part=!!d.partial;
+      balEl("rect",{x:x,y:y(d.est),width:g.bw,height:Math.max(1,B-y(d.est)),rx:1.5,fill:"url(#"+svgId+"H)",stroke:balVar("--b-dim"),"stroke-width":1,"stroke-dasharray":part?"2 2":"none",opacity:part?.6:1},svg);
+      balEl("line",{x1:g.xc(i),x2:g.xc(i),y1:y(d.est_hi),y2:y(d.est_lo),stroke:balVar("--ink"),"stroke-width":1.5},svg);
+      [d.est_hi,d.est_lo].forEach(v=>balEl("line",{x1:g.xc(i)-3,x2:g.xc(i)+3,y1:y(v),y2:y(v),stroke:balVar("--ink"),"stroke-width":1.5},svg));
+      if(lab.includes(i)){ const left=lab.includes(i+1)||g.xc(i)>g.W-g.R-44; balTx(svg,g.xc(i)+(left?-6:6),y(d.est_hi)-6,balM(d.est),{"text-anchor":left?"end":"start",fill:balVar("--ink")}); } }
+    balHit(svg,g.L+i*g.step,T,g.step,B-T,balDayTip(D,d,rank),balDl(d.date)); });
+  balEl("line",{x1:g.L,x2:g.W-g.R,y1:B,y2:B,stroke:balVar("--line2")},svg);
+  balXlabels(svg,g,days,B+16);
+  balMarks(svg,g,D,days,"cost",T-14);
+  balLegend(legId,[["Confirmed total (NESO)",balVar("--b-cons")],["Provisional estimate (hatched) with likely range","","hatch"],["Record or notable high",balVar("--crit"),"tri-up"],["Notable low (e.g. frequency)",balVar("--crit"),"tri-down"],["Good news",balVar("--ok"),"tri-down"]]);
+}
+// ---- pop-out: period totals, other services strip, driver strips, correlation table
+function balTotalsLine(D){ const el=$("#balTotA"), t=D.totals; if(!el) return; if(!t){ el.innerHTML=""; return; }
+  const all=Object.values(t.sum).reduce((a,b)=>a+b,0);
+  el.innerHTML='<span class="tl">'+balShort(t.from)+' – '+balShort(t.to)+', confirmed: <b>'+balM(all,0)+'</b></span>'+BAL_CAT.map(c=>{ const v=t.sum[c[0]];
+    const pc=c[0]==="imbalance"&&Math.abs(v)<0.01*all?"nets to ~0":(Math.round(1000*v/all)/10)+"%";
+    return '<span title="largest single day '+balM(t.max[c[0]],2)+'"><i style="background:'+balVar(c[2])+'"></i>'+c[1]+' <b>'+balM(v,1)+'</b> <em>'+pc+'</em></span>'; }).join(""); }
+function balDrawServices(D){ const svg=$("#balChartAs"); if(!svg) return; const days=D.days, Hs=110, g=balGeom(svg,Hs,days.length,false), sT=10, sB=Hs-22;
+  const SV=BAL_CAT.filter(c=>c[0]!=="constraints");
+  let mx=1e6, mn=-1e6; days.forEach(d=>{ if(!d.confirmed) return; let p=0,n=0; SV.forEach(c=>{ const v=d.confirmed[c[0]]; if(v>=0)p+=v; else n+=v; }); mx=Math.max(mx,p); mn=Math.min(mn,n); });
+  const MX=Math.ceil(mx/1e6)*1e6, MN=Math.floor(mn/1e6)*1e6, sy=v=>sT+(sB-sT)*(MX-v)/(MX-MN), stp=(MX-MN)>6e6?2e6:1e6;
+  for(let v=Math.ceil(MN/stp)*stp; v<=MX; v+=stp){ balEl("line",{x1:g.L,x2:g.W-g.R,y1:sy(v),y2:sy(v),stroke:balVar(v===0?"--line2":"--line")},svg); balTx(svg,g.L-6,sy(v)+3,(v<0?"−£":"£")+Math.abs(v/1e6)+"m",{"text-anchor":"end"}); }
+  const fi=days.findIndex(d=>!d.confirmed);
+  if(fi>=0){ balTx(svg,g.L+fi*g.step+4,sy(MX)+10,"not yet",{fill:balVar("--b-faint")}); balTx(svg,g.L+fi*g.step+4,sy(MX)+22,"published",{fill:balVar("--b-faint")}); }
+  days.forEach((d,i)=>{ const x=g.xc(i)-g.bw/2; let html='<b>'+balDl(d.date)+'</b>';
+    if(d.confirmed){ let pos=0,neg=0;
+      SV.forEach(c=>{ const v=d.confirmed[c[0]]; let a,b; if(v>=0){a=pos;b=pos+v;pos=b;}else{a=neg+v;b=neg;neg=a;}
+        const y0=sy(b),h=sy(a)-y0; if(h>=.3) balEl("rect",{x:x,y:y0,width:g.bw,height:Math.max(.6,h-.8),fill:balVar(c[2])},svg); });
+      html+=SV.map(c=>balRow(c[1],balM(d.confirmed[c[0]],2),balVar(c[2]))).join("")+balRow("Net of these",balM(pos+neg,2))+balRow("Constraints",balM(d.confirmed.constraints,1),balVar("--b-cons"))
+        +'<div class="muted2">these services are '+(Math.round(1000*(pos+neg)/d.total)/10)+'% of the day’s total of '+balM(d.total)+'</div>'+balEvHtml(D,d.date,"svc");
+    } else html+='<div class="muted2">The breakdown arrives with NESO’s confirmed figures, about 5 days after.</div>';
+    balHit(svg,g.L+i*g.step,sT,g.step,sB-sT,html,balDl(d.date)); });
+  balXlabels(svg,g,days,Hs-6); balMarks(svg,g,D,days,"svc",sT);
+  balLegend("balLegAs",SV.map(c=>[c[1],balVar(c[2])]).concat([["above zero = cost · below zero = income","","none"]])); }
+function balStrip(D,id,key,colVar,tipLabel,lane,isWind){ const svg=document.getElementById(id); if(!svg) return; const days=D.days, Hs=60, g=balGeom(svg,Hs,days.length,false), wB=40, wT=8;
+  const vals=days.map(d=>d[key]).filter(v=>v!=null).sort((a,b)=>b-a), max=balNice(vals.length?vals[0]:1), wy=v=>wB-(wB-wT)*Math.min(v,max)/max;
+  const fmt=v=>isWind?(v/1000)+" GW":v+" GWh", rank=balRankFn(days);
+  [0,max].forEach(v=>{ balEl("line",{x1:g.L,x2:g.W-g.R,y1:wy(v),y2:wy(v),stroke:balVar("--line")},svg); balTx(svg,g.L-6,wy(v)+3,fmt(v),{"text-anchor":"end"}); });
+  days.forEach((d,i)=>{ const v=d[key]; if(v==null) return; const prov=!d.confirmed&&!isWind;
+    balEl("rect",{x:g.xc(i)-g.bw/2,y:wy(v),width:g.bw,height:Math.max(.5,wB-wy(v)),rx:1.5,fill:balVar(colVar),opacity:prov?.55:1},svg); });
+  balXlabels(svg,g,days,Hs-6);
+  days.forEach((d,i)=>{ const v=d[key], r=v==null?0:vals.indexOf(v)+1;
+    balHit(svg,g.L+i*g.step,wT,g.step,wB-wT,'<b>'+balDl(d.date)+'</b>'+balRow(tipLabel,v==null?"—":(isWind?(v/1000).toFixed(1)+" GW":v.toFixed(0)+" GWh"))
+      +(v==null?"":'<div class="muted2">'+(r===1?"highest":r+(r===2?"nd":r===3?"rd":"th")+" highest")+' of '+vals.length+' days</div>')
+      +(d.total!=null?balRow("Cost",balM(d.total)+(d.confirmed?"":" est"))+'<div class="muted2">'+rank(d.date)+' by cost</div>':"")+balDrivers(d)+balEvHtml(D,d.date,lane),balDl(d.date)); });
+  balMarks(svg,g,D,days,lane,wT-2); }
+function balCorrTable(D){ const ct=$("#balCorrT"); if(!ct) return; const rows=(D.corr||[]).slice().sort((a,b)=>b[1]-a[1]);
+  ct.innerHTML=rows.length?'<tr><th>Measure</th><th>Correlation (r)</th><th>Source</th><th>Available</th></tr>'+rows.map(r=>'<tr><td>'+r[0]+'</td><td class="r">'+r[1].toFixed(2)+'<span class="bar" style="width:'+Math.max(0,Math.round(r[1]*120))+'px"></span></td><td>'+r[2]+'</td><td>'+r[3]+'</td></tr>').join("")
+    :'<tr><td>Not enough confirmed days yet.</td></tr>';
+  const n=rows.length?rows[0][4]:0, t=D.totals; const s=$("#balCorrSub"); if(s) s.textContent=t?"correlation with NESO’s confirmed daily cost, "+balShort(t.from)+" – "+balShort(t.to)+" ("+n+" days)":""; }
+// ---- B: who was paid (Balancing Mechanism, Elexon)
+function balDrawB(D){ const svg=$("#balChartB"); if(!svg) return; const days=D.days, g=balGeom(svg,175,days.length,false), T=14, B=155;
+  balHatch(svg,"balHB",balVar("--b-dim"));
+  const UP=[["gas_up","Gas, paid to increase","--b-gas"],["bio_up","Biomass, paid to increase","--b-bio"],["other_up","Other, paid to increase","--b-other"]];
+  const bm=days.filter(d=>d.bm_net!=null); if(!bm.length) return;
+  const upMax=Math.max(1e6,...bm.map(d=>d.gas_up+d.bio_up+Math.max(0,d.other_up))), dnMax=Math.max(1e6,...bm.map(d=>Math.max(0,d.wind_down)));
+  const span=(upMax+dnMax)*1.08, z=T+(B-T)*(upMax*1.04)/span, y=v=>z-(B-T)*v/span;
+  balTicks(upMax,2).forEach(v=>{ balEl("line",{x1:g.L,x2:g.W-g.R,y1:y(v),y2:y(v),stroke:balVar("--line")},svg); balTx(svg,g.L-6,y(v)+3,"£"+(v/1e6)+"m",{"text-anchor":"end"}); });
+  balTicks(dnMax,1).slice(1).forEach(v=>{ balEl("line",{x1:g.L,x2:g.W-g.R,y1:y(-v),y2:y(-v),stroke:balVar("--line")},svg); balTx(svg,g.L-6,y(-v)+3,"−£"+(v/1e6)+"m",{"text-anchor":"end"}); });
+  balTx(svg,g.L+4,T+6,"paid to increase output ↑",{fill:balVar("--b-dim")}); balTx(svg,g.L+4,B-2,"paid to reduce output ↓",{fill:balVar("--b-dim")});
+  days.forEach((d,i)=>{ if(d.bm_net==null) return; const x=g.xc(i)-g.bw/2; let acc=0;
+    UP.forEach((u,k)=>{ const v=Math.max(0,d[u[0]]); if(!v) return; balEl("rect",{x:x,y:y(acc+v),width:g.bw,height:Math.max(0,y(acc)-y(acc+v)-(k?1.5:0)),rx:1.5,fill:balVar(u[2])},svg); acc+=v; });
+    const wv=Math.max(0,d.wind_down); if(wv) balEl("rect",{x:x,y:y(0)+1,width:g.bw,height:Math.max(0,y(-wv)-y(0)-1),rx:1.5,fill:balVar("--b-wind")},svg);
+    const ny=y(d.bm_net); balEl("path",{d:"M"+g.xc(i)+","+(ny-4)+"l4,4l-4,4l-4,-4z",fill:balVar("--ink"),stroke:balVar("--panel"),"stroke-width":1.5},svg);
+    const html='<b>'+balDl(d.date)+'</b>'+(d.confirmed?'':' <span class="pill est">'+(d.partial?'so far':'provisional')+'</span>')
+      +UP.map(u=>balRow(u[1].split(",")[0]+" ↑",balM(d[u[0]],2),balVar(u[2]))).join("")+balRow("Wind ↓ (paid to stop)",balM(d.wind_down,2),balVar("--b-wind"))
+      +balRow("Other turn-downs (refunds)",balM(d.other_down,2))+balRow("Net BM cost",balM(d.bm_net,2))+(d.total!=null?balRow(d.confirmed?"NESO total":"Estimated total",balM(d.total,1)):"");
+    balHit(svg,g.L+i*g.step,T,g.step,B-T,html,balDl(d.date)); });
+  balEl("line",{x1:g.L,x2:g.W-g.R,y1:z,y2:z,stroke:balVar("--b-faint")},svg);
+  const fi=days.findIndex(d=>!d.confirmed);
+  if(fi>=0){ balEl("rect",{x:g.L+fi*g.step,y:T,width:g.W-g.R-(g.L+fi*g.step),height:B-T,fill:"url(#balHB)",opacity:.08},svg); balTx(svg,g.W-g.R-4,B-4,"NESO not yet confirmed",{"text-anchor":"end",fill:balVar("--b-dim")}); }
+  balXlabels(svg,g,days,B+16);
+  balLegend("balLegB",UP.map(u=>[u[1],balVar(u[2])]).concat([["Wind, paid to reduce",balVar("--b-wind")],["◆ Net Balancing Mechanism cost",balVar("--ink"),"none"]])); }
+// ---- C: half-hour heatmap
+function balDrawC(D){ const svg=$("#balChartC"); if(!svg) return; const days=D.days, g=balGeom(svg,180,days.length,false), T=6, B=146, gap=10, N=days.length;
+  const cw=(g.W-g.L-g.R-gap)/N, rows=Math.max(48,...days.map(d=>(d.hh||[]).length)), ch=(B-T)/rows;
+  const ramp=["#0f1d2e","#104281","#184f95","#256abf","#3987e5","#6da7ec","#b7d3f6"], th=[0,50e3,100e3,200e3,400e3,800e3,1.6e6];
+  const col=v=>{ let k=0; for(let j=0;j<th.length;j++) if(v>=th[j]) k=j; return ramp[k]; };
+  const fi=days.findIndex(d=>!d.confirmed), off=i=>(fi>=0&&i>=fi?gap:0);
+  for(let sp=0;sp<48;sp+=6) balTx(svg,g.L-6,T+sp*ch+ch*.8,String(Math.floor(sp/2)).padStart(2,"0")+":"+(sp%2?"30":"00"),{"text-anchor":"end"});
+  days.forEach((d,i)=>{ const x=g.L+i*cw+off(i);
+    (d.hh||[]).forEach((v,s)=>{ const r=balEl("rect",{x:x+.5,y:T+s*ch+.5,width:Math.max(.5,cw-1),height:Math.max(.5,ch-1),rx:1,fill:col(v)},svg);
+      const lbl=String(Math.floor(s/2)).padStart(2,"0")+":"+(s%2?"30":"00");
+      r.addEventListener("mousemove",e=>balShowTip(e,'<b>'+balDl(d.date)+' · period '+(s+1)+' ('+lbl+')</b>'+(d.confirmed?'':' <span class="pill est">BM only</span>')+balRow("Cost this half-hour","£"+Math.round(v/1000)+"k")));
+      r.addEventListener("mouseleave",balHideTip); }); });
+  days.forEach((d,i)=>{ const dd=+d.date.slice(8); if(dd===1||(dd%7===1&&dd<28)) balTx(svg,g.L+i*cw+off(i)+cw/2,B+16,dd===1?balShort(d.date):String(dd),{"text-anchor":"middle"}); });
+  if(fi>=0) balTx(svg,g.W-g.R,B+30,"right of the gap: provisional, Balancing Mechanism only",{"text-anchor":"end",fill:balVar("--b-dim")});
+  const labs=["< £50k","£50k","£100k","£200k","£400k","£800k","£1.6m+"];
+  const lg=$("#balLegC"); if(lg) lg.innerHTML='<span>per half-hour:</span>'+ramp.map((c,k)=>'<span><i style="background:'+c+';border:1px solid var(--line2)"></i>'+labs[k]+'</span>').join(""); }
+// ---- summary tiles (card and pop-out)
+function balTilesHtml(D){ const t=D.tiles||{}, he=t.highest_estimate, bs=t.baseline30; const tiles=[];
+  if(he){ const b=balBand(he.pct), pc=he.pct==null?"":(he.pct>=0?"+":"−")+Math.abs(Math.round(he.pct))+"%";
+    tiles.push(['Highest estimate','<span class="'+(b?b[2]:"")+'">'+balM(he.value)+'</span><span class="pill est">est</span>',
+      balDl(he.date)+' · likely £'+(he.lo/1e6).toFixed(0)+'–'+(he.hi/1e6).toFixed(0)+'m'+(pc?'<br><span class="'+(b?b[2]:"")+'">'+pc+'</span> vs 30-day confirmed average ('+balM(bs)+')':''),
+      b?(b[3]+" the average of the last "+t.baseline_n+" confirmed days"):""]); }
+  else tiles.push(['Highest estimate','—','no provisional days','']);
+  const yd=t.yesterday; tiles.push(['Yesterday',yd?balM(yd.value)+(yd.confirmed?'':'<span class="pill est">est</span>'):'—',yd?balDl(yd.date)+(yd.confirmed?' · confirmed':' · provisional'):'not yet available','']);
+  const lc=t.latest_confirmed; tiles.push(['Latest confirmed',lc?balM(lc.value):'—',lc?balDl(lc.date)+' · NESO':'','']);
+  const pm=t.prev_month; tiles.push([pm?pm.label+' total':'Last month',pm?balM(pm.value,0):'—',pm?(pm.n<pm.of?pm.n+' of '+pm.of+' days confirmed':'confirmed · '+balM(pm.value/pm.n)+' a day'):'','']);
+  tiles.push(['Constraints share',t.constraints_share!=null?Math.round(t.constraints_share)+'%':'—','of confirmed cost, last '+(t.baseline_n||30)+' days','']);
+  const hc=t.highest_confirmed; tiles.push(['Highest confirmed',hc?balM(hc.value):'—',hc?balDl(hc.date)+' · since '+balShort(D.history_from):'','']);
+  return tiles.map(x=>'<div class="bal-kpi"'+(x[3]?' title="'+x[3]+'"':'')+'><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div><div class="s">'+x[2]+'</div></div>').join(""); }
+function balStatusLine(D){ if(!D) return ""; const r=D.ratio||{};
+  return "Confirmed: NESO, about 5 days behind. Provisional: Elexon Balancing Mechanism ÷ "+(r.median?r.median.toFixed(3):"—")+(r.default?" (default ratio)":"")
+    +(D.error?' · <span class="bal-err" title="'+asEsc(D.error)+'">last refresh had errors</span>':""); }
+// ---- render card
+function balRenderCard(){ const D=balSum, el=$("#balTiles"); if(!el) return;
+  if(!D||D.status!=="ok"){ el.innerHTML='<div class="sub-line">'+(D&&D.status==="building"?"Fetching balancing history from NESO and Elexon… the first run takes a few minutes.":D&&D.status==="unavailable"?"Balancing module not installed on the server (balancing.py).":"Balancing costs unavailable"+(D&&D.error?": "+asEsc(D.error):"."))+'</div>';
+    $("#balInline").hidden=true; return; }
+  el.innerHTML=balTilesHtml(D); $("#balNote").innerHTML=balStatusLine(D);
+  const box=$("#balInline"), b=$("#balChartBtn"); box.hidden=!balChartOn;
+  if(b){ b.textContent=balChartOn?"▴ chart":"▾ chart"; b.setAttribute("aria-expanded",balChartOn?"true":"false"); }
+  if(balChartOn) balDrawCost("balChartCard","balLegCard",D,true); }
+function balRenderDetail(){ const D=balDet; if(!D||D.status!=="ok"){ $("#balDTiles").innerHTML='<div class="sub-line">'+(D&&D.status==="building"?"Fetching balancing history… the first run takes a few minutes.":"Balancing costs unavailable"+(D&&D.error?": "+asEsc(D.error):"."))+'</div>'; return; }
+  balHideTip(); $("#balDTiles").innerHTML=balTilesHtml(D);
+  balDrawCost("balChartA","balLegA",D,false); balTotalsLine(D); balDrawServices(D);
+  balStrip(D,"balChartAo","over_sc_gwh","--b-flow","Planned flow over limits","flow",false);
+  balStrip(D,"balChartAc","curt_gwh","--b-cons","Wind turned down","curt",false);
+  balStrip(D,"balChartAw","wind","--accent","Mean wind","wind",true);
+  balCorrTable(D); balDrawB(D); balDrawC(D);
+  const r=D.ratio||{}; $("#balRatioTxt").textContent="median "+(r.median||0).toFixed(3)+", from "+r.n+" confirmed days above £15m in the last 60 days"+(r.default?" (too few yet, so a default is used)":"")+" (10th–90th percentile "+(r.p10||0).toFixed(3)+"–"+(r.p90||0).toFixed(3)+")";
+  $("#balAttrib").innerHTML="Sources: NESO Data Portal (BSUoS daily cost data, constraint breakdown, thermal constraint costs, day-ahead constraint flows and limits) · Elexon Insights (indicative settlement cashflows and volumes, BM unit reference) · local logs (wind, frequency). History held since "+balShort(D.history_from)+". "+balStatusLine(D); }
+// ---- fetch, open/close, wiring
+async function balFetch(){ try{ const r=await fetch("/api/balancing",{cache:"no-store"}); balSum=await r.json(); }catch(e){ balSum={status:"error",error:String(e)}; }
+  balRenderCard(); if(balSum&&balSum.status==="building") setTimeout(balFetch,30000); }
+async function balFetchDetail(){ try{ const r=await fetch("/api/balancing?detail=1",{cache:"no-store"}); balDet=await r.json(); }catch(e){ balDet={status:"error",error:String(e)}; }
+  if(balOpen) balRenderDetail(); }
+function balOpenFn(){ $("#balOverlay").classList.add("open"); balOpen=true; balFetchDetail();
+  if(balDetT) clearInterval(balDetT); balDetT=setInterval(()=>{ if(balOpen) balFetchDetail(); },BAL_POLL_MS); }
+function balCloseFn(){ $("#balOverlay").classList.remove("open"); balOpen=false; balHideTip(); if(balDetT){ clearInterval(balDetT); balDetT=null; } }
+(function wireBal(){
+  const d=$("#balDetailBtn"); if(d) d.onclick=balOpenFn;
+  const c=$("#balClose"); if(c) c.onclick=balCloseFn;
+  const b=$("#balChartBtn"); if(b) b.onclick=()=>{ balChartOn=!balChartOn; try{ localStorage.setItem("balChartOpen",balChartOn?"1":"0"); }catch(e){} balRenderCard(); };
+  addEventListener("keydown",e=>{ if(e.key==="Escape"&&balOpen) balCloseFn(); });
+  let rt; addEventListener("resize",()=>{ clearTimeout(rt); rt=setTimeout(()=>{ if(balChartOn&&balSum) balRenderCard(); if(balOpen&&balDet) balRenderDetail(); },150); });
+  balFetch(); if(!balPollT) balPollT=setInterval(balFetch,BAL_POLL_MS);
 })();
 tick();
 setInterval(tick, REFRESH);

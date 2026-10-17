@@ -32,6 +32,14 @@ alert_history/
 octopus_history/
 rain_episodes-*.jsonl
 rain_threats-*.jsonl
+reservoir_levels-*.jsonl
+reservoir_cache.json
+reservoir_company_log.jsonl
+reservoir_store.json
+reservoir_store.bak.json
+balancing_store.json
+balancing_store.bak.json
+balancing_store.tmp
 
 # ── Python ──
 __pycache__/
