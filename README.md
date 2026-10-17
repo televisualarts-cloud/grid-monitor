@@ -34,6 +34,10 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
   - `windcuts.py`
   - `region_polys.json`
 
+  `balancing.py` adds the **balancing costs** panel (see *Balancing costs* below):
+  what NESO spends each day to keep the system balanced. It is optional; without
+  it the panel says the module isn't installed.
+
   `gas_probe.py` is an optional companion too: it watches National Gas's published
   notices and a derived gas-margin signal and logs what a gas alert would say (a
   diagnostic — it doesn't sound an alarm of its own). Put it in the same folder to
@@ -63,7 +67,7 @@ The page refreshes itself roughly every 60 seconds, so you can leave it open.
 
 ### Updating an existing install
 When you replace any of the files with a newer version — `grid_server.py`,
-`rain_probe.py`, `owm_onecall.py`, `gas_probe.py`, `powercuts.py`, `metar.py`, `windcuts.py`, or
+`rain_probe.py`, `owm_onecall.py`, `gas_probe.py`, `powercuts.py`, `metar.py`, `windcuts.py`, `balancing.py`, or
 `grid_dashboard.html` / `powercuts_page.html` / `forecast_view.html` — **stop and restart `grid_server.py`**
 afterwards. The server loads the Python modules once at startup, so changes to any
 of them (including the companion modules) only take effect on a restart; a browser
@@ -75,6 +79,7 @@ Once running, the server writes these into the same folder as needed:
 - `margin_history.json` — a rolling log of the capacity margin so it can be graphed over time.
 - `alert_history.json` — a log of alerts, kept for up to 30 days.
 - A `logs/` folder — the interleaved 15-second data log (`grid_log-YYYY-MM-DD.jsonl`, frequency points and generation-mix rows, pruned after 30 days) and, under `logs/archive/`, the permanent weekly generation files that never expire.
+- `balancing_store.json` (with a daily backup, `balancing_store.bak.json`) — the balancing-costs history: NESO's confirmed daily costs, the Elexon figures behind the estimates, and the daily wind and frequency summaries, kept for about 400 days (see *Balancing costs*).
 - `forecast_window.json` — your active-forecast-window setting (see *Alert system*).
 - `gauge_mutes.json` — rain gauges you've muted from the rain alerts (see *Click a river-level or rainfall gauge*).
 - `api_usage_daily.json` and `api_calls.jsonl` — the per-UTC-day tally of upstream weather calls by source and purpose, plus a rolling event log of each real call.
@@ -107,7 +112,7 @@ After you enter Octopus Energy credentials:
 - **Summary chips (top centre):** quick-glance pills for electricity, gas, floods and UK & Ireland power cuts. The electricity chip is always shown; the gas and flood chips only appear when there's something worth flagging; the power-cuts chip shows the live UK & Ireland customers-off total (bold, coloured by severity, with a planned/unplanned split in its tooltip) whenever the power-cuts feed is up. Click a chip to jump to the relevant page. (The gas chip is a *derived* signal, not an official National Grid Margins Notice — the tooltip says so.)
 - **Buttons (top right), left to right:** **live powercuts map** (opens the UK & Ireland power-cuts map — the same as clicking the power-cuts chip), **alarms**, **gas**, **ea** (Environment Agency), **my home**, and **history**, which opens the alert history and statistics view (see *Alert system* below).
 
-Press **Esc** to close any of the full-screen pages (generators, gas, power cuts, EA, My Home, colourgramme, alert history).
+Press **Esc** to close any of the full-screen pages (generators, gas, power cuts, EA, My Home, colourgramme, alert history, balancing costs).
 
 ---
 
@@ -122,6 +127,7 @@ Press **Esc** to close any of the full-screen pages (generators, gas, power cuts
 - **Generation and Imports by Source** — a bar chart sorted from biggest contributor down (very small ones are omitted). Each source shows a trend arrow versus an hour ago, and estimated figures carry an "est" tag. A legend shows the renewable and low-carbon percentages. The interconnectors are drawn in a graded blue family so each one is distinguishable when stacked.
   - **generators button** — opens a full-screen "tree-map" style view of all the major generating units currently feeding the grid.
   - **7-day button** — opens a generation-history pop-up. Two live plots cover the last seven days — output (MW) and share (%), stacked by fuel — above an **archive panel** that shows any one week, Sunday→Saturday, all in UTC. The archive steps by whole weeks (◀ ▶ or the year/month/day pickers, back to 2017), toggles between MW and %-share, and always shows the full seven days even where data is missing (gaps read as zero; the current week fills left to right). Each week's data is rolled into a permanent weekly file automatically. Any week with missing periods — including the **current, in-progress week** — can have just those gaps filled on demand with **fill from BMRS** / **fill gaps** (Elexon FUELINST for the metered fuels plus Sheffield PVLive for embedded solar, both modelled/external and labelled as such). Only the already-elapsed gaps are added and self-logged readings are always kept, so a week that mixes both is shown as "gaps filled (BMRS)"; the not-yet-elapsed part of the current week is left untouched. A week that is entirely a prior BMRS pull instead offers **re-pull** to refresh it. Self-logged data is never overwritten by a fill.
+- **Balancing Costs** — what NESO spends each day to keep the system balanced: six summary figures, with an optional daily cost chart in the panel and a **details** pop-out. See *Balancing costs* below.
 - **Resource Conditions** — weather at 12 renewable-energy sites (needs an OpenWeather key — see below).
 - **Insight** — a short plain-language read on current conditions, including a cross-check of forecast wind against metered wind where available.
 - **Capacity Margin** — how much generation could be called up at medium notice, shown as a radial gauge plus a −24h/+24h trend graph.
@@ -131,6 +137,16 @@ Press **Esc** to close any of the full-screen pages (generators, gas, power cuts
 - **System Warnings** — official NESO notices from the last 48 hours. Notices in force are listed first with their severity; recent ones that were cancelled, replaced by a newer notice, have ended, or are operational (IT, trades, tests) follow, dimmed. Severity follows the notice type: demand control is critical; high risk of demand reduction, a Capacity Market Notice or risk of system disturbance is a warning; an Electricity Margin Notice and other advisory notices are a notice. An Electricity Margin Notice is a market signal, not a sign that power cuts are expected.
 
 A row of small status indicators along the bottom shows the health of each data source.
+
+### Balancing costs
+The **Balancing costs · NESO** panel, below *Generation and imports*, shows what NESO pays generators and others each day to keep the system balanced: mostly to turn wind down where the network can't carry it and turn gas up elsewhere. Needs `balancing.py` beside the server; no keys.
+
+- **Confirmed and provisional.** NESO publishes its confirmed daily cost about five days after the event. For the days since, the panel shows an **estimate** from Elexon's indicative Balancing Mechanism settlement (about a day behind), scaled up by the ratio seen on recent confirmed days, because the Balancing Mechanism leaves out NESO's own trades and contracts. Estimates are always marked **est**, drawn hatched and given a likely range; each one is replaced by NESO's figure when that is published. Today is part of a day and marked "so far".
+- **Summary figures:** the highest estimate, yesterday, the latest confirmed day, last month's total, the constraints share of the cost over the last 30 confirmed days, and the highest confirmed day. The **highest estimate** is coloured against the average of the last 30 confirmed days: green more than 10% below, white within ±10%, yellow up to 25% above, orange up to 50%, red up to 75%, hot pink beyond.
+- **▾ chart** opens the daily cost chart inside the panel (confirmed bars, provisional hatched with a whisker for the likely range, the highest confirmed day as a dashed line, event markers). The panel remembers whether it's open. Hover any day for its breakdown.
+- **⤢ details** opens the full view: the summary figures; the daily cost chart with period totals by NESO category; a strip for the smaller services (energy imbalance, reserve, frequency response, other) on their own scale, where below zero is money NESO earned; strips for planned flow over the Scottish boundary limits (NESO day-ahead), wind turned down (Elexon) and wind output (local logs), all lined up by day; a table of how well each tracks the cost; **who was paid** (gas and others paid to increase output against wind paid to reduce); and a **half-hour heatmap** of when in the day the money was spent.
+- **Event markers:** ▲ a notable high or record, ▼ a notable low; red is bad news for cost or the system, green is good news. Hover a marker for the detail. Records are the highest since the stored history began. From the local logs: a **major infeed loss** marker when frequency falls 0.2 Hz or more within 30 seconds to 49.85 Hz or below, or goes below 49.6 Hz; otherwise a **frequency low** marker on a day whose lowest reading is below 49.76 Hz.
+- **Updates:** NESO every 6 hours. Elexon: today's settlement periods are fetched one by one as each settles (checked every 30 minutes); a finished day is fetched whole once, and again two days later, when it is kept as final. The first run fetches about 50 days of history, which takes a few minutes and downloads roughly 700 MB from Elexon (mostly the accepted-volume files used for wind turned down); after that it's about 45 MB a day.
 
 ### Weather data (optional)
 The Resource Conditions panel needs a **free** API key from **openweathermap.org**:
@@ -329,7 +345,8 @@ a feed went quiet, a provider was muted or the radius changed.
 **Monitored postcode areas.** Besides your own area, you can watch up to **10** other
 postcode areas — a sector such as `EX23 4` or a full postcode such as `EX23 4AA`. Click
 **📍 Monitored areas** at the top of the power-cuts page, enter them in the slots (✕
-clears a slot) and **Save**. Each entry is checked against postcodes.io when you save, and
+clears a slot) and **Save**. Each slot can also take an optional **name**, such as "Les":
+alerts then speak the name and place ("Les in Plymouth") instead of the postcode. Each entry is checked against postcodes.io when you save, and
 its place name is shown beside it (an entry that isn't a real postcode is shown in red
 with the reason, and not saved). The list is kept by the server in `powercut_watch.json`,
 so it survives restarts and is the same in every browser. While a monitored area has a
@@ -343,7 +360,7 @@ areas they supply can't be matched.
 With the **Monitored postcode areas** alarm category on (it is by default) and the alarms
 armed, a new cut or planned works in a monitored area sounds a two-tone siren followed by
 speech: "A monitored postcode area has suffered a power cut. The area is PL3 5, Plymouth.
-53 customers are without power." The customer figure is left out for SP Energy Networks
+53 customers are without power." — or, with a name, "… This affects Les in Plymouth." The customer figure is left out for SP Energy Networks
 (it publishes none) and when the operator hasn't confirmed one yet. Several areas at once
 become a single message, and each area is announced again, with a soft tone, when its
 power is restored. Muted providers are skipped, and each cut is announced only once, even
@@ -352,6 +369,53 @@ across page reloads.
 ---
 
 ## Environment Agency page (England)
+
+### Reservoirs
+
+A **Reservoirs** section sits at the top of the Environment Agency page, in two rows of badges. Click **▾ detail**, or any local badge, to open the drop-down with charts.
+
+- **Local row**, for the location set on the page:
+  - **Drought status** for the EA region: severe drought, drought or prolonged dry weather, as stated in the EA reports. Severe drought is declared for named counties, so it shows only when your location is in one of them.
+  - **Region % full** at the end of the last month, with the EA's comparison to normal, for example "37% full · below average". The % is the storage level; "below average" says how that compares with normal for the time of year.
+  - On the UK row, England's badge gives "54% full · normal ≈75%": the normal figure is the long-term average implied by the EA's "21% below average".
+  - **Water company:** each company's total % full for the region, the reservoir nearest home (within 40 km) and the lowest of the large reservoirs (over 2,000 Ml).
+  - **Lower Thames group % full**, when you are within 60 km of central London.
+  - The **nearest live reservoir gauge** within 60 km. This is a water level in metres, not % full; the badge shows how far it sits below the typical range or the spillway when the EA gives one.
+  - For a location in **Wales** the row shows only "Reservoir data not available in Wales" (and the same for Scotland and Northern Ireland). None of these publish usable % full figures.
+- **UK row:** England's storage from the latest weekly EA drought summary, with the gap to the long-term average, then Scotland, Wales and Northern Ireland marked as not available. Hover over any badge for the details and the date the figure applies to.
+- **Drop-down:** pick any EA region (North-east, North-west, Central, East, South-east, South-west) or England. Your own region is marked ⌂. Each region shows:
+  - monthly % full since January 2024, with England for comparison;
+  - drought status for each area;
+  - the reservoir paragraph from each EA area's monthly report;
+  - cards for the live gauges, with up to 30 days of levels (longer once the server's own daily log builds up).
+
+  Each region also has a card per water company:
+  - **Total chart:** the company total, one line per year from January to December (this year bold, last year blue, earlier years faint).
+  - **Bars:** every reservoir's % full. A white tick marks the same week last year, and ⌂ marks the one nearest home. Companies with many reservoirs show the 16 largest, with a button for all.
+  - **History:** click a reservoir for its full history, year by year.
+  - **Stale figures:** values older than 45 days are dimmed and dated, for example Northumbrian's last open-data upload.
+  - **Groups:** where a company publishes groups rather than reservoirs (Northumbrian, Essex & Suffolk, United Utilities), these are shown first.
+
+  The England tab adds a bar per company total and a **Data sources** table. It gives the newest value held from each feed and website, how many days old it is, and whether the last check worked.
+
+  England adds the weekly series since July 2025, with the long-term average where the report gives it. South-east adds the Lower Thames and Lower Lee groups for this year, against last year and the 1989–last year range.
+- **Live gauges are checked first.** A gauge whose daily level jumps by more than 1 m, or which has not moved for 7 days, is shown dimmed as a suspect sensor and never used in a badge. For example, Meldon jumped 8.6 m on 24 Sep 2026. Single-reading spikes, such as Haweswater's 34.87 m sentinel values, are filtered out first. Flood-storage reservoirs are left out.
+- **Sources** (all Open Government Licence):
+  - the EA national monthly water situation report (regional table, from the PDF);
+  - the EA weekly *Dry weather and drought in England* summaries;
+  - the EA area monthly summaries;
+  - the EA flood-monitoring API;
+  - Thames Water figures via the London Datastore;
+  - **Water companies, two kinds of source merged into one store:**
+    - **Stream** (streamwaterdata.co.uk, the industry's open data portal, CC BY 4.0) supplies the history in a common format. Coverage: Yorkshire Water (75 reservoirs, weekly since 2022), Southern Water (daily since 2002), Wessex Water (weekly since 2021), Severn Trent (2023–25), Northumbrian incl. Essex & Suffolk (2022–25), South West Water and SES Water (2023 to May 2026), and South Staffs. Some companies keep their Stream data current; others upload in batches months later. A daily catalogue search picks up new layers, such as a new year's file, without a code change.
+    - **Company websites** fill the weeks Stream hasn't caught up with: Severn Trent (weekly totals since 2022 and every reservoir), South West Water, Northumbrian, Essex & Suffolk. They also cover companies not on Stream: United Utilities (groups, with average and last-year figures) and Bristol Water.
+    - **Reconciliation:** for the same reservoir and date, a Stream value replaces a website value.
+    - **Company totals:** the company's own published total where it gives one. Otherwise, a capacity-weighted figure from the reservoirs that report capacity, used only for weeks when they cover at least 80% of the capacity.
+    - **Storage:** everything read is kept in `reservoir_store.json`, with a daily copy in `reservoir_store.bak.json`. The history therefore survives a feed being withdrawn or a website changing.
+    - **Not available:** Anglian, Thames (apart from the London groups), Affinity, South East Water, Portsmouth and Cambridge publish nothing usable.
+- **Needs `reservoirs.py`** in the same folder. The monthly regional figures also need the `pypdf` package (`pip install pypdf`). Without it, those badges say so and everything else still works.
+- **Refresh:** the server fetches everything in the background, every 6 hours for the reports and hourly for the gauges. The first run after a new install downloads about 30 monthly PDFs (around 5 MB each) once. Results are kept in `reservoir_cache.json`, and one gauge reading per day goes to `reservoir_levels-YYYY-MM.jsonl`. Both are git-ignored. `GET /api/reservoirs?lat=&lon=&country=` returns the whole set.
+
 
 Open with the **ea** button.
 - Enter an England postcode **or place name** (e.g. `SW1A 1AA` or `Sheffield`) to monitor river levels, rainfall and flood status nearby.
@@ -579,6 +643,7 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ## Other files in this repository
 
+- `balancing.py` — the balancing-costs module (NESO and Elexon fetchers, estimates, events); see *Balancing costs*.
 - `CHANGELOG.md` — what changed and when, with each file's own build history at the end.
 - `WEATHER_ALERT_DESIGN.md` — how the rain engine works: gauges, sea points, tracking, the approach alert and its tuning values.
 - `KNOWN_ISSUES.md` — known issues and open questions.
@@ -586,4 +651,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 260926.1*
+*README build 261017.1*

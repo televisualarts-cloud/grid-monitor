@@ -20,6 +20,23 @@ Last reviewed: 261014.
 
 ---
 
+## Balancing costs — provisional figures are estimates (BY DESIGN)
+
+- **What:** days NESO has not yet confirmed (about the last 5) show an estimate: Elexon's
+  indicative Balancing Mechanism net cost divided by the BM-to-NESO ratio on recent
+  confirmed days. The BM leaves out NESO's own trades and contracts, and the ratio
+  varies (10th–90th percentile 0.873–0.946 over Sep–Oct 2026), so an estimate can be
+  several £m off: 13 Oct was estimated at £40.8m (press: £39.4m), 14 Oct at £44.9m,
+  likely £44–48m (press: about £49m). The likely range is shown, and NESO's figure
+  replaces the estimate when it is published.
+- **Records** are "highest since the stored history began" (about 50 days on a new
+  install), not all-time records.
+- **First run** downloads about 700 MB from Elexon to backfill 50 days; the panel says it
+  is fetching until then.
+- **Day-ahead Scottish flows** use six NESO constraint groups (SCOTEX, SSE_SP2, SSHARN3,
+  SSEN_S, HARSPNBLY, SSE_GRMO). If NESO renames a group, that strip drops in value
+  until `SCOT_GROUPS` in `balancing.py` is updated.
+
 ## Rain / forecast engine — how the sources are merged (OPEN)
 
 Reviewed 260930 from the code (`rain_probe.py` 260929.4) and the September logs

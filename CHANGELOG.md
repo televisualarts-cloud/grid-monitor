@@ -16,6 +16,55 @@ exact tag.
 
 ---
 
+## 2026-10-17
+
+- **Balancing costs panel.** A new **Balancing costs · NESO** panel below *Generation and imports* shows what NESO spends each day to keep the system balanced, from new module `balancing.py` and `GET /api/balancing` (`?detail=1` adds the half-hours, correlations and period totals). No keys.
+  - **Confirmed and provisional.** NESO's daily BSUoS cost data (per half-hour, by category) is the confirmed figure, about 5 days behind. Later days are estimated from Elexon's indicative Balancing Mechanism cashflows (about a day behind), divided by the BM-to-NESO ratio on recent confirmed days above £15m (median, with the 10th–90th percentile as the likely range; currently 0.933, 0.873–0.946 from 21 days). Estimates are always marked, hatched and replaced when NESO publishes.
+  - **Summary figures:** highest estimate, yesterday, latest confirmed, last month's total, constraints share (last 30 confirmed days) and highest confirmed. The highest estimate is coloured against the mean of the last 30 confirmed days: green below −10%, white within ±10%, yellow to +25%, orange to +50%, red to +75%, hot pink above.
+  - **▾ chart** opens the daily cost chart inside the panel (remembered per browser); **⤢ details** opens a pop-out with the summary figures; the daily cost chart with period totals by category; a signed strip for energy imbalance, reserve, frequency response and other on their own scale; strips for planned flow over the Scottish boundary limits (NESO day-ahead flows and limits), wind turned down (Elexon accepted bids on wind units) and mean wind (local logs), all aligned by day with their own date axes; a correlation table; who was paid (gas and others up, wind down, net BM cost); and a half-hour heatmap. Tooltips give each day's rank, ratio to the 30-day average, NESO breakdown, constraint split, costliest boundary and drivers.
+  - **Event markers** (▲ high / ▼ low, red bad / green good, with tooltips): highest cost since the stored history began (confirmed or provisional), lowest cost day, peak reserve and best imbalance day, peak flow over limits, most wind turned down, highest wind, and from the local logs a "major infeed loss" (≥ 0.2 Hz fall within 30 s to ≤ 49.85 Hz, or below 49.6 Hz) or a "frequency low" (day minimum below 49.76 Hz, noting when the fall was gradual).
+  - **Store and cadence:** everything is kept in `balancing_store.json` (git-ignored, daily backup `balancing_store.bak.json`, about 400 days). NESO refreshes every 6 h, refetching from 10 days before the newest confirmed day or from any older day with a missing part. Elexon: today period by period as each settles (every 30 min), a finished day whole once and again two days later as final. First run backfills 50 days (~700 MB from Elexon); then ~45 MB a day. UK settlement days throughout, including 46/50-period clock-change days.
+  
+  (`balancing.py` 261017.1 new, `grid_server.py` 261017.1, `grid_dashboard.html` 261017.1)
+
+## 2026-10-16
+
+- **Reservoirs: water companies across England, with history.**
+  - **Coverage:** every English region now has water-company reservoir cards.
+  - **Sources:** Stream (the industry's open data portal) gives the history: Yorkshire, Southern, Wessex, Severn Trent, Northumbrian (incl. Essex & Suffolk), South West Water, SES and South Staffs. Company websites give the weeks Stream lags (Severn Trent, South West Water, Northumbrian, Essex & Suffolk) and companies not on Stream (United Utilities, Bristol Water).
+  - **Store:** everything read is merged into `reservoir_store.json` (daily backup `reservoir_store.bak.json`). For the same reservoir and date, Stream wins over the website. The South West Water values logged by 261016.2 are migrated in.
+  - **New Stream layers** are found by a daily catalogue search.
+  - **Cards** show the company total year by year (Jan–Dec, one line per year) and % full bars with a last-year tick. Click a reservoir for its full history (`/api/reservoirs?series=co|key`). Values older than 45 days are dimmed.
+  - **Local row:** company totals for the region, the reservoir nearest home and the lowest large reservoir.
+  - **England tab:** company totals and a **Data sources** table: newest data per source, its age in days, and the last check.
+  
+  (`reservoirs.py` 261016.3, `grid_dashboard.html` 261016.3, `grid_server.py` 261016.2)
+- **Reservoirs: South West Water figures, clearer wording.**
+  - **SWW figures:** the server reads South West Water's reservoir-levels page: the company total and eight reservoirs (Roadford, Colliford, Wimbleball, Stithians, Burrator, Tottiford, Drift, Venford), each with SWW's own date (15 Oct at first read, updated a few times a week). Each value is logged once by its published date in `reservoir_company_log.jsonl`, so a history chart builds up.
+  - **Local row:** the company total, the company reservoir nearest home (within 40 km) and the lowest reservoir.
+  - **Region view:** bars for every company reservoir and the history chart.
+  - **Wording:** badges and the region figure now read "37% full · below average" (was "37% below average", which read as a gap rather than a level). England reads "54% full · normal ≈75%" (was "−21% vs normal").
+  
+  (`reservoirs.py` 261016.2, `grid_dashboard.html` 261016.2)
+- **Reservoirs on the EA page.** A Reservoirs section at the top of the Environment Agency page, with two rows of badges and a drop-down for any region.
+  - **Local row:** drought status, region % full against normal, Lower Thames group near London, and the nearest sound live gauge within 60 km. A location in Wales shows "Reservoir data not available in Wales" (the same for Scotland and NI).
+  - **UK row:** England weekly % full and its gap to the long-term average; Scotland, Wales and NI not available.
+  - **Drop-down,** one view per EA region or England:
+    - monthly % full since Jan 2024, with England for comparison;
+    - drought status and the EA area reports' reservoir paragraphs;
+    - live gauge cards with sparklines;
+    - England adds the weekly series since Jul 2025;
+    - South-east adds the London groups against their range since 1989.
+  - **Sources:** EA national monthly report (regional table read from the PDF with optional `pypdf`), EA weekly drought summaries, EA area summaries, EA flood-monitoring reservoir gauges, London Datastore.
+  - **Gauge checks:** day-to-day jumps over 1 m and dead sensors are flagged and kept out of the badges, and spikes are filtered.
+  - **Server:** new `GET /api/reservoirs`, built in a background thread (reports every 6 h, gauges hourly). Cache in `reservoir_cache.json`; daily gauge log in `reservoir_levels-YYYY-MM.jsonl`.
+  
+  (`reservoirs.py` 261016.1 new, `grid_server.py` 261016.1, `grid_dashboard.html` 261016.1)
+
+## 2026-10-15
+
+- **Monitored areas: optional names.** Each slot in the Monitored areas popup has an optional name field (e.g. "Les", up to 30 characters). Alerts for a named area speak the name and place — "This affects Les in Plymouth", "Power has been restored for Les in Plymouth" — and areas without a name keep the postcode and place. Names are stored with the area in `powercut_watch.json` (`alias`), can be changed without a new postcode lookup, and are kept on a rejected entry so it can be corrected; a name without a postcode is ignored. `/api/powercut-watch` accepts `{"pc", "alias"}` objects as well as plain postcodes; `watch.matches` carry `alias`. (`powercuts.py` 261015.1, `grid_server.py` 261015.1, `powercuts_page.html` 261015.1, `grid_dashboard.html` 261015.1)
+
 ## 2026-10-14
 
 - **Power cuts: monitored postcode areas.** Up to 10 postcode sectors (`EX23 4`) or full postcodes (`EX23 4AA`) can be monitored in addition to the near-you radius, set from a new **Monitored areas** button on the power-cuts page (10 slots, ✕ to clear a slot, Save). Each entry is checked on postcodes.io when saved, which also gives the place name (civil parish, else ward in Scotland/Wales/NI, else district); unrecognised entries are shown with the reason and not saved; an entry whose lookup fails on the network is kept, marked unverified. The list is stored server-side in `powercut_watch.json` (git-ignored), so it survives restarts and is shared by every browser. New `GET/POST /api/powercut-watch`. (`powercuts.py` 261014.1, `grid_server.py` 261014.1, `powercuts_page.html` 261014.1)
@@ -310,6 +359,13 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **261014.1** (2026-10-14) — New "Monitored postcode areas" alarm category: siren then speech when a cut or planned works start in a monitored area (combined message for several areas; no customer count for SPEN), soft tone + speech on restoration.
 - **261014.2** (2026-10-14) — Spoken power-cut times (near you, monitored areas) honour a UTC "Z"/offset; SSEN and NPg times were an hour early in BST.
 - **261014.3** (2026-10-14) — Overdue incidents count as still present, so going overdue is never announced as a restoration.
+- **261015.1** (2026-10-15) — Monitored-area alerts speak an area's name and place ("Les in Plymouth") when it has one.
+
+- **261016.3** (2026-10-16) — Reservoirs: water-company cards for every region (year-by-year total chart, % full bars with last-year tick, click for a reservoir's full history), company badges on the local row, company totals and a Data sources table on the England tab.
+- **261016.2** (2026-10-16) — Reservoirs: South West Water total, nearest and lowest badges; company reservoir bars and history chart in the region view. "N% full · below average" wording; England "normal ≈N%".
+- **261016.1** (2026-10-16) — Reservoirs section at the top of the EA page: local and UK badges, drop-down with a view per EA region, monthly, weekly and London charts, drought status, area report text and live gauge cards (`/api/reservoirs`).
+- **261017.1** (2026-10-17) — Balancing costs panel below Generation and imports: six summary figures (highest estimate coloured against the 30-day confirmed mean), ▾ chart in the panel (remembered), ⤢ details pop-out with the daily cost chart, other-services strip, driver strips, correlation table, who was paid and the half-hour heatmap; event markers and tooltips throughout.
+
 ### `powercuts_page.html`
 
 Header history began at 260916.1; earlier builds are in the dated entries above.
@@ -339,6 +395,8 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **261014.2** (2026-10-14) — Map tooltip says "customer count not yet confirmed" for incidents whose count is pending (UKPN); monitored-areas note updated.
 - **261014.3** (2026-10-14) — Tooltip: pending counts show the predicted figure as "predicted" (or "planned"); "end time not given" for planned outages without one.
 - **261014.4** (2026-10-14) — Overdue incidents drawn as small grey dots with an explanatory tooltip.
+- **261015.1** (2026-10-15) — Monitored areas popup: optional name per slot, column headings.
+
 ### `powercuts.py`
 
 Header history began at 260916.1; earlier builds are in the dated entries above.
@@ -356,6 +414,8 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **261014.3** (2026-10-14) — NPg: finished incidents dropped, planned flag from `natureofoutage`, pending counts. ESB: finished planned outages dropped, times to ISO, `end_unknown`. NGED: planned works window.
 - **261014.4** (2026-10-14) — SPEN: planned works past their end time dropped, planned start date used. NIE: times converted to ISO local.
 - **261014.5** (2026-10-14) — Incidents > 7 days past their ETR moved to `overdue` (uncounted; ids kept in new/cleared diffing).
+- **261015.1** (2026-10-15) — Monitored areas: optional `alias` per area (stored, cleaned, passed in matches).
+
 ### `windcuts.py`
 
 New module at 260917.1.
@@ -409,3 +469,17 @@ Unversioned until 260929.1; earlier changes are in the dated entries above.
 Unversioned until 260929.1; earlier changes are in the dated entries above.
 
 - **260929.1** (2026-09-29) — Header build line added. No code changes.
+
+### `reservoirs.py`
+
+New module at 261016.1.
+
+- **261016.1** (2026-10-16) — Reservoir storage for the EA page. Sources: EA national monthly regional table (PDF, via optional `pypdf`), weekly drought summaries, area summaries, flood-monitoring reservoir gauges (sanity-checked) and the London Datastore. Drought status is replayed from the report text. Background build every 6 h (gauges hourly), with a cache and a daily gauge log.
+- **261016.2** (2026-10-16) — South West Water reservoir-levels page (total and eight reservoirs with SWW's dates), logged by published date to `reservoir_company_log.jsonl` for history.
+- **261016.3** (2026-10-16) — Water companies from Stream open data (ArcGIS feature services, read incrementally when a layer changes, with new layers found by catalogue search) plus company websites (Severn Trent weekly pages, South West Water, Northumbrian, Essex & Suffolk, United Utilities, Bristol Water), merged into `reservoir_store.json` with a daily backup. Per-region capacity-weighted totals; per-source status for monitoring; `series=` for one reservoir's full history.
+
+### `balancing.py`
+
+New module at 261017.1.
+
+- **261017.1** (2026-10-17) — Balancing costs: NESO confirmed daily costs (BSUoS cost data, constraint breakdown, thermal constraint costs by boundary, day-ahead Scottish flows over limits) and Elexon indicative cashflows and accepted bid volumes (by BM unit fuel), calibrated estimate with likely range, daily wind and frequency events from the local logs, event detection, summary figures and correlations. Background refresh, store `balancing_store.json` with daily backup.
