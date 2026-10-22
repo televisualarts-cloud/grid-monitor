@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 260930.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -258,6 +258,11 @@ function draw(){
     HIT.push({x,y,r:12,html:`<b>mobile tracker</b> · ${m.src==='RV'?'radar (RainViewer)':(m.src==='OC4'?'OpenWeather reading':'Open-Meteo model')}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+Math.round(m.speed_mph)+' mph inbound'):''}`}); });
   drawHome(cx,cy,R);
 }
+// "At your location" voice: intensity MEASURED at home (radar box at home / nearest gauge
+// < 5 km, smoothed over two readings), with its source.
+function hiTxt(sit){ const h=(sit&&sit.home_int)||{};
+  if(!h.src) return '—';
+  return (h.band>0?h.name:'dry')+(h.mm!=null?' · '+h.mm+' mm/h':'')+' · '+h.src; }
 function drawHome(cx,cy){
   const hm=(SIT&&SIT.home)||{};
   if((hm.band||0)>0){ g.strokeStyle=hm.snow?'#ff7ed6':(bandCol[hm.band]||col.wet);
@@ -265,7 +270,7 @@ function drawHome(cx,cy){
   g.beginPath();g.arc(cx,cy,5,0,7);g.fillStyle=col.ink;g.fill();
   g.strokeStyle=col.accent;g.lineWidth=1.5;g.beginPath();g.arc(cx,cy,9,0,7);g.stroke();
   g.fillStyle=col.lab;g.font='16px monospace';g.textAlign='center';g.fillText('home',cx,cy+26);
-  HIT.push({x:cx,y:cy,r:15,html:`<b>home</b><br>at-home reading: ${(hm.mm!=null?hm.mm+' mm/h':'—')} · ${(hm.name&&hm.name!=='dry')?hm.name:'dry'}<br><span style="color:#8595a8">drives the “at your location” voice</span>`}); }
+  HIT.push({x:cx,y:cy,r:15,html:`<b>home</b><br>at-home reading: ${(hm.mm!=null?hm.mm+' mm/h':'—')} · ${(hm.name&&hm.name!=='dry')?hm.name:'dry'}<br><span style="color:#8595a8">model reading at home (nowcast channel). The rain voice’s “at your location” uses the measured reading: ${hiTxt(SIT)}</span>`}); }
 
 function render(sit, spk, ws){
   SIT=sit; SPK=spk||[]; WS=ws||[]; draw();
@@ -278,6 +283,7 @@ function render(sit, spk, ws){
     ['nearest wet',sit.nearest_wet_km!=null?sit.nearest_wet_km+' km':'—'],['active gauges',sit.n_active],
     ['wet now',sit.n_wet],['stable',Math.round((sit.stable_s||0)/60)+' min'],
     ['at home',(sit.home&&sit.home.band>0)?((sit.home.mm!=null?sit.home.mm+' mm/h ':'')+sit.home.name):'dry'],
+    ['at-home voice', hiTxt(sit)],
     ['EA gauges', eaGaugesTxt(sit)],
     ['local backup', sit.backup||(sit.ea_gauges==='present'?'EA gauges (live)':'—')],
     ['steering wind', sit.steering?('from '+bearingWord(sit.steering.from_deg)+' '+mph(sit.steering.kmh)+' mph · '

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261018.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -187,7 +187,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261018.1"
+SERVER_BUILD = "261022.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -4956,8 +4956,12 @@ def _wind_budget_spend(n):
 # (moderate) 1.6-3.5, rapidly >3.5. If <3h of history exists we use the longest
 # span available and scale it to a 3-hour-equivalent rate, so a fresh log still
 # gives a sensible trend rather than nothing.
+# The log keeps PRESSURE_LOG_HOURS of history for the weather panel's pressure
+# plot; the tendency itself still looks back only 3 h (see _pressure_tendency).
+# One sample per fresh OpenWeather fetch (EA_WIND_TTL, stretched by the forecast
+# window's quiet_mult outside it), so ~288 points per location at 72 h.
 PRESSURE_LOG = Path(__file__).with_name("pressure_history.json")
-PRESSURE_LOG_HOURS = 4
+PRESSURE_LOG_HOURS = 72
 
 # Wind-direction history per location, for the dial's fading 3-hour tick ring.
 WINDDIR_LOG = Path(__file__).with_name("winddir_history.json")
@@ -5106,6 +5110,27 @@ def _pressure_tendency(series, now):
     return {"trend": word,
             "change_3h": round(change_3h, 1),
             "span_h": round(span_h, 1)}
+
+def _pressure_series_read(lat, lon):
+    """Logged home pressure for this location as [[epoch_s, hPa], ...] oldest
+    first, for the weather panel plot. Read-only; returns [] if nothing logged."""
+    try:
+        if not PRESSURE_LOG.exists():
+            return []
+        store = json.loads(PRESSURE_LOG.read_text())
+        series = store.get(f"{round(lat,2)},{round(lon,2)}") or {}
+        out = []
+        for k, v in series.items():
+            try:
+                t = datetime.fromisoformat(k.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            if v is not None:
+                out.append([round(t), v])
+        out.sort()
+        return out
+    except Exception:
+        return []
 
 def _pressure_tendency_read(lat, lon):
     """Read-only 3h tendency from the persisted pressure log (the SAME series the weather
@@ -6077,6 +6102,8 @@ def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
             cond["pressure_tendency"] = _log_pressure(lat, lon, m.get("pressure"))
         except Exception:
             cond["pressure_tendency"] = None
+        # logged history for the panel's pressure plot (same file, no extra fetch)
+        cond["pressure_series"] = _pressure_series_read(lat, lon)
         wind = {
             "home": home,
             "ring": [],                    # no ring: OpenWeather can't batch points

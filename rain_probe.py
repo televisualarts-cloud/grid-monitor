@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261014.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -401,6 +401,9 @@ class ProbeState:
     sit_announced: dict = field(default_factory=dict)  # key -> {"phrase","next"} cadence schedule
     sit_last_snow: bool = False
     sit_episode_spoke: bool = False                    # did the current precip episode actually announce anything?
+    sit_home_reads: dict = field(default_factory=dict) # "radar"/"gauge:<id>" -> [[reading_ts, mm_h], ...] last 2 distinct
+    sit_here_log: list = field(default_factory=list)   # [[ts, band], ...] "at your location" messages, last ~30 min
+    sit_far_ts: float = 0.0                            # last time "heavier rain N km to the X" was appended
     sit_dir_sect: "int | None" = None                  # last announced direction sector (8ths) for hysteresis
     sit_tracks: list = field(default_factory=list)     # tracked precip clusters (continuity across sectors)
     sit_track_seq: int = 0
@@ -2573,11 +2576,87 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
 
 
 # ---- phase (c): cadence + wording, one voice for the situation state ----
-CAD_HERE_HEAVY   = 10 * 60          # heartbeat while heavy+ rain is AT home
-CAD_HERE_LIGHT   = 20 * 60          # heartbeat while light/moderate at home
+CAD_HERE_HEAVY   = 20 * 60          # heartbeat while heavy+ rain is AT home (measured at home)
+CAD_HERE_LIGHT   = 60 * 60          # heartbeat while light/moderate at home
+# "At your location" describes rain measured AT HOME now (home_intensity), never the area's
+# 90-min peak (which can be a cell 30 km away). Replay of the rain_rec logs, 30 Sep-22 Oct:
+# 60 of 98 at-home messages overstated the measured intensity at home; 25 said "very heavy",
+# about 3 of them true at home.
+HERE_HOLD_S          = 30 * 60      # rain at home dropping out and back within this, same/lower band: quiet
+HERE_UPGRADE_WIN_S   = 30 * 60      # heavier band re-announces only if above all said at home in this window
+HERE_UPGRADE_GAP_S   = 5 * 60       # ...and no sooner than this after the last at-home message
+HERE_RADAR_MAX_AGE_S = 15 * 60      # radar frame must be this fresh to describe rain at home now
+HERE_PAIR_GAP_S      = 40 * 60      # two readings of one source this close: their LOWER band counts
+FAR_MENTION_S        = 60 * 60      # "heavier rain N km to the X" appended at most this often
 CAD_SHOWERS      = 40 * 60          # heartbeat while showers persist in the area
 CAD_CONTINUOUS   = 60 * 60          # heartbeat while continuous rain persists
 SIT_DWELL_S      = 9 * 60           # a state must persist this long before an AREA announcement
+
+def _push_read(reads, key, ts, mm):
+    """Keep the last two DISTINCT readings (by reading time) of one at-home source."""
+    buf = reads.get(key) or []
+    if not buf or buf[-1][0] != ts:
+        buf = (buf + [[ts, mm]])[-2:]
+    reads[key] = buf
+    return buf
+
+def _src_band(buf):
+    """Band one source supports: the lower of its last two readings when they are close in
+    time (a single spiky radar frame or tipping-bucket burst can't name the band), else its
+    lone reading capped at light."""
+    if len(buf) >= 2 and buf[-1][0] - buf[-2][0] <= HERE_PAIR_GAP_S:
+        return min(_sit_band(buf[-1][1]), _sit_band(buf[-2][1]))
+    return min(_sit_band(buf[-1][1]), 1) if buf else 0
+
+def home_intensity(state, points, radar, now):
+    """Rain intensity AT HOME now, for the "at your location" voice. Two measured sources:
+    the radar mean over a ~1 km box at home (frame <= HERE_RADAR_MAX_AGE_S old) and the latest
+    15-min bucket of the NEAREST physical gauge within SIT_HERE_KM (not late). Each source's
+    band is smoothed over its last two distinct readings (_src_band); the higher source wins.
+    Returns {band, name, src, mm, dist_km}. Mutates state.sit_home_reads only."""
+    reads = state.sit_home_reads
+    cands = []
+    if radar and radar.get("frame_ts") and radar.get("home_mm") is not None \
+            and now - radar["frame_ts"] <= HERE_RADAR_MAX_AGE_S:
+        buf = _push_read(reads, "radar", radar["frame_ts"], radar["home_mm"])
+        cands.append((_src_band(buf), "radar home", buf[-1][1], None))
+    else:
+        reads.pop("radar", None)                     # stale radar can't describe "now"
+    near = [p for p in points if p.get("kind") == "phys" and not p.get("late")
+            and p.get("mm") is not None and p.get("last_ts")
+            and p.get("dist_km") is not None and p["dist_km"] < SIT_HERE_KM]
+    gkey = None
+    if near:
+        n = min(near, key=lambda p: p["dist_km"])
+        gkey = "gauge:" + str(n.get("key"))
+        buf = _push_read(reads, gkey, n["last_ts"], n["mm"])
+        cands.append((_src_band(buf), "gauge %.1f km" % n["dist_km"], buf[-1][1], round(n["dist_km"], 1)))
+    for k in [k for k in reads if k.startswith("gauge:") and k != gkey]:
+        reads.pop(k, None)
+    if not cands:
+        return {"band": 0, "name": "dry", "src": None, "mm": None, "dist_km": None}
+    b, src, mm, d = max(cands, key=lambda c: (c[0], c[2] or 0))
+    return {"band": b, "name": _SIT_BAND_NAMES[b], "src": src,
+            "mm": (round(mm, 2) if mm is not None else None), "dist_km": d}
+
+def far_heavier(points):
+    """Heaviest CURRENT reading between the at-home radius and SIT_MID_KM (measured: physical
+    gauges or radar net points), for an occasional "heavier rain N km to the X" note.
+    None below heavy."""
+    best = None
+    for p in points:
+        if p.get("dist_km") is None or not (SIT_HERE_KM <= p["dist_km"] <= SIT_MID_KM) \
+                or p.get("late") or p.get("stale"):
+            continue
+        if not (p.get("kind") == "phys" or (p.get("kind") == "net" and p.get("src") == "RV")):
+            continue
+        b = p["char"]["cur_band"]
+        if b >= 3 and (best is None or (b, -p["dist_km"]) > (best[0], -best[1])):
+            best = (b, p["dist_km"], p["bearing"], bool(p.get("snow")))
+    if not best:
+        return None
+    return {"band": best[0], "name": _SIT_BAND_NAMES[best[0]], "dist_km": round(best[1], 1),
+            "bearing": round(best[2]), "snow": best[3]}
 
 def _sit_group(sit):
     if sit["here"]:
@@ -2591,10 +2670,10 @@ def _sit_group(sit):
 
 def _cap(s): return s[0].upper() + s[1:] if s else s
 
-def _sit_here_phrase(sit):
+def _sit_here_phrase(sit, band):
     noun = "snow" if sit["snow"] else "rain"
     lead = {"very heavy": "Very heavy", "heavy": "Heavy", "moderate": "",
-            "light": "Light", "dry": ""}.get(sit["intensity"]["name"], "")
+            "light": "Light", "dry": ""}.get(_SIT_BAND_NAMES[band], "")
     body = (lead + " " + noun).strip()
     if sit["snow"]:
         return _cap(body) + " is falling at your location."
@@ -2665,6 +2744,7 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
         if pstate.sit_episode_spoke:
             noun = "snow" if pstate.sit_last_snow else "rain"
             out.append({"tier": "notice", "key": "sit_clear", "phrase": "The " + noun + " is clearing."})
+            pstate.sit_here_log = []          # a spoken all-clear: rain returning is news again
         pstate.sit_episode_spoke = False
         pstate.sit_announced = {}
         return out
@@ -2672,10 +2752,7 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
     key = tier = phrase = None
     hb = 3600.0
     if grp == "here":
-        b = sit["intensity"]["peak_band"]
-        key, tier = "here", ("warn" if b >= 3 else "notice")
-        phrase = _sit_here_phrase(sit)
-        hb = (CAD_HERE_HEAVY if b >= 3 else CAD_HERE_LIGHT) * mult
+        return out + _schedule_here(sit, pstate, now, mult)
     elif (grp == "showers" and stable >= SIT_DWELL_S
           and not (sit["base_state"] == "isolated_showers" and sit["intensity"]["peak_band"] <= 1
                    and (sit["intensity"]["dist_km"] or 0) > SIT_NEAR_KM)
@@ -2727,6 +2804,50 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
             pstate.sit_announced = {key: {"sig": prev.get("sig"), "pk": prev.get("pk", pk),
                                           "next": prev.get("next", now + hb)}}
     return out
+
+
+def _schedule_here(sit, pstate, now, mult=1.0):
+    """'At your location' voice. Wording and cadence follow the intensity MEASURED AT HOME
+    (sit['home_int']), not the area peak. Speaks on onset; then on the heartbeat
+    (CAD_HERE_*); and when the band rises above everything said at home in the last
+    HERE_UPGRADE_WIN_S (no sooner than HERE_UPGRADE_GAP_S after the last message). Rain at
+    home dropping out and returning within HERE_HOLD_S at the same or a lower band stays
+    quiet. Occasionally (FAR_MENTION_S) appends heavier rain further away."""
+    hi = sit.get("home_int") or {}
+    b = max(1, hi.get("band") or 0)          # 'here' means a gauge < 5 km is wet: at least light
+    hb = (CAD_HERE_HEAVY if b >= 3 else CAD_HERE_LIGHT) * mult
+    keep = max(HERE_HOLD_S, HERE_UPGRADE_WIN_S)
+    log = [e for e in (pstate.sit_here_log or []) if now - e[0] <= keep]
+    last = log[-1] if log else None
+    recent_max = max((e[1] for e in log if now - e[0] <= HERE_UPGRADE_WIN_S), default=-1)
+    prev = pstate.sit_announced.get("here")
+    pstate.sit_last_snow = bool(sit["snow"])
+    if prev is None and last and now - last[0] < HERE_HOLD_S and b <= last[1]:
+        # back after a brief drop-out (showers/continuous flicker): resume the old schedule quietly
+        pstate.sit_announced = {"here": {"b": last[1], "next": last[0] + hb}}
+        pstate.sit_here_log = log
+        return []
+    if prev is None:
+        due = True
+    else:
+        upgrade = (b > prev.get("b", 0) and b > recent_max
+                   and (not last or now - last[0] >= HERE_UPGRADE_GAP_S))
+        due = now >= prev.get("next", 0) or upgrade
+    if not due:
+        pstate.sit_here_log = log
+        return []
+    phrase = _sit_here_phrase(sit, b)
+    far = sit.get("far_heavier")
+    if far and far["band"] > b and now - (pstate.sit_far_ts or 0) >= FAR_MENTION_S:
+        noun = "snow" if far.get("snow") else "rain"
+        phrase += " " + _cap(far["name"]) + " " + noun + " about " + str(int(round(far["dist_km"]))) + \
+                  " km to the " + compass(far["bearing"], spoken=True) + "."
+        pstate.sit_far_ts = now
+    pstate.sit_episode_spoke = True
+    pstate.sit_announced = {"here": {"b": b, "next": now + hb}}
+    log.append([now, b])
+    pstate.sit_here_log = log
+    return [{"tier": ("warn" if b >= 3 else "notice"), "key": "sit_here", "phrase": phrase}]
 
 
 def build_situational(points, home, wind_from, land, sea, now):
@@ -3557,6 +3678,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
             situational["state"] = "isolated_showers" + ("_snow" if situational["snow"] else "")
         if situational["base_state"] != state.sit_state:
             state.sit_state = situational["base_state"]; state.sit_state_since = now
+    # At-home intensity for the "at your location" voice: MEASURED at home now (radar box
+    # at home / nearest gauge < 5 km), never the area peak. The radar view is read here
+    # (cached per frame) and reused by the approach episode below.
+    _rvv = None
+    if radar_fn and home:
+        try:
+            _rvv = radar_fn(home, _wf, now)
+        except Exception:
+            _rvv = None
+    situational["home_int"] = home_intensity(state, _sit_pts, _rvv, now)
+    situational["far_heavier"] = far_heavier(_sit_pts)
     situational_speak = schedule_situational(
         situational, state, now, mult=cadence_mult,
         # the approach engine owns anything upwind: while it is weighing a threat (even one it
@@ -3616,12 +3748,6 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # Arrival truth: a measured gauge at home (nearest wet gauge <= GAUGE_CONFIRM_KM, or
     # the situational 'here' < 5 km) is strong; the home weather model alone is weaker and
     # labelled as such in the shadow log so a learner can weight it.
-    _rvv = None
-    if radar_fn and home:
-        try:
-            _rvv = radar_fn(home, _wf, now)
-        except Exception:
-            _rvv = None
     _arrived_src = None
     if situational.get("here") or confirmed:
         _arrived_src = "gauge"

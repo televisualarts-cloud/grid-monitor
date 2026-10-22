@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 261018.4  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -1296,6 +1296,7 @@
   .wd-data .wd-dl{color:var(--ink)}
   .wd-data .wd-dv{color:var(--ink);font-weight:600;text-align:right}
   .wd-data .wd-dv .wd-du{font-size:10px;color:var(--ink-faint);font-weight:400;margin-left:2px}
+  .wd-data .wd-press{display:block;width:100%;height:54px;margin-top:5px;cursor:crosshair}
   .wd-svg{width:116px;height:116px}
   .wd-card{font-family:var(--mono);font-size:12px;fill:var(--ink-faint)}
   .wd-read{text-align:center;line-height:1.25}
@@ -1711,7 +1712,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 261018.4 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 261022.1 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -6846,7 +6847,15 @@ function eaRenderWindDials(){
     ? ' <span class="wd-du" style="font-size:9px;color:var(--ink-faint)" title="Today\'s forecast low/high for your location — '+
       rangeSrc.replace(/"/g,'&quot;')+' model, not a measurement">OM</span>'
     : '';
-  // block 3: temperature, humidity, THI & pressure. "Dew point" on one line, cyan.
+  // Render sun times in the SEARCHED LOCATION's local time using OpenWeather's
+  // tz_offset (seconds from UTC), so UK weather always shows UK times regardless
+  // of the viewer's timezone. Compute UTC parts then apply the offset manually
+  // (getUTCHours avoids the browser's own zone leaking in).
+  const tzOff = (c.tz_offset!=null) ? c.tz_offset : 0;   // seconds
+  const sunT = u => { if(u==null) return '—';
+    const d=new Date((u + tzOff)*1000);
+    return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0'); };
+  // block 3: temperature, humidity, THI, low/high & sun times. "Dew point" on one line, cyan.
   const dewVal = c.dew_point==null ? '—' : cVal(Math.round(c.dew_point)+'°', '#5bd6e0');
   const block3 =
     '<div class="wd-data">'+
@@ -6857,8 +6866,10 @@ function eaRenderWindDials(){
       row('Feels like', tVal(c.feels_like))+
       row('Low today'+rangeTag, tVal(c.day_min))+
       row('High today'+rangeTag, tVal(c.day_max))+
+      row('Sunrise', sunT(c.sunrise)+' <span class="wd-du">↑</span>')+
+      row('Sunset', sunT(c.sunset)+' <span class="wd-du">↓</span>')+
     '</div>';
-  // block 4: sky, precip & sun. Rainfall value coloured like the rain gauge
+  // block 4: sky, precip & pressure (with the logged-pressure plot). Rainfall value coloured like the rain gauge
   // bands (dry grey -> light blue -> mid blue -> heavy indigo/violet).
   const rainColour = mm => {
     if(mm==null || mm<=0) return 'var(--ink-faint)';
@@ -6878,14 +6889,6 @@ function eaRenderWindDials(){
   const visTxt = c.visibility_m==null ? '—'
     : (c.visibility_m>=10000 ? cVal('10+', 'var(--ink)', 'km')
        : cVal((c.visibility_m/1000).toFixed(1), 'var(--ink)', 'km'));
-  // Render sun times in the SEARCHED LOCATION's local time using OpenWeather's
-  // tz_offset (seconds from UTC), so UK weather always shows UK times regardless
-  // of the viewer's timezone. Compute UTC parts then apply the offset manually
-  // (getUTCHours avoids the browser's own zone leaking in).
-  const tzOff = (c.tz_offset!=null) ? c.tz_offset : 0;   // seconds
-  const sunT = u => { if(u==null) return '—';
-    const d=new Date((u + tzOff)*1000);
-    return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0'); };
   // description colour: yellow if sunny/clear, cyan if any rain/snow/drizzle,
   // white otherwise (cloud/mist/etc).
   const descColour = () => {
@@ -6921,10 +6924,11 @@ function eaRenderWindDials(){
       row('Visibility', visTxt)+
       row('Cloud %'+cloudSrcTag, (c.clouds_pct==null?'—':cVal(Math.round(c.clouds_pct), 'var(--ink)', '%')))+
       '<div class="wd-drow"><span class="wd-dl" style="white-space:nowrap;font-weight:600;color:'+descColour()+'">'+desc+'</span></div>'+
-      row('Sunrise', sunT(c.sunrise)+' <span class="wd-du">↑</span>')+
-      row('Sunset', sunT(c.sunset)+' <span class="wd-du">↓</span>')+
       row('Pressure', c.pressure==null?'—':cVal(c.pressure, 'var(--ink)', 'mB'))+
       trendRow+
+      ((c.pressure_series||[]).length
+        ? '<canvas id="eaPressPlot" class="wd-press" title="Home pressure as logged by this server (OpenWeather, whole-mB steps), one reading per fresh fetch. Shaded: the last 3 h used for the tendency. Breaks mark gaps over 75 min."></canvas>'
+        : '')+
     '</div>';
 
   // timezone label for the sun times — the SEARCHED LOCATION's UTC offset
@@ -6983,6 +6987,83 @@ function eaRenderWindDials(){
       block4+
     '</div></div>';
 }
+
+/* ---------- home pressure plot (weather block 4) ----------
+   Draws conditions.pressure_series ([[epoch_s, hPa], ...] logged by the server,
+   up to 72 h) into #eaPressPlot. The time axis spans whatever history exists
+   (min 1 h) up to now, so it widens by itself as the log fills. Whole-mB data:
+   the y range is at least 10 mB so a 1 mB step can't look like a cliff. Gaps
+   over 75 min break the line rather than drawing a straight run across them. */
+function eaPressDraw(hoverX){
+  const c=document.getElementById("eaPressPlot"); if(!c) return;
+  const cond=(eaData&&eaData.wind&&eaData.wind.conditions)||{};
+  const pts=(cond.pressure_series||[]).filter(p=>p&&p[1]!=null);
+  const tzOff=cond.tz_offset!=null?cond.tz_offset:0;
+  const dpr=devicePixelRatio||1, w=c.clientWidth, h=c.clientHeight;
+  if(!w||!h) return;
+  c.width=w*dpr; c.height=h*dpr; const g=c.getContext("2d"); g.scale(dpr,dpr);
+  g.clearRect(0,0,w,h);
+  if(!pts.length) return;
+  const capH=11, top=2, bot=h-capH-2, padL=24;     // plot rows / caption row / y-label gutter
+  const tNow=Math.max(Date.now()/1000, pts[pts.length-1][0]);
+  const t0=Math.min(pts[0][0], tNow-3600);
+  const X=t=>padL+(t-t0)/(tNow-t0)*(w-1-padL);
+  let lo=Infinity, hi=-Infinity; pts.forEach(p=>{lo=Math.min(lo,p[1]);hi=Math.max(hi,p[1]);});
+  const mid=(lo+hi)/2, span=Math.max(hi-lo+2, 10);
+  const yLo=mid-span/2, yHi=mid+span/2;
+  const Y=v=>bot-(v-yLo)/(yHi-yLo)*(bot-top);
+  // last 3 h = the tendency window
+  const x3=Math.max(padL,X(tNow-3*3600));
+  g.fillStyle="rgba(63,182,201,.08)"; g.fillRect(x3,top,w-x3,bot-top);
+  // frame lines + y extent labels
+  g.strokeStyle="rgba(90,110,140,.25)"; g.lineWidth=1;
+  g.beginPath(); g.moveTo(padL,bot+.5); g.lineTo(w,bot+.5); g.stroke();
+  g.font="9px ui-monospace,monospace"; g.fillStyle="#566277"; g.textAlign="right";
+  g.textBaseline="top"; g.fillText(String(Math.round(hi)), padL-3, top);
+  g.textBaseline="bottom"; g.fillText(String(Math.round(lo)), padL-3, bot);
+  // trace, broken at gaps > 75 min
+  const GAP=75*60;
+  g.strokeStyle="#3fb6c9"; g.lineWidth=1.6; g.lineJoin="round";
+  g.beginPath();
+  pts.forEach((p,i)=>{
+    const brk = i===0 || (p[0]-pts[i-1][0])>GAP;
+    if(brk) g.moveTo(X(p[0]),Y(p[1])); else g.lineTo(X(p[0]),Y(p[1]));
+  });
+  g.stroke();
+  // isolated samples (no neighbour within the gap) get a dot so they still show
+  g.fillStyle="#3fb6c9";
+  pts.forEach((p,i)=>{
+    const pv=i>0&&(p[0]-pts[i-1][0])<=GAP, nx=i<pts.length-1&&(pts[i+1][0]-p[0])<=GAP;
+    if(!pv&&!nx){ g.beginPath(); g.arc(X(p[0]),Y(p[1]),1.8,0,7); g.fill(); }
+  });
+  const last=pts[pts.length-1];
+  g.beginPath(); g.arc(X(last[0]),Y(last[1]),2.4,0,7); g.fill();
+  // caption: span on the left, "now" on the right, source or hover readout centred
+  const hm=t=>{const d=new Date((t+tzOff)*1000);
+    return String(d.getUTCHours()).padStart(2,"0")+":"+String(d.getUTCMinutes()).padStart(2,"0");};
+  const spanH=(tNow-t0)/3600;
+  g.textBaseline="bottom"; g.fillStyle="#566277";
+  g.textAlign="left";  g.fillText("−"+(spanH<10?spanH.toFixed(1):Math.round(spanH))+"h", 0, h);
+  g.textAlign="right"; g.fillText("now", w, h);
+  g.textAlign="center";
+  if(hoverX!=null){
+    const tx=t0+(hoverX-padL)/(w-1-padL)*(tNow-t0);
+    let best=pts[0]; pts.forEach(p=>{ if(Math.abs(p[0]-tx)<Math.abs(best[0]-tx)) best=p; });
+    const bx=X(best[0]);
+    g.strokeStyle="rgba(230,237,245,.35)"; g.lineWidth=1;
+    g.beginPath(); g.moveTo(bx+.5,top); g.lineTo(bx+.5,bot); g.stroke();
+    g.fillStyle="#e6edf5"; g.beginPath(); g.arc(bx,Y(best[1]),2.4,0,7); g.fill();
+    g.fillText(hm(best[0])+"  "+best[1]+" mB", w/2, h);
+  } else {
+    g.fillText("OWM · 1 mB steps", w/2, h);
+  }
+  if(!c._wired){
+    c._wired=true;
+    c.addEventListener("mousemove",e=>{ const r=c.getBoundingClientRect(); eaPressDraw(e.clientX-r.left); });
+    c.addEventListener("mouseleave",()=>eaPressDraw());
+  }
+}
+addEventListener("resize",()=>{ if(eaOpen) eaPressDraw(); });
 
 function eaRenderRainMap(rainfall){
   const oLat=eaLoc.lat, oLon=eaLoc.lon;
@@ -7715,6 +7796,7 @@ function eaRender(){
 
   b.innerHTML=html;
   rsvPaint();
+  eaPressDraw();
   $("#eaAttrib").textContent="Source: "+(eaData.attribution||"Environment Agency")+". Readings transfer at varying frequencies (often 1–2×/day when calm), so ages vary — each is stamped.";
 
   // wire station clicks
