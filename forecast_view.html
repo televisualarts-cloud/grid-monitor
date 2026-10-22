@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261022.2  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -278,7 +278,12 @@ function render(sit, spk, ws){
   const bcol=st.startsWith('approaching')?col.accent2||'#5b8def':(st.startsWith('continuous')?col.accent:(st.indexOf('shower')>=0?col.warn:(st==='here'?col.crit:col.faint)));
   const badge=$('stateBadge'); badge.textContent=st.replace('_',' ').toUpperCase(); badge.style.background=bcol;
   const loc=sit.locus||{}; const dir=loc.approach_dir||(sit.intensity&&sit.intensity.bearing!=null?bearingWord(sit.intensity.bearing):'');
-  $('stateSub').textContent=[sit.intensity&&sit.intensity.name!=='dry'?sit.intensity.name:'', dir?('· '+dir):''].filter(Boolean).join(' ');
+  // spoken area words use what is falling NOW (area_now, measured, two-reading); the 90-min
+  // peak is shown separately so it can't be read as current
+  const BN=['dry','light','moderate','heavy','very heavy'], an=sit.area_now||{};
+  const nowTxt=(an.max_band>0)?(BN[an.max_band]+' now'):'';
+  const pkTxt=(sit.intensity&&sit.intensity.peak_band>0&&sit.intensity.peak_band>(an.max_band||0))?('(90-min peak '+sit.intensity.name+')'):'';
+  $('stateSub').textContent=[nowTxt, dir?('· '+dir):'', pkTxt].filter(Boolean).join(' ');
   $('kv').innerHTML=[['coverage',fmt(sit.coverage)],['shower conf.',fmt(sit.shower_confidence)],
     ['nearest wet',sit.nearest_wet_km!=null?sit.nearest_wet_km+' km':'—'],['active gauges',sit.n_active],
     ['wet now',sit.n_wet],['stable',Math.round((sit.stable_s||0)/60)+' min'],

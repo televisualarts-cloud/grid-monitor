@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261022.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -1984,10 +1984,12 @@ def arc_update(state, home, now, net_sample_fn=fetch_om_precip, track_sample_fn=
 # id -> (tier, spoken text with {slots}). Spoken style: no brackets, no digits
 # read aloud beyond a plain time window. Precise figures live in screen text.
 TEMPLATES = {
-    "int_drizzle":   ("notice",  "Drizzle is starting at your location."),
-    "int_light":     ("notice",  "Light rain is starting at your location."),
-    "int_moderate":  ("notice",  "Rain is falling at your location."),
-    "int_heavy":     ("warning", "Heavy rain starting at your location, getting heavier soon."),
+    # At-home intensity lines state what is MEASURED at home now (radar at home / gauge
+    # < 5 km, see home_intensity) - no "starting" (they also fire when rain eases) and no
+    # forecast the engine doesn't make.
+    "int_light":     ("notice",  "Light rain at your location."),
+    "int_moderate":  ("notice",  "Rain at your location."),
+    "int_heavy":     ("warning", "Heavy rain at your location."),
     "int_violent":   ("warning", "Very heavy rain at your location. Localised flooding is possible."),
     "trend_heavier": ("notice",  "The rain at your location is picking up."),
     "trend_easing":  ("notice",  "The rain is easing, but hasn't cleared yet."),
@@ -1996,6 +1998,7 @@ TEMPLATES = {
     "press_falling": ("notice",  "Pressure is falling steadily. A change in the weather is likely over the next few hours."),
     "press_storm":   ("warning", "Pressure is falling very rapidly. Stormy weather is possible. Secure anything loose outdoors."),
     "press_rising":  ("notice",  "Pressure is rising and the rain is easing. Better weather should be approaching soon."),
+    "press_rising_dry": ("notice", "Pressure is rising. Drier, more settled weather is more likely."),
     "vis_fog":       ("notice",  "Visibility is dropping quickly. Mist or fog may be forming."),
     "vis_clear":     ("notice",  "Visibility is improving."),
     "approach_win":  ("notice",  "Rain is approaching from the {dir} and may arrive {eta}."),
@@ -2014,13 +2017,12 @@ TEMPLATES = {
     "sea_snow_weaken":   ("notice", "Snow out to the {dir} over the sea is weakening and may not reach the coast."),
     "model_unconf":  ("notice",  "The model suggests rain at your location. This is not yet confirmed by rain gauges in the area."),
     "gauge_confirm": ("notice",  "Rain at your location is now confirmed by nearby gauges."),
-    "compound_wet":  ("warning", "Pressure is falling quickly and the wind is increasing. Heavy rain has started and is likely to persist."),
+    "compound_wet":  ("warning", "Heavy rain at your location, with pressure falling quickly."),
     "flood_corrob":  ("warning", "Heavy rain here, and a flood alert is in force for the area. Keep an eye on local water levels."),
-    "nowcast_soon":  ("notice",  "Visibility is dropping and conditions are deteriorating. Rain expected soon."),
     "nowcast_heavier": ("notice", "The rain is expected to become heavier shortly."),
     "fwd_onset":      ("notice", "Rain is expected within about {eta} minutes."),
     "fwd_onset_soon": ("notice", "Rain is expected within the next few minutes."),
-    "settled":       ("notice",  "Conditions have settled. No rain is expected in the near term."),
+    "settled":       ("notice",  "The rain has cleared from the area."),
     "feed_stale":    ("notice",  "Weather data is out of date. Rainfall monitoring is paused for now."),
 }
 
@@ -2043,6 +2045,8 @@ def select(situation):
     """Turn the computed situation dict into an ordered list of candidate
     announcements (highest priority first): [(key, tier, phrase), ...].
     'key' is the throttle identity (transition-only announcing keys on it)."""
+    # band = intensity MEASURED at home (None when no radar/gauge covers home); the
+    # model's own at-home rate only ever speaks as the labelled "model suggests" line.
     band   = situation["band"]
     trend  = situation["trend"]
     pcls   = situation["press_cls"]
@@ -2065,10 +2069,9 @@ def select(situation):
     elif band == "heavy":  cands.append(("band", *TEMPLATES["int_heavy"]))
     elif band == "moderate": cands.append(("band", *TEMPLATES["int_moderate"]))
     elif band == "light": cands.append(("band", *TEMPLATES["int_light"]))
-    elif band == "drizzle": cands.append(("band", *TEMPLATES["int_drizzle"]))
 
     if raining and conf: cands.append(("confirm", *TEMPLATES["gauge_confirm"]))
-    if raining and situation["model_only"]:
+    if situation["model_only"]:            # model wet, nothing measured wet at home
         cands.append(("modelonly", *TEMPLATES["model_unconf"]))
 
     # trend
@@ -2080,15 +2083,16 @@ def select(situation):
     # pressure / clearing
     if pcls == "falling_storm": cands.append(("press", *TEMPLATES["press_storm"]))
     elif pcls == "falling" and not raining: cands.append(("press", *TEMPLATES["press_falling"]))
-    if pcls == "rising" and (trend in ("easing", "easing_fast") or not raining):
+    if pcls == "rising" and raining and trend in ("easing", "easing_fast"):
         cands.append(("clearing", *TEMPLATES["press_rising"]))
+    elif pcls == "rising" and not raining:
+        cands.append(("clearing", *TEMPLATES["press_rising_dry"]))
 
     # visibility
+    # visibility: a fact about visibility only. It was also spoken as "Rain expected
+    # soon" when dry, which proved wrong 7 times in 8 (rain_rec replay, 30 Sep-22 Oct).
     if vis["dropping"] and vis["low"]:
-        if not raining:
-            cands.append(("nowcast", *TEMPLATES["nowcast_soon"]))
-        else:
-            cands.append(("vis", *TEMPLATES["vis_fog"]))
+        cands.append(("vis", *TEMPLATES["vis_fog"]))
 
     # directional approach (physical land gauges) — ring-tracked, with a strength
     # trend so a building front, an easing one, and a fizzling shower differ.
@@ -2213,7 +2217,7 @@ def gauge_character(series, now):
     and a dry/steady/showery/wet label."""
     h = [e for e in (series or []) if now - e[0] <= SIT_HIST_WINDOW_S]
     out = {"n": len(h), "wet_fraction": 0.0, "n_transitions": 0, "spikiness": 0.0,
-           "cur_band": 0, "peak_band": 0, "wet": False, "recent_wet": False, "label": "dry"}
+           "cur_band": 0, "cur2_band": 0, "peak_band": 0, "wet": False, "recent_wet": False, "label": "dry"}
     if not h:
         return out
     rates = [max(0.0, e[1] or 0.0) for e in h]
@@ -2224,6 +2228,8 @@ def gauge_character(series, now):
     peak = max(rates)
     out["spikiness"] = round(peak / mean, 2) if mean > 0 else 0.0
     out["cur_band"] = _sit_band(rates[-1])
+    # lower of the last two readings: a single spiky bucket/frame can't name the band
+    out["cur2_band"] = _sit_band(min(rates[-2:])) if len(rates) >= 2 else min(out["cur_band"], 1)
     out["peak_band"] = _sit_band(peak)
     out["wet"] = rates[-1] >= SIT_WET_MMH
     out["recent_wet"] = any((e[1] or 0) >= SIT_WET_MMH for e in h if now - e[0] <= SIT_RECENCY_S)
@@ -2588,6 +2594,7 @@ HERE_UPGRADE_GAP_S   = 5 * 60       # ...and no sooner than this after the last 
 HERE_RADAR_MAX_AGE_S = 15 * 60      # radar frame must be this fresh to describe rain at home now
 HERE_PAIR_GAP_S      = 40 * 60      # two readings of one source this close: their LOWER band counts
 FAR_MENTION_S        = 60 * 60      # "heavier rain N km to the X" appended at most this often
+SIT_REANNOUNCE_MIN_S = 20 * 60      # an area message re-announced on a change no sooner than this
 CAD_SHOWERS      = 40 * 60          # heartbeat while showers persist in the area
 CAD_CONTINUOUS   = 60 * 60          # heartbeat while continuous rain persists
 SIT_DWELL_S      = 9 * 60           # a state must persist this long before an AREA announcement
@@ -2679,10 +2686,14 @@ def _sit_here_phrase(sit, band):
         return _cap(body) + " is falling at your location."
     return _cap(body) + " at your location."
 
+def _area_band(sit, which="max_band"):
+    """Current measured area band for spoken words (never the 90-min peak)."""
+    return (sit.get("area_now") or {}).get(which, 0)
+
 def _sit_showers_phrase(sit):
     noun = "wintry showers" if sit["snow"] else "showers"
     kind = "widespread " if sit["base_state"] == "widespread_showers" else "isolated "
-    inten = sit["intensity"]["name"]
+    inten = _SIT_BAND_NAMES[_area_band(sit, "max_band")]
     heavy = inten in ("heavy", "very heavy")
     dist = sit["intensity"]["dist_km"]
     d = sit.get("_dir_word")
@@ -2703,10 +2714,12 @@ def _sit_approach_phrase(sit, tr):
     return _cap(lead) + " is approaching from the " + d + ", " + eta + "."
 
 def _sit_continuous_phrase(sit):
+    # Describes the area, not an onset at home ("has set in" was mostly spoken 15-20 min
+    # after rain ENDED at home). Intensity = the TYPICAL current measured reading.
     noun = "snow" if sit["snow"] else "rain"
-    inten = sit["intensity"]["name"]
+    inten = _SIT_BAND_NAMES[_area_band(sit, "typ_band")]
     lead = "continuous " + ((inten + " ") if inten in ("heavy", "very heavy") else "") + noun
-    return _cap(lead) + " has set in."
+    return _cap(lead) + " across the area."
 
 def _sector_hyst(prev_sect, brg, margin=12.0):
     """Bin a bearing to an 8th, but keep the previous sector until the bearing is
@@ -2756,7 +2769,7 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
     elif (grp == "showers" and stable >= SIT_DWELL_S
           and not (sit["base_state"] == "isolated_showers" and sit["intensity"]["peak_band"] <= 1
                    and (sit["intensity"]["dist_km"] or 0) > SIT_NEAR_KM)
-          and not (appr_quiet and sit["intensity"]["peak_band"] < 3)):
+          and not (appr_quiet and _area_band(sit) < 3)):
         # Isolated LIGHT showers beyond SIT_NEAR_KM are detection, not announcement: they
         # rarely survive the trip. And while an approach episode is live (or in its post-
         # fizzle cooldown) the episode IS the narrative, so non-heavy area shower notes stay
@@ -2774,6 +2787,13 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
         key, tier = "continuous", "notice"
         phrase = _sit_continuous_phrase(sit)
         hb = CAD_CONTINUOUS * mult
+        _hl = [e for e in (pstate.sit_here_log or []) if now - e[0] <= HERE_HOLD_S]
+        if _hl and "continuous" not in pstate.sit_announced:
+            # rain just ended (or flickered off) at home within a continuing wet spell: the
+            # same rain, not news - start the area heartbeat quietly.
+            pstate.sit_announced = {"continuous": {"sig": ["continuous", _area_band(sit, "typ_band"), bool(sit["snow"])],
+                                                   "pk": _area_band(sit, "typ_band"), "next": now + hb}}
+            return out
     # grp == "approaching" is deliberately SILENT here: approach speech is owned by
     # run_approach_episode (one alert, optional confirm, one fizzle). The state is still
     # computed and shown on the engine view.
@@ -2783,7 +2803,7 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
         # signature: re-announce on a MATERIAL change (state, intensity band, snow,
         # and — for showers — the heaviest cell's sector), or when the heartbeat is
         # due. Direction jitter and wording tweaks never re-trigger.
-        pk = sit["intensity"]["peak_band"]
+        pk = _area_band(sit, "typ_band" if key == "continuous" else "max_band")
         if key in ("showers", "approach"):
             _sect = sit.get("_dir_sect")
             sig = [key, sit["base_state"], pk, bool(sit["snow"]), (_sect if _sect is not None else -1)]
@@ -2795,14 +2815,17 @@ def schedule_situational(sit, pstate, now, mult=1.0, appr_quiet=False):
         # heartbeat and first-appearance always fire.
         sig_changed = (prev is None) or (prev.get("sig") != sig)
         not_downgrade = (prev is None) or (pk >= prev.get("pk", 0))
-        due = (prev is None) or (now >= prev.get("next", 0)) or (sig_changed and not_downgrade)
+        # a change re-announces no sooner than SIT_REANNOUNCE_MIN_S after the last message
+        # (current-reading words and direction can flicker between 5-min cycles)
+        _recent = prev is not None and now - prev.get("ts", 0) < SIT_REANNOUNCE_MIN_S
+        due = (prev is None) or (now >= prev.get("next", 0)) or (sig_changed and not_downgrade and not _recent)
         if due:
             out.append({"tier": tier, "key": "sit_" + key, "phrase": phrase})
             pstate.sit_episode_spoke = True
-            pstate.sit_announced = {key: {"sig": sig, "pk": pk, "next": now + hb}}
+            pstate.sit_announced = {key: {"sig": sig, "pk": pk, "next": now + hb, "ts": now}}
         else:
             pstate.sit_announced = {key: {"sig": prev.get("sig"), "pk": prev.get("pk", pk),
-                                          "next": prev.get("next", now + hb)}}
+                                          "next": prev.get("next", now + hb), "ts": prev.get("ts", 0)}}
     return out
 
 
@@ -2880,6 +2903,14 @@ def build_situational(points, home, wind_from, land, sea, now):
     steady = [p for p in active if p.get("kind") == "phys" and p["char"]["label"] == "steady"]
     shower_conf = round(sum(max(0.0, 1.0 - p["dist_km"] / SIT_MID_KM) for p in showery), 2)
     peak_band = max((p["char"]["peak_band"] for p in active), default=0)
+    # What is falling NOW across the area, from MEASURED points only (EA gauges, radar net
+    # points), each the lower of its last two readings. Spoken area words use this; the
+    # 90-min peak above stays for the engine view / tracking only.
+    _meas = [p["char"].get("cur2_band", 0) for p in active
+             if p.get("kind") == "phys" or (p.get("kind") == "net" and p.get("src") == "RV")]
+    _meas = sorted(b for b in _meas if b > 0)
+    area_now = {"max_band": (_meas[-1] if _meas else 0),
+                "typ_band": (_meas[(len(_meas) - 1) // 2] if _meas else 0), "n": len(_meas)}
     heavy = max(active, key=lambda p: (p["char"]["peak_band"], -p["dist_km"])) if active else None
     # intensity-weighted CENTROID bearing/distance of the active cluster: a stable
     # direction that doesn't flip when the single heaviest gauge jumps across a
@@ -2934,7 +2965,7 @@ def build_situational(points, home, wind_from, land, sea, now):
         "intensity": {"peak_band": peak_band, "name": _SIT_BAND_NAMES[peak_band],
                       "bearing": (round(cbrg) if cbrg is not None else None),
                       "dist_km": (round(cdist, 1) if cdist is not None else None)},
-        "locus": loc, "here": here, "approaching": approach,
+        "locus": loc, "here": here, "approaching": approach, "area_now": area_now,
     }
 
 
@@ -3689,6 +3720,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
             _rvv = None
     situational["home_int"] = home_intensity(state, _sit_pts, _rvv, now)
     situational["far_heavier"] = far_heavier(_sit_pts)
+    # Rain AT home = the nearest gauge < 5 km is wet OR the radar box at home is wet on a
+    # fresh frame. The gauge alone missed heavy rain at home (22 Oct 18:05: radar 10.5 mm/h,
+    # gauge 2.9 km dry -> "Continuous heavy rain has set in" instead of the at-home voice).
+    situational["here_gauge"] = bool(situational.get("here"))
+    # radar counts only when wet on its last TWO distinct frames (one marginal frame at
+    # 0.3 mm/h produced most of the extra at-home messages in the replay)
+    _rb = state.sit_home_reads.get("radar") or []
+    _radar_wet = bool(len(_rb) >= 2 and now - _rb[-1][0] <= HERE_RADAR_MAX_AGE_S
+                      and _rb[-1][0] - _rb[-2][0] <= HERE_PAIR_GAP_S
+                      and min(_rb[-1][1] or 0, _rb[-2][1] or 0) >= SIT_WET_MMH)
+    situational["here"] = situational["here_gauge"] or _radar_wet
     situational_speak = schedule_situational(
         situational, state, now, mult=cadence_mult,
         # the approach engine owns anything upwind: while it is weighing a threat (even one it
@@ -3697,11 +3739,20 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         appr_quiet=(bool(state.appr_ep) or bool(state.appr_supp) or state.appr_present_reads > 0
                     or now < (state.appr_quiet_until or 0)))
 
-    confirmed = bool(appr and appr.get("confirmed_at_home"))
-    raining = band not in (None, "dry")
-    model_only = raining and not confirmed and not (appr and appr.get("n_wet"))
-
-    situation = {"band": band, "trend": trend, "press_cls": pcls, "vis": vis,
+    # Nowcast-channel at-home claims follow what is MEASURED at home (same reading as the
+    # rain voice). The model's rate alone speaks only as the labelled "model suggests" line.
+    _hi = situational["home_int"]
+    _measured = _hi.get("src") is not None
+    home_band = ({0: "dry", 1: "light", 2: "moderate", 3: "heavy", 4: "violent"}[_hi["band"]]
+                 if _measured else None)
+    if _measured and situational["here"] and home_band == "dry":
+        home_band = "light"                      # wet gauge/radar at home: at least light
+    model_raining = band not in (None, "dry")
+    # "confirmed by nearby gauges" = a gauge within SIT_HERE_KM wet now (was 8 km, which
+    # confirmed rain at home from Torpoint while home was dry)
+    confirmed = bool(situational.get("here_gauge"))
+    model_only = model_raining and not (home_band not in (None, "dry"))
+    situation = {"band": home_band, "trend": (trend if home_band not in (None, "dry") else "steady"), "press_cls": pcls, "vis": vis,
                  "approach": appr, "land": land, "sea": sea, "confirmed": confirmed,
                  "model_only": model_only, "flood_active": flood_active,
                  "wind_from": wind_from, "forward": forward}
@@ -3749,7 +3800,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # the situational 'here' < 5 km) is strong; the home weather model alone is weaker and
     # labelled as such in the shadow log so a learner can weight it.
     _arrived_src = None
-    if situational.get("here") or confirmed:
+    if situational.get("here_gauge") or bool(appr and appr.get("confirmed_at_home")):
         _arrived_src = "gauge"
     elif _rvv and (_rvv.get("home_mm") or 0) >= APPR_WET_MMH:
         _arrived_src = "radar"                 # measured rain at home on a fresh radar frame
@@ -3793,10 +3844,18 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     if rain_active:
         state.was_active = True
     elif state.was_active:
-        if not would:
+        # all-clear only when the AREA is clear (situational), nothing approaching, no
+        # minute-ahead onset, and the rain voice isn't saying its own "clearing" now. The
+        # old "No rain is expected in the near term" fired when the model at home went dry
+        # and was followed by rain at home within an hour 18 times in 32.
+        _area_clear = situational.get("base_state") == "clear" and not situational.get("here")
+        _onset = bool(forward and forward.get("onset_eta_min") is not None)
+        _sit_clear = any(w.get("key") == "sit_clear" for w in situational_speak)
+        if _area_clear and not _onset and not state.appr_ep and not _sit_clear and not would:
             would.append({"tier": "notice", "key": "settled",
                           "phrase": TEMPLATES["settled"][1]})
-        state.was_active = False
+        if _area_clear or _sit_clear:
+            state.was_active = False
 
     # ---- approach -> the single RAIN voice ---------------------------------------
     # The approach episode is the only source of approach speech; it goes out on the
