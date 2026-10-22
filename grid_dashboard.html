@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 261017.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261018.4  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -382,6 +382,32 @@
   .freq-dial-read .fdr-rocof{font-family:var(--mono);font-size:10px;color:var(--ink-faint);
     margin-top:3px;letter-spacing:.03em}
   #freqTrace{width:100%;height:120px;display:block;margin-top:6px}
+  /* periodicity spectrum / 1-minute cycle: mini plot under the reading + in-panel expanded view */
+  .mc-mini{margin-top:8px;width:168px;cursor:pointer}
+  .mc-mini-head{display:flex;align-items:baseline;gap:6px;font-family:var(--mono);font-size:10px;
+    color:var(--ink-faint);letter-spacing:.05em}
+  .mc-mini-head b{color:var(--ink-dim);font-weight:600;font-variant-numeric:tabular-nums}
+  .mc-mini-head .mc-exp{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink-dim);
+    background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:0 6px;cursor:pointer}
+  .mc-mini-head .mc-exp:hover{border-color:var(--accent);color:var(--ink)}
+  #mcSpark{display:block;width:168px;height:44px;margin-top:3px}
+  .mc-big{display:none;margin-top:6px}
+  #freqCard.mc-open .mc-big{display:block}
+  #freqCard.mc-open #freqTrace,#freqCard.mc-open #freqTimeAxis{display:none}
+  .mc-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+  .mc-title{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)}
+  .mc-bar #mcWin{margin-left:auto}
+  .mc-title .mc-note{text-transform:none;letter-spacing:0}
+  .mc-plotwrap{position:relative}
+  #mcBigCanvas{display:block;width:100%;height:220px}
+  .mc-tip{position:absolute;pointer-events:none;display:none;font-family:var(--mono);font-size:11px;
+    color:var(--ink);background:var(--panel2);border:1px solid var(--line2);border-radius:6px;
+    padding:4px 7px;white-space:nowrap;z-index:3}
+  .mc-low{display:flex;gap:14px;align-items:flex-start;margin-top:8px;flex-wrap:wrap}
+  #mcProfile{display:block;width:200px;height:96px;flex:none}
+  .mc-stats{font-family:var(--mono);font-size:11px;color:var(--ink-dim);line-height:1.55;flex:1;min-width:200px}
+  .mc-stats b{color:var(--ink);font-weight:600}
+  .mc-note{color:var(--ink-faint)}
   .freq-yaxis{display:none}
   #freqTimeAxis{padding-left:30px}  /* align with canvas plot area (past y-gutter) */
 
@@ -1454,6 +1480,11 @@
           <div class="freq-metric">
             <div class="metric"><span class="val" id="freqVal">—</span><span class="unit">Hz</span>
               <span class="delta" id="freqDelta"></span></div>
+            <div class="mc-mini" id="mcMini" title="Periodicity spectrum of grid frequency (periods 30 s – 30 min, amplitude 0–15 mHz). The marked spike at 1 minute is the once-a-minute cycle attributed to synchronised UPS battery self-tests (Hartmann et al. 2025). Click to expand.">
+              <div class="mc-mini-head"><span>1-min cycle</span><b id="mcNow">—</b>
+                <button class="mc-exp" id="mcExpand" title="Expand the periodicity spectrum">⤢</button></div>
+              <canvas id="mcSpark"></canvas>
+            </div>
           </div>
           <div class="freq-dial-wrap">
             <div class="freq-dial-box">
@@ -1491,6 +1522,21 @@
             </div>
             <div class="fr-genloss" id="riskGenLoss" style="display:none"></div>
           </div>
+        </div>
+        <div class="mc-big" id="mcBig">
+          <div class="mc-bar"><span class="mc-title">Periodicity spectrum <span class="mc-note">— which cycles are in the frequency</span></span>
+            <span class="gh-tgset" id="mcWin" title="How much recent data is averaged">
+              <button class="gh-tg" data-w="1h">1h</button><button class="gh-tg" data-w="12h">12h</button><button class="gh-tg" data-w="24h">24h</button><button class="gh-tg" data-w="7d">7d</button><button class="gh-tg" data-w="30d">30d</button>
+            </span>
+            <span class="gh-tgset" id="mcY" title="Vertical scale">
+              <button class="gh-tg" data-y="15">15</button><button class="gh-tg" data-y="5">5</button><button class="gh-tg" data-y="2.5">2.5 mHz</button>
+            </span>
+            <span class="gh-tgset" id="mcP" title="Longest period shown">
+              <button class="gh-tg" data-p="300">5m</button><button class="gh-tg" data-p="900">15m</button><button class="gh-tg" data-p="1800">30m</button>
+            </span>
+            <button class="gh-nav" id="mcClose" title="Back to the frequency trace">✕</button></div>
+          <div class="mc-plotwrap"><canvas id="mcBigCanvas"></canvas><div class="mc-tip" id="mcTip"></div></div>
+          <div class="mc-low"><canvas id="mcProfile"></canvas><div class="mc-stats" id="mcStats">—</div></div>
         </div>
         <canvas id="freqTrace"></canvas>
         <div class="freq-yaxis" id="freqYaxis"></div>
@@ -1665,7 +1711,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 261017.1 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 261018.4 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -7999,7 +8045,7 @@ const Alarm = (function(){
   // Categories. `on` is the enabled state (persisted). Defaults: frequency only.
   const CATS={
     freq:  {name:"Frequency limits", tier:"crit", on:true,
-            desc:"Escalating tones when frequency ITSELF leaves the band — below 49.8 / 49.7 / 49.5 Hz or above 50.2 / 50.3 / 50.5 Hz; statutory limits always fire; warns of possible power cuts (or generation tripping) if it stays out. Fresh data only."},
+            desc:"Escalating tones when frequency ITSELF leaves the band — below 49.8 / 49.7 / 49.5 / 49.1 / 48.8 Hz (the lowest takes priority) or above 50.2 / 50.3 / 50.5 Hz; the spoken value is the excursion's worst point; statutory limits always fire; warns of possible power cuts (or generation tripping) if it stays out. Fresh data only."},
     risk:  {name:"System risk index", tier:"warn", on:true,
             desc:"A short pip plus the on-screen banner when the composite grid-risk level rises (low inertia / high CGRI) or a sudden infeed loss is detected. Pips and banner only — no escalating tones."},
     powercuts:{name:"Storm & power cuts", tier:"crit", on:false,
@@ -8205,25 +8251,31 @@ const Alarm = (function(){
   // peakHz = the burst's worst point on the alarmed side (what is judged + spoken);
   // nowHz = its newest point; lastPeak = the previous evaluation's peak (worsening fallback).
   const SR={tier:0, level:"green", inertiaBand:"unknown", since:0, lastVoice:0, powerCutSaid:false,
-            running:false, lastHz:null, peakHz:null, nowHz:null, lastPeak:null, burstKey:null, peakSide:null,
+            running:false, lastHz:null, peakHz:null, nowHz:null, excPeak:null, excSide:null, lastPeak:null, burstKey:null, peakSide:null,
             worsening:false, high:false, freqTier:0, lastRiskSev:0};
-  const SR_TIER_HZ=[49.8,49.7,49.5];        // under-frequency tier floors
+  // Under-frequency tier floors. Tiers 4 and 5 (49.1 / 48.8 Hz) are low-side only;
+  // 48.8 Hz is where GB automatic low-frequency demand disconnection begins.
+  const SR_TIER_HZ=[49.8,49.7,49.5,49.1,48.8];
   const SR_HI_TIER_HZ=[50.2,50.3,50.5];     // over-frequency tier ceilings (mirror)
   const SR_DEADBAND=0.03;
   // Burst-based cadence (curbs alarm fatigue): each burst is a capped run of SOUND,
   // followed by a long silent gap until the next. Index = tier.
-  const SR_BURST_S =[0, 10, 15, 15];     // max seconds of sound per burst
-  const SR_PERIOD_S=[0,120,120, 60];     // seconds between burst starts
+  const SR_BURST_S =[0, 10, 15, 15, 15, 20];   // max seconds of sound per burst
+  const SR_PERIOD_S=[0,120,120, 60, 45, 30];   // seconds between burst starts
   // After a persisting alarm has run this long, wind right down to a quiet reminder
   // (any tier): a short ping every 15 min, so a stuck-low grid never blares on.
   const SR_FATIGUE_MS=240000;            // 4 minutes
   const SR_FATIGUE_BURST_S=5, SR_FATIGUE_PERIOD_S=900;   // <=5 s every 15 min
+  const SR_FATIGUE_PERIOD_SEVERE_S=120;                  // tiers 4-5: <=5 s every 2 min (never goes quiet)
   const SR_POWERCUT_S=150;
   // Symmetric tiering: under-frequency (generation loss) AND over-frequency (low
   // demand / sudden loss of load or export) escalate through the same tiers.
   // Returns {tier, high} — `high` says which side of nominal triggered it.
   function srTierOf(hz){
     if(hz==null) return {tier:0, high:false};
+    // Lowest first: the deepest under-frequency tier always takes priority.
+    if(hz<=SR_TIER_HZ[4])    return {tier:5, high:false};
+    if(hz<=SR_TIER_HZ[3])    return {tier:4, high:false};
     if(hz<=SR_TIER_HZ[2])    return {tier:3, high:false};
     if(hz>=SR_HI_TIER_HZ[2]) return {tier:3, high:true};
     if(hz<=SR_TIER_HZ[1])    return {tier:2, high:false};
@@ -8274,8 +8326,9 @@ const Alarm = (function(){
     o.start(t); o.stop(t+dur+0.02);
     srOsc.push(o); o.onended=()=>{ const i=srOsc.indexOf(o); if(i>=0) srOsc.splice(i,1); };
   }
-  function srSiren(secs){ const n=Math.round((secs||10)/0.5);
-    for(let i=0;i<n;i++) srBeepTone(i%2?SR_HI:SR_LO, 0.5, 0.32, i*0.5); return n*0.5; }
+  // step = seconds per note: 0.5 (tier 3), 0.3 (tier 4), 0.18 (tier 5 -- rapid warble).
+  function srSiren(secs, step){ step=step||0.5; const n=Math.round((secs||10)/step);
+    for(let i=0;i<n;i++) srBeepTone(i%2?SR_HI:SR_LO, step, 0.32, i*step); return n*step; }
   function srClear(){ srTimers.forEach(clearTimeout); srTimers=[];
     srOsc.forEach(o=>{ try{ o.stop(); }catch(e){} }); srOsc=[]; }
   function srAt(ms,fn){ const id=setTimeout(fn,ms); srTimers.push(id); return id; }
@@ -8284,14 +8337,14 @@ const Alarm = (function(){
   //  Once the alarm has been running >4 min (any tier): <=5s every 15 min.
   function srBurstPlan(){
     if((Date.now()-SR.since) >= SR_FATIGUE_MS)
-      return {burst:SR_FATIGUE_BURST_S, period:SR_FATIGUE_PERIOD_S};
-    const t=Math.min(3, SR.tier);
+      return {burst:SR_FATIGUE_BURST_S, period:(SR.tier>=4?SR_FATIGUE_PERIOD_SEVERE_S:SR_FATIGUE_PERIOD_S)};
+    const t=Math.min(SR_BURST_S.length-1, SR.tier);
     return {burst:SR_BURST_S[t], period:SR_PERIOD_S[t]};
   }
   // One burst of the tier's pattern, its SOUND capped at maxS seconds, then it speaks once.
   //  T1: 1s 600Hz tone every 3s.  T2: 0.5s 720Hz tone every 1.5s.  T3: low-high siren.
   function srBurst(maxS){
-    if(SR.tier>=3){ const d=srSiren(maxS); srAt(Math.min(d,maxS)*1000, ()=>srVoice()); }
+    if(SR.tier>=3){ const d=srSiren(maxS, SR.tier>=5?0.18:SR.tier===4?0.3:0.5); srAt(Math.min(d,maxS)*1000, ()=>srVoice()); }
     else if(SR.tier===2){ for(let t=0; t+0.5<=maxS; t+=1.5) srBeepTone(SR_F2,0.5,0.30,t); srVoice(); }
     else { for(let t=0; t+1<=maxS; t+=3) srBeepTone(SR_F1,1.0,0.28,t); srVoice(); }
   }
@@ -8309,9 +8362,11 @@ const Alarm = (function(){
   // plus "now" when the newest point has moved noticeably back from it.
   function srVoice(){
     SR.lastVoice=Date.now();
-    const pk=SR.peakHz, nw=SR.nowHz;
+    // The EXCURSION's extreme (held since it began), not just the latest burst's.
+    const pk=(SR.excPeak!=null)?SR.excPeak:SR.peakHz, nw=SR.nowHz;
     if(pk==null) return;
-    let msg=(SR.tier>=3?"Critical":"Warning")+". Grid frequency "+(SR.high?"high":"low");
+    const lead=SR.tier>=5?"Emergency":SR.tier===4?"Severe":SR.tier>=3?"Critical":"Warning";
+    let msg=lead+". Grid frequency "+(SR.high?"high":(SR.tier>=4?"very low":"low"));
     if(nw!=null && Math.abs(pk-nw)>=0.005)
       msg+=", "+(SR.high?"peaked at ":"dipped to ")+pk.toFixed(2)+" hertz, now "+nw.toFixed(2)+".";
     else msg+=", "+pk.toFixed(2)+" hertz.";
@@ -8321,6 +8376,7 @@ const Alarm = (function(){
     if(SR.inertiaBand==="red") msg+=" System inertia is low.";
     else if(SR.inertiaBand==="amber") msg+=" System inertia reduced.";
     if(SR.worsening && SR.tier>=2) msg+=(SR.high?" Still rising.":" Still falling.");
+    if(SR.tier>=5) msg+=" Automatic demand disconnection may begin soon.";
     say(msg);
   }
   // ---- dial excursion arrow ------------------------------------------------------
@@ -8379,7 +8435,8 @@ const Alarm = (function(){
       // ON THAT SIDE has recovered inside the boundary + deadband, so one good point at
       // the end of a bad burst can't clear it, and a band excursion doesn't chatter.
       if(freqTier < SR.freqTier && SR.freqTier>=1){
-        const bnd=(SR.high?SR_HI_TIER_HZ:SR_TIER_HZ)[Math.min(2,SR.freqTier-1)];
+        const arr=SR.high?SR_HI_TIER_HZ:SR_TIER_HZ;
+        const bnd=arr[Math.min(arr.length-1,SR.freqTier-1)];
         const recovered = SR.high ? (hi < bnd-SR_DEADBAND) : (lo > bnd+SR_DEADBAND);
         if(!recovered){ freqTier=SR.freqTier; high=SR.high; }
       }
@@ -8390,7 +8447,8 @@ const Alarm = (function(){
     riskPip(risk, freqTier>=1);
     if(stale){
       SR.tier=0; SR.freqTier=0; srStopCycle(); SR.since=0; SR.powerCutSaid=false;
-      SR.lastHz=null; SR.peakHz=null; SR.nowHz=null; SR.lastPeak=null; SR.burstKey=null; SR.peakSide=null; return;
+      SR.lastHz=null; SR.peakHz=null; SR.nowHz=null; SR.lastPeak=null; SR.burstKey=null; SR.peakSide=null;
+      SR.excPeak=null; SR.excSide=null; return;
     }
     let eff=freqTier;
     const peak = high ? hi : lo;                // the burst's worst point on the alarmed side
@@ -8409,6 +8467,12 @@ const Alarm = (function(){
       SR.lastPeak=peak; SR.burstKey=bkey;
     }
     SR.lastHz=hz; SR.nowHz=hz; SR.peakHz=peak;
+    // Hold the excursion's worst point for the voice: start it on entry (or a side flip),
+    // extend it only outward, clear it once the excursion has ended (after hysteresis).
+    if(eff>=1){
+      if(SR.excPeak==null || SR.excSide!==high){ SR.excPeak=peak; SR.excSide=high; }
+      else SR.excPeak = high ? Math.max(SR.excPeak, peak) : Math.min(SR.excPeak, peak);
+    } else { SR.excPeak=null; SR.excSide=null; }
     const now=Date.now();
     if(!armed || !(CATS.freq&&CATS.freq.on)){ SR.tier=eff; SR.high=high; SR.freqTier=freqTier; srStopCycle(); return; }
     const entered=eff>=1 && SR.tier<1, rose=eff>SR.tier;
@@ -9509,6 +9573,247 @@ addEventListener("resize",()=>{drawFreq();drawFreqAxis();
 addEventListener("resize",()=>{if(cgOpen&&cgData)cgRender();});
 addEventListener("resize",()=>{if(gasOpen&&gasLast)gasRender(gasLast);});
 addEventListener("resize",()=>{if(eaOpen&&eaSelRef){if(eaSelKind==="rain")eaLoadRain(eaSelRef,eaSelLoc||eaSelRef);else eaLoadStation(eaSelRef);}});
+
+/* ---------- periodicity spectrum (1-minute cycle) -------------------------------------
+   Amplitude spectrum of grid frequency for periods 30 s – 30 min, from the raw 15-second
+   log (/api/freq-raw, then /api/freq-tail for live updates). Welch method: Hann-windowed,
+   detrended segments (64 min for 1h up to 17 h for 7d/30d) overlapping by half and
+   averaged over the chosen window; segments with a gap over 2 min or more than 10%
+   missing are skipped, shorter gaps are interpolated. Segment lengths are powers of two whole minutes,
+   so the 1-minute period falls exactly on a bin. Y = amplitude of a sinusoid at that
+   period (mHz; peak-to-peak is twice this). The 1-minute spike is the cycle attributed
+   to synchronised UPS battery self-tests (Hartmann et al., arXiv 2510.09862, 2025). */
+(function(){
+  // L = segment length (samples). Longer segments give finer period resolution and a
+  // lower background per bin, so a steady cycle stands out more in the longer windows.
+  const SP_WINS={ "1h":{s:3600, L:256, days:2,  lbl:"1 h"},          // 64 min, one segment
+                  "12h":{s:43200, L:1024, days:2,  lbl:"12 h"},      // 4.3 h segments
+                  "24h":{s:86400, L:2048, days:2,  lbl:"24 h"},      // 8.5 h
+                  "7d":{s:7*86400, L:4096, days:7, lbl:"7 days"},    // 17 h
+                  "30d":{s:30*86400, L:4096, days:30, lbl:"30 days"} };
+  const SP_POLL_MS=120000, SP_PMIN=30, SP_PMAX=1920;     // computed range; the view shows up to spPmax
+  let RAW=null;              // {t0, v:Array (mHz or null), days}
+  let spWin="24h", spY=15, spPmax=1800, spOpen=false, SPEC=null, spTimer=null, spLoading=false;
+  try{ const v=localStorage.getItem("mcWin"); if(v && SP_WINS[v]) spWin=v;
+       const y=parseFloat(localStorage.getItem("mcY")); if([15,5,2.5].includes(y)) spY=y;
+       const pm=parseInt(localStorage.getItem("mcP"),10); if([300,900,1800].includes(pm)) spPmax=pm; }catch(e){}
+
+  function fft(re,im){                       // in-place radix-2
+    const n=re.length;
+    for(let i=1,j=0;i<n;i++){ let b=n>>1; for(;j&b;b>>=1) j^=b; j^=b;
+      if(i<j){ let t=re[i];re[i]=re[j];re[j]=t; t=im[i];im[i]=im[j];im[j]=t; } }
+    for(let len=2;len<=n;len<<=1){ const a=-2*Math.PI/len, wr=Math.cos(a), wi=Math.sin(a);
+      for(let i=0;i<n;i+=len){ let cr=1, ci=0;
+        for(let k=0;k<len/2;k++){ const ur=re[i+k], ui=im[i+k];
+          const vr=re[i+k+len/2]*cr-im[i+k+len/2]*ci, vi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;
+          re[i+k]=ur+vr; im[i+k]=ui+vi; re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+          const t=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=t; } } }
+  }
+  function spCompute(){
+    SPEC=null; if(!RAW||!RAW.v.length) return;
+    const W=SP_WINS[spWin], L=W.L, v=RAW.v, n=v.length;
+    const need=Math.max(L, Math.round(W.s/15));
+    const lo=Math.max(0, n-need);
+    const win=new Float64Array(L); let wsum=0;
+    for(let i=0;i<L;i++){ win[i]=0.5-0.5*Math.cos(2*Math.PI*i/(L-1)); wsum+=win[i]; }
+    const P=new Float64Array(L/2+1); let nseg=0, skipped=0;
+    const re=new Float64Array(L), im=new Float64Array(L), seg=new Float64Array(L);
+    for(let e=n; e-L>=lo; e-=L/2){
+      // usable if under 10% missing and no gap longer than 2 minutes (8 samples);
+      // the feed routinely drops the odd sample, which interpolation handles fine
+      const s0=e-L; let miss=0, run=0, maxRun=0;
+      for(let i=0;i<L;i++){ if(v[s0+i]==null){ miss++; run++; if(run>maxRun) maxRun=run; } else run=0; }
+      if(miss>L*0.10 || maxRun>8){ skipped++; continue; }
+      // fill gaps linearly (edges: nearest value)
+      let last=-1;
+      for(let i=0;i<L;i++){ const x=v[s0+i];
+        if(x!=null){ if(last<i-1){ const a=last>=0?seg[last]:x;
+            for(let k=last+1;k<i;k++) seg[k]=last>=0? a+(x-a)*(k-last)/(i-last) : x; }
+          seg[i]=x; last=i; } }
+      for(let k=last+1;k<L;k++) seg[k]=seg[last];
+      // remove linear trend
+      let sx=0,sy=0,sxx=0,sxy=0; for(let i=0;i<L;i++){ sx+=i; sy+=seg[i]; sxx+=i*i; sxy+=i*seg[i]; }
+      const sl=(L*sxy-sx*sy)/(L*sxx-sx*sx), ic=(sy-sl*sx)/L;
+      for(let i=0;i<L;i++){ re[i]=(seg[i]-ic-sl*i)*win[i]; im[i]=0; }
+      fft(re,im);
+      for(let k=0;k<=L/2;k++) P[k]+=re[k]*re[k]+im[k]*im[k];
+      nseg++;
+    }
+    if(!nseg){ SPEC={nseg:0, skipped}; return; }
+    const pts=[];
+    for(let k=1;k<=L/2;k++){ const per=L*15/k; if(per<SP_PMIN-0.01||per>SP_PMAX) continue;
+      pts.push([per, 2*Math.sqrt(P[k]/nseg)/wsum]); }    // amplitude, mHz
+    pts.sort((a,b)=>a[0]-b[0]);
+    // the 1-minute line and its local background (bins 0.8x..1.25x, excluding +-2 bins)
+    const k60=L/4, A=k=>2*Math.sqrt(P[k]/nseg)/wsum;
+    const bg=[]; for(let k=Math.floor(k60*0.8);k<=Math.ceil(k60*1.25);k++) if(Math.abs(k-k60)>2) bg.push(A(k));
+    bg.sort((a,b)=>a-b);
+    const line={amp:A(k60), bg:bg.length?bg[bg.length>>1]:0};
+    // the average minute: fold complete minutes in the window (phases :00 :15 :30 :45)
+    const s=[0,0,0,0]; let nm=0;
+    for(let i=lo;i<n;i++){ const ep=RAW.t0+i*15; if(ep%60!==0 || i+3>=n) continue;
+      const a=v[i],b=v[i+1],c=v[i+2],d=v[i+3]; if(a==null||b==null||c==null||d==null) continue;
+      const mu=(a+b+c+d)/4; s[0]+=a-mu; s[1]+=b-mu; s[2]+=c-mu; s[3]+=d-mu; nm++; }
+    let prof=null;
+    if(nm>=20){ const p=s.map(x=>x/nm), cr=(p[0]-p[2])/4, ci=(-p[1]+p[3])/4;
+      let tr=((Math.PI-Math.atan2(ci,cr))/(2*Math.PI)*60)%60; if(tr<0) tr+=60;
+      prof={p, pp:4*Math.hypot(cr,ci), trough:tr, n:nm}; }
+    SPEC={pts, nseg, skipped, L, line, prof, end:RAW.t0+(n-1)*15};
+  }
+
+  function spCanvas(c){
+    const dpr=devicePixelRatio||1, w=c.clientWidth, h=c.clientHeight;
+    if(!w||!h) return null;
+    c.width=Math.round(w*dpr); c.height=Math.round(h*dpr);
+    const g=c.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
+    return {g,w,h};
+  }
+  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  function spPlot(c, big){
+    const cv=spCanvas(c); if(!cv) return null; const {g,w,h}=cv;
+    const padL=big?40:2, padR=big?10:2, padT=big?14:3, padB=big?32:3;
+    const pw=w-padL-padR, ph=h-padT-padB, ymax=spY;
+    const pmax=spPmax>=1800?SP_PMAX:spPmax;                 // 30m view keeps the last bin (32 min)
+    const lp0=Math.log10(SP_PMIN), lp1=Math.log10(pmax);
+    const X=p=>padL+(Math.log10(p)-lp0)/(lp1-lp0)*pw, Y=a=>padT+ph-Math.min(a,ymax)/ymax*ph;
+    const ink=css("--ink-faint")||"#566277", dim=css("--ink-dim")||"#8595a8", line=css("--line")||"#1d2836",
+          acc=css("--accent")||"#3fb6c9", warn=css("--warn")||"#f5b942", mono=css("--mono")||"monospace";
+    g.font=(big?"10px ":"9px ")+mono;
+    // horizontal grid
+    g.strokeStyle=line; g.lineWidth=1;
+    const ystep= ymax>=15?5 : ymax>=5?1 : 0.5;
+    for(let a=0;a<=ymax+1e-9;a+=ystep){ const y=Math.round(Y(a))+.5;
+      g.beginPath(); g.moveTo(padL,y); g.lineTo(padL+pw,y); g.stroke();
+      if(big){ g.fillStyle=ink; g.textAlign="right"; g.textBaseline="middle"; g.fillText(String(a),padL-5,y); } }
+    // key periods
+    const marks=[[60,"1 min",true],[120,"2 min"],[300,"5 min"],[900,"15 min"],[1800,"30 min"]];
+    for(const [p,lab,key] of marks){ if(p>pmax) continue; const x=Math.round(X(p))+.5;
+      g.strokeStyle= key? "rgba(245,185,66,.55)" : "rgba(90,110,140,.28)"; g.setLineDash([3,3]);
+      g.beginPath(); g.moveTo(x,padT); g.lineTo(x,padT+ph); g.stroke(); g.setLineDash([]);
+      if(big){ g.fillStyle= key? warn : ink; g.textAlign= x>padL+pw-24?"right":"center"; g.textBaseline="bottom"; g.fillText(lab,Math.min(x,padL+pw),padT-2); } }
+    if(big){ // x ticks + axis titles
+      g.fillStyle=ink; g.textAlign="center"; g.textBaseline="top";
+      const ticks= pmax<=300 ? [[30,"30s"],[45,"45s"],[60,"1m"],[90,"1.5m"],[120,"2m"],[180,"3m"],[240,"4m"],[300,"5m"]]
+                 : [[30,"30s"],[60,"1m"],[120,"2m"],[300,"5m"],[600,"10m"],[900,"15m"],[1800,"30m"]];
+      ticks.forEach(([p,l])=>{ if(p<=pmax) g.fillText(l,X(p),padT+ph+4); });
+      g.fillStyle=dim; g.fillText("Period (log scale)",padL+pw/2,padT+ph+17);
+      g.save(); g.translate(10,padT+ph/2); g.rotate(-Math.PI/2); g.textAlign="center"; g.textBaseline="middle";
+      g.fillText("Amplitude, mHz",0,0); g.restore();
+    }
+    if(!SPEC||!SPEC.pts){
+      if(big){ g.fillStyle=ink; g.textAlign="center"; g.textBaseline="middle";
+        g.fillText(spLoading?"loading…":(SPEC&&SPEC.nseg===0?"not enough continuous data in this window":"no data"),padL+pw/2,padT+ph/2); }
+      return null;
+    }
+    // spectrum line (clipped values drawn along the top)
+    g.strokeStyle=acc; g.lineWidth=big?1.5:1.2; g.lineJoin="round"; g.beginPath();
+    SPEC.pts.filter(q=>q[0]<=pmax+0.01).forEach((q,i)=>{ const x=X(q[0]), y=Y(q[1]); i?g.lineTo(x,y):g.moveTo(x,y); }); g.stroke();
+    // highlight the 1-minute point
+    const y60=Y(SPEC.line.amp); g.fillStyle=warn; g.beginPath(); g.arc(X(60),y60,big?3:2,0,7); g.fill();
+    return {X,Y,padL,pw,padT,ph,lp0,lp1};
+  }
+  function spDrawProfile(f){
+    const c=$("#mcProfile"); if(!c) return; const cv=spCanvas(c); if(!cv) return; const {g,w,h}=cv;
+    const ink=css("--ink-faint")||"#566277", line=css("--line")||"#1d2836", acc=css("--accent")||"#3fb6c9";
+    g.font="10px "+(css("--mono")||"monospace");
+    const padL=26,padR=14,padT=14,padB=16, pw=w-padL-padR, ph=h-padT-padB;
+    g.fillStyle=ink; g.textAlign="left"; g.textBaseline="top"; g.fillText("average minute, mHz",padL,0);
+    if(!f) return;
+    const lim=Math.max(2, Math.ceil(Math.max(...f.p.map(Math.abs))));
+    const X=s=>padL+s/60*pw, Y=v=>padT+ph/2-v/lim*(ph/2);
+    g.strokeStyle=line; [-lim,0,lim].forEach(v=>{ const y=Math.round(Y(v))+.5; g.beginPath(); g.moveTo(padL,y); g.lineTo(padL+pw,y); g.stroke();
+      g.fillStyle=ink; g.textAlign="right"; g.textBaseline="middle"; g.fillText((v>0?"+":"")+v,padL-4,y); });
+    g.textAlign="center"; g.textBaseline="top"; [0,15,30,45,60].forEach(s=>g.fillText(":"+String(s%60).padStart(2,"0"),X(s),padT+ph+3));
+    const A=f.pp/2, p0=2*Math.PI*f.trough/60;
+    g.strokeStyle="rgba(63,182,201,.45)"; g.lineWidth=1.2; g.beginPath();
+    for(let s=0;s<=60;s++){ const v=-A*Math.cos(2*Math.PI*s/60-p0); s?g.lineTo(X(s),Y(v)):g.moveTo(X(s),Y(v)); } g.stroke();
+    g.fillStyle=acc; [0,1,2,3,4].forEach(k=>{ g.beginPath(); g.arc(X(k*15),Y(f.p[k%4]),2.6,0,7); g.fill(); });
+  }
+  function spRender(){
+    spCompute();
+    const W=SP_WINS[spWin], ln=SPEC&&SPEC.line;
+    const nowEl=$("#mcNow"); if(nowEl) nowEl.textContent= ln ? ln.amp.toFixed(1)+" mHz" : "—";
+    const sp=$("#mcSpark"); if(sp) spPlot(sp,false);
+    if(!spOpen) return;
+    document.querySelectorAll("#mcWin .gh-tg").forEach(b=>b.classList.toggle("on", b.dataset.w===spWin));
+    document.querySelectorAll("#mcY .gh-tg").forEach(b=>b.classList.toggle("on", parseFloat(b.dataset.y)===spY));
+    document.querySelectorAll("#mcP .gh-tg").forEach(b=>b.classList.toggle("on", parseInt(b.dataset.p,10)===spPmax));
+    spPlot($("#mcBigCanvas"),true);
+    spDrawProfile(SPEC&&SPEC.prof);
+    const st=$("#mcStats"); if(!st) return;
+    if(!ln){ st.innerHTML='<span class="mc-note">'+(spLoading?"Loading…":"Not enough continuous data for a "+W.lbl+" spectrum yet.")+'</span>'; return; }
+    const ratio= ln.bg>0? ln.amp/ln.bg : 0;
+    const verdict= ratio>=3?"stands out clearly" : ratio>=1.7?"stands out" : "not distinguishable from the background";
+    const pr=SPEC.prof;
+    const segMin=SPEC.L*15/60;
+    st.innerHTML=
+      '1-minute cycle over the last '+W.lbl+': <b>'+ln.amp.toFixed(2)+' mHz</b> amplitude '+
+      '<span class="mc-note">('+(2*ln.amp).toFixed(1)+' mHz peak-to-peak)</span><br>'+
+      'Neighbouring periods '+ln.bg.toFixed(2)+' mHz · <b>×'+ratio.toFixed(1)+'</b> — '+verdict+'<br>'+
+      (pr? 'Lowest at about <b>:'+String(Math.round(pr.trough)%60).padStart(2,"0")+'</b> seconds past the minute · '+pr.n.toLocaleString()+' complete minutes<br>' : '')+
+      '<span class="mc-note">'+SPEC.nseg+' overlapping '+segMin+'-minute segments averaged'+(SPEC.skipped?' ('+SPEC.skipped+' skipped for gaps)':'')+
+      '. Longer windows smooth the background so steady cycles stand out. Attributed mainly to synchronised UPS battery self-tests (Hartmann et al., arXiv 2510.09862, 2025).</span>';
+  }
+  async function spLoad(days){
+    spLoading=true; spRender();
+    try{ const r=await fetch("/api/freq-raw?days="+days,{cache:"no-store"}); const j=await r.json();
+      if(j && j.t0!=null && Array.isArray(j.mhz)) RAW={t0:j.t0, v:j.mhz.slice(), days}; }catch(e){}
+    spLoading=false; spRender();
+  }
+  async function spTail(){
+    if(!RAW) return;
+    const last=RAW.t0+(RAW.v.length-1)*15;
+    try{ const r=await fetch("/api/freq-tail?since="+last,{cache:"no-store"}); const j=await r.json();
+      let changed=false;
+      for(const p of (j&&j.points)||[]){ const e=Math.round(p[0]); if(e%15) continue;
+        const i=(e-RAW.t0)/15; if(i<RAW.v.length) continue;
+        while(RAW.v.length<i) RAW.v.push(null);
+        RAW.v.push(Math.round((p[1]-50)*1000)); changed=true; }
+      const keep=Math.round((RAW.days*86400+3600)/15);       // trim to the loaded span
+      if(RAW.v.length>keep){ const cut=RAW.v.length-keep; RAW.v.splice(0,cut); RAW.t0+=cut*15; }
+      if(changed) spRender();
+    }catch(e){}
+  }
+  function spEnsure(){ const need=SP_WINS[spWin].days; if(!RAW || RAW.days<need) spLoad(need); else spRender(); }
+  function spSetOpen(on){
+    spOpen=!!on; const card=$("#freqCard"); if(card) card.classList.toggle("mc-open",spOpen);
+    if(!spOpen){ const t=$("#mcTip"); if(t) t.style.display="none"; if(typeof drawFreq==="function") try{ drawFreq(); }catch(e){} }
+    spRender();
+  }
+  function spHover(ev){
+    const c=$("#mcBigCanvas"), tip=$("#mcTip"); if(!c||!tip) return;
+    const geo=spPlot(c,true); if(!geo||!SPEC||!SPEC.pts) return;
+    const rect=c.getBoundingClientRect(), x=ev.clientX-rect.left;
+    const lp=geo.lp0+(x-geo.padL)/geo.pw*(geo.lp1-geo.lp0);
+    let best=null,bd=1e9; for(const q of SPEC.pts){ if(Math.log10(q[0])>geo.lp1+1e-9) continue; const d=Math.abs(Math.log10(q[0])-lp); if(d<bd){bd=d;best=q;} }
+    if(!best){ tip.style.display="none"; return; }
+    const g=c.getContext("2d"), px=geo.X(best[0]);
+    g.strokeStyle="rgba(230,237,245,.35)"; g.beginPath(); g.moveTo(px,geo.padT); g.lineTo(px,geo.padT+geo.ph); g.stroke();
+    const p=best[0], pl= p<120? p.toFixed(1)+" s" : (p/60).toFixed(p<600?2:1)+" min";
+    tip.innerHTML='period '+pl+'<br><b>'+best[1].toFixed(2)+' mHz</b>'+(best[1]>spY?' (off scale)':'');
+    tip.style.display="block";
+    const tw=tip.offsetWidth; let lx=px+10; if(lx+tw>c.clientWidth) lx=px-tw-10;
+    tip.style.left=lx+"px"; tip.style.top="16px";
+  }
+  function spInit(){
+    const ex=$("#mcExpand"), mini=$("#mcMini"), cl=$("#mcClose");
+    if(mini) mini.onclick=()=>spSetOpen(!spOpen);
+    if(ex) ex.onclick=(e)=>{ e.stopPropagation(); spSetOpen(!spOpen); };
+    if(cl) cl.onclick=()=>spSetOpen(false);
+    document.querySelectorAll("#mcWin .gh-tg").forEach(b=>b.onclick=()=>{
+      spWin=b.dataset.w; try{ localStorage.setItem("mcWin",spWin); }catch(e){} spEnsure(); });
+    document.querySelectorAll("#mcY .gh-tg").forEach(b=>b.onclick=()=>{
+      spY=parseFloat(b.dataset.y); try{ localStorage.setItem("mcY",String(spY)); }catch(e){} spRender(); });
+    document.querySelectorAll("#mcP .gh-tg").forEach(b=>b.onclick=()=>{
+      spPmax=parseInt(b.dataset.p,10); try{ localStorage.setItem("mcP",String(spPmax)); }catch(e){} spRender(); });
+    const bc=$("#mcBigCanvas");
+    if(bc){ bc.addEventListener("mousemove",spHover); bc.addEventListener("mouseleave",()=>{ const t=$("#mcTip"); if(t) t.style.display="none"; spRender(); }); }
+    let rt; addEventListener("resize",()=>{ clearTimeout(rt); rt=setTimeout(spRender,150); });
+    spLoad(SP_WINS[spWin].days);
+    spTimer=setInterval(spTail, SP_POLL_MS);
+  }
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",spInit); else spInit();
+})();
 </script>
 </body>
 </html>

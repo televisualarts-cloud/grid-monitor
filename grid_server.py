@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261017.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261018.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -187,7 +187,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261017.1"
+SERVER_BUILD = "261018.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -6903,6 +6903,36 @@ def get_freq_history(days=30, buckets=8000):
             "to": datetime.fromtimestamp(t_hi, tz=timezone.utc).isoformat(),
             "generated": datetime.now(timezone.utc).isoformat()}
 
+# ---------------------------------------------------------------- raw frequency series
+def get_freq_raw(days=1):
+    """The raw 15-second frequency log for the last `days` (<= log retention) as a
+    compact regular series for client-side spectra: t0 (epoch, a multiple of 15 s),
+    step 15, and mhz = round((hz - 50) * 1000) per slot, null where nothing was logged.
+    About 23 KB per day. Read-only; never raises."""
+    try:
+        days = max(1, min(int(days), LOG_RETENTION_DAYS))
+    except Exception:
+        days = 1
+    now = time.time()
+    lo = now - days * 86400
+    src = {}
+    for k in range(days + 1):
+        d = datetime.fromtimestamp(now - k * 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+        for ep, hz in _read_freq_rows(LOG_DIR / ("grid_log-" + d + ".jsonl"), lo, now):
+            e = int(round(ep))
+            if e % 15 == 0:
+                src[e] = hz
+    if not src:
+        return {"t0": None, "step": 15, "mhz": [], "days": days}
+    keys = sorted(src)
+    t0 = keys[0]
+    n = (keys[-1] - t0) // 15 + 1
+    out = [None] * n
+    for e in keys:
+        out[(e - t0) // 15] = int(round((src[e] - 50.0) * 1000))
+    return {"t0": t0, "step": 15, "mhz": out, "days": days, "points": len(keys),
+            "generated": datetime.now(timezone.utc).isoformat()}
+
 CAPTURE_DIR = Path(__file__).with_name("captures")   # user-saved plot images
 def _save_capture(name, dataurl):
     """Write a base64 data-URL image (from a client 'save PNG') into ./captures/.
@@ -7804,6 +7834,12 @@ class Handler(BaseHTTPRequestHandler):
                                                 archive=arch, week=wk))
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "fuels": [], "t": []}, 500)
+        elif self.path.startswith("/api/freq-raw"):
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send_json(get_freq_raw(days=qs.get("days", ["1"])[0]))
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "mhz": []}, 500)
         elif self.path.startswith("/api/freq-tail"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
