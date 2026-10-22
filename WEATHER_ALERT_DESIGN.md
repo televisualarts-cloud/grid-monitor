@@ -110,8 +110,15 @@ sector's centre. `sit_dir_sect` remembers it across cycles. No boundary flip-flo
 Produces `situational_speak = [{tier, key, phrase}]`:
 - **Dwell:** an area/approaching state must persist `SIT_DWELL_S` (9 min, tracked per
   *group* so isolated↔widespread doesn't reset it) before its first announcement.
-- **Here (< 5 km):** announced immediately; heartbeat `CAD_HERE_HEAVY` (10 min) for heavy+
-  else `CAD_HERE_LIGHT` (20 min).
+- **Here (< 5 km):** announced immediately. Wording and cadence use the intensity
+  **measured at home** (`home_intensity()`: radar ~1 km box at home, frame ≤ 15 min old, and
+  the nearest physical gauge < 5 km; each smoothed to the lower of its last two distinct
+  readings; the higher source wins), never the area's 90-min peak. Heartbeat `CAD_HERE_HEAVY`
+  (20 min) for heavy+ else `CAD_HERE_LIGHT` (60 min). A heavier band re-announces only if above
+  everything said at home in the last 30 min (≥ 5 min after the last message). Rain at home
+  dropping out and back within 30 min at the same or a lower band stays quiet (reset by a
+  spoken all-clear). At most hourly, the heaviest current measured cell 5–40 km away is
+  appended when heavier than at home ("Heavy rain about 20 km to the south-west.").
 - **Showers:** heartbeat `CAD_SHOWERS` (40 min).
 - **Continuous:** heartbeat `CAD_CONTINUOUS` (60 min).
 - **Approaching:** no longer spoken here — owned by the approach episode (§2.10).
@@ -290,7 +297,10 @@ All in `rain_probe.py`:
 | `SIT_WIDESPREAD_COVER` / `SIT_CONTINUOUS_COVER` | 0.35 / 0.5 | coverage cuts |
 | `SIT_SHOWERY_MIN_TRANS` | 2 | flips in window to look showery |
 | `SIT_DWELL_S` | 9 min | certainty dwell before an area/approach announcement |
-| `CAD_HERE_HEAVY/LIGHT` | 10 / 20 min | here heartbeat |
+| `CAD_HERE_HEAVY/LIGHT` | 20 / 60 min | here heartbeat |
+| `HERE_HOLD_S` / `HERE_UPGRADE_WIN_S` / `HERE_UPGRADE_GAP_S` | 30 / 30 / 5 min | here re-entry hold, upgrade window, upgrade gap |
+| `HERE_RADAR_MAX_AGE_S` / `HERE_PAIR_GAP_S` | 15 / 40 min | radar freshness for "now"; two readings close enough to pair |
+| `FAR_MENTION_S` | 60 min | "heavier rain N km to the X" at most this often |
 | `CAD_SHOWERS` / `CAD_CONTINUOUS` | 40 / 60 min | area heartbeats |
 | Low multiplier | ×2 | halves periodic cadence |
 | `SIT_CLUSTER_LINK_KM` | 18 | cluster single-linkage distance |

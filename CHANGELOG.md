@@ -16,6 +16,32 @@ exact tag.
 
 ---
 
+## 2026-10-22
+
+- **Home pressure plot.** A small trace of logged home pressure under the Pressure reading in the EA page's weather panel. `pressure_history.json` now keeps 72 h per location (was 4 h); the 3-hour tendency is unchanged. Readings come one per fresh OpenWeather fetch (about every 15 min; longer outside the forecast window when its quiet multiplier is on). The time axis spans whatever history exists, up to 72 h; the last 3 h (tendency window) is shaded; y range at least 10 mB because OpenWeather pressure is whole mB; gaps over 75 min break the line; hover shows time and value. `/api/ea` adds `wind.conditions.pressure_series` ([[epoch_s, hPa], …]) from the same file, no extra API calls. Sunrise and sunset moved to the bottom of the temperature block to keep the blocks the same height.
+
+  (`grid_server.py` 261022.1, `grid_dashboard.html` 261022.1)
+
+- **"At your location" rain voice describes rain measured at home.** The intensity word came from the heaviest reading within 40 km over the last 90 min, so "Very heavy rain at your location" was spoken for cells 20–33 km away. Replay of the rain recorder logs (30 Sep – 22 Oct): 60 of 98 at-home messages named more than was measured at home; "very heavy" was said 25 times, about 3 of them true at home.
+  - Intensity now comes from the radar at home (~1 km box, frame ≤ 15 min old) and the nearest physical gauge within 5 km, each the lower of its last two distinct readings; the higher of the two sources is used.
+  - Heartbeats 20 min (heavy+) and 60 min (light/moderate), were 10 / 20. A heavier band re-announces only above everything said at home in the last 30 min. Rain at home dropping out and back within 30 min at the same or a lower band stays quiet.
+  - At most hourly, heavier rain 5–40 km away is appended ("Heavy rain about 20 km to the south-west.").
+  - Same replay with the new code: 43 messages (was 95), busiest day 10 (was 29), "very heavy" once (radar 14 mm/h at home).
+  - Forecast view shows the at-home voice reading and its source.
+
+  (`rain_probe.py` 261022.1, `forecast_view.html` 261022.1)
+
+## 2026-10-18
+
+- **Periodicity spectrum (1-minute cycle).** A small amplitude spectrum of grid frequency (periods 30 s – 30 min, 0–15 mHz) under the frequency reading, styled like the home page's periodicity spectrum, with the 1-minute line marked — the once-a-minute wobble attributed to synchronised UPS battery self-tests (Hartmann et al., arXiv 2510.09862, 2025). Averaging windows 1h / 12h / 24h / 7d / 30d (Welch, segments 64 min – 17 h), vertical scale 15 / 5 / 2.5 mHz and longest period shown 5m / 15m / 30m, all remembered. ⤢ (or a click) swaps the frequency trace for a larger plot in the same panel, with hover readout, the 1-minute amplitude against neighbouring periods, the average minute and the second of the minute where it is lowest. New `GET /api/freq-raw?days=N` serves the raw 15-second log compactly; live updates use `/api/freq-tail`.
+
+  (`grid_server.py` 261018.1, `grid_dashboard.html` 261018.4)
+
+- **Frequency alarm: the spoken extreme is now held for the whole excursion.** The "dipped to" / "peaked at" value used to be the worst point of the latest 8-sample burst only, so it crept back towards 50 Hz as frequency recovered. It is now the worst point since the excursion began, extended only outward, and cleared once the excursion has ended (after the usual hysteresis) or switches side.
+- **Two new under-frequency tiers: 49.1 Hz (tier 4) and 48.8 Hz (tier 5).** Low side only; the deepest tier always takes priority. Faster sirens (0.3 s and 0.18 s notes against 0.5 s at tier 3) and a shorter cadence (15 s every 45 s; 20 s every 30 s). After 4 minutes they wind down to 5 s every 2 min instead of every 15 min. Spoken lead "Severe" / "Emergency" and "very low"; tier 5 adds "Automatic demand disconnection may begin soon."
+
+  (`grid_dashboard.html` 261018.1)
+
 ## 2026-10-17
 
 - **Balancing costs panel.** A new **Balancing costs · NESO** panel below *Generation and imports* shows what NESO spends each day to keep the system balanced, from new module `balancing.py` and `GET /api/balancing` (`?detail=1` adds the half-hours, correlations and period totals). No keys.
@@ -365,6 +391,11 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **261016.2** (2026-10-16) — Reservoirs: South West Water total, nearest and lowest badges; company reservoir bars and history chart in the region view. "N% full · below average" wording; England "normal ≈N%".
 - **261016.1** (2026-10-16) — Reservoirs section at the top of the EA page: local and UK badges, drop-down with a view per EA region, monthly, weekly and London charts, drought status, area report text and live gauge cards (`/api/reservoirs`).
 - **261017.1** (2026-10-17) — Balancing costs panel below Generation and imports: six summary figures (highest estimate coloured against the 30-day confirmed mean), ▾ chart in the panel (remembered), ⤢ details pop-out with the daily cost chart, other-services strip, driver strips, correlation table, who was paid and the half-hour heatmap; event markers and tooltips throughout.
+- **261018.1** (2026-10-18) — Frequency alarm speaks the excursion's held worst point, not the latest burst's; new low-side tiers 4 (49.1 Hz) and 5 (48.8 Hz) with faster sirens, shorter cadence and their own wording.
+- **261018.2** (2026-10-18) — 1-minute cycle: mini plot and in-panel expanded view of its size over time (replaced the same day by 261018.3).
+- **261018.3** (2026-10-18) — Periodicity spectrum of frequency (30 s – 30 min) with the 1-minute line marked, mini plot and in-panel expanded view, averaging windows, vertical scale, average-minute profile and hover readout.
+- **261018.4** (2026-10-18) — Periodicity spectrum: period-range selector (5m / 15m / 30m, remembered) with finer ticks on the 5-minute view.
+- **261022.1** (2026-10-22) — Home pressure plot (logged history up to 72 h, last 3 h shaded, hover readout) under Pressure in the weather panel; sunrise/sunset moved to the temperature block.
 
 ### `powercuts_page.html`
 
@@ -440,6 +471,7 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260929.4** (2026-09-29) — Virtual net/ring points keep `modelled: true`; new `measured` flag for radar/OpenWeather readings.
 - **260930.1** (2026-09-30) — Radar net ignores the quiet-hours multiplier; mobiles keep source and radar frame time (confirmed for RV or OC4); approach ETA corrected for the lead reading's age (`data_age_s`).
 - **261014.1** (2026-10-14) — Rainfall prediction fine tuning: radar at home counts as arrival; "fizzled out" only when radar shows the upwind sector clear (`fizzle_held` otherwise).
+- **261022.1** (2026-10-22) — "At your location" intensity measured at home (radar box at home / nearest gauge < 5 km, two-reading smoothing) instead of the 40 km 90-min peak; at-home heartbeats 20/60 min; re-entry hold and upgrade window 30 min; hourly heavier-rain-nearby note.
 
 ### `forecast_view.html`
 
@@ -448,6 +480,7 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 - **260926.1** (2026-09-26) — Renamed Forecast view, served at `/forecast` (`/engine` removed). Licence/build header. Gauge tooltips with place, grid and EA reference, distance and direction from home. Radar-only mode (`?view=radar`) for the EA page. Location from the link or the EA page (no built-in default); connects by itself; bottom text replaced; paste-JSON box removed.
 - **260929.1** (2026-09-29) — Late-gauge rings and count; radar net labels; OM-local counted separately in the API line; RainViewer credit.
 - **260930.1** (2026-09-30) — Mobile tracker tooltip names the reading's source (radar / OpenWeather / Open-Meteo) instead of "OC4 confirmed".
+- **261022.1** (2026-10-22) — "at-home voice" row: the measured at-home reading and its source.
 
 ### `metar.py`
 
