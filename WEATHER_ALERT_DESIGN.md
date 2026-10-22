@@ -123,7 +123,14 @@ Produces `situational_speak = [{tier, key, phrase}]`:
 - **Continuous:** heartbeat `CAD_CONTINUOUS` (60 min).
 - **Approaching:** no longer spoken here — owned by the approach episode (§2.10).
 - **Clearing:** a one-shot on active→clear.
-- **Re-announce logic:** keyed on a stable **signature** (state, peak band, snow, direction
+- **Area words (showers / continuous)** come from what is falling **now** at measured points
+  (EA gauges, radar net points), each the lower of its last two readings (`area_now`):
+  showers name the heaviest current reading, continuous the typical one. The 90-min peak is
+  never spoken. Continuous is worded "across the area" (not "has set in"), and stays quiet
+  when rain was announced at home in the last 30 min (it is the same rain).
+- **Rain at home** (`here`): nearest gauge < 5 km wet **or** the radar box at home wet on a
+  fresh frame (the gauge alone missed 10.5 mm/h at home on 22 Oct).
+- **Re-announce logic:** keyed on a stable **signature** (state, current band, snow, direction
   sector) — *not* the phrase string — and an intensity **downgrade never re-announces** (so
   the peak decaying as history ages doesn't announce "easing" then clear). Intensification
   and a genuine direction move do re-announce.
@@ -133,7 +140,23 @@ Produces `situational_speak = [{tier, key, phrase}]`:
 Wording examples the engine emits:
 - "Very heavy rain is approaching from the north-west, in 55 to 80 minutes."
 - "Isolated very heavy showers to the north-west, which may be with you soon."
-- "Continuous rain has set in." · "Snow is falling at your location." · "The rain is clearing."
+- "Continuous rain across the area." · "Snow is falling at your location." · "The rain is clearing."
+
+**Nowcast channel (`would_speak`) honesty rules** (replay of the rain recorder logs,
+30 Sep – 22 Oct, found each of these wrong before):
+- At-home lines ("Light rain / Rain / Heavy rain / Very heavy rain at your location.") use the
+  same measured home intensity as the rain voice; no "starting", no "getting heavier soon".
+  With nothing measured wet at home, model rain speaks only as "The model suggests rain…".
+- "Confirmed by nearby gauges" needs a gauge < 5 km wet (was 8 km).
+- "Picking up" / "easing" only while rain is measured at home.
+- Visibility drop speaks visibility only (was "Rain expected soon": wrong 7 of 8).
+- Rising pressure when dry: "Drier, more settled weather is more likely" (not "the rain is easing").
+- Pressure + heavy rain: "Heavy rain at your location, with pressure falling quickly." (wind and
+  persistence are not measured, so not claimed).
+- All-clear "The rain has cleared from the area." only when the area is clear, nothing is
+  approaching, no minute-ahead onset, and the rain voice is not saying its own "clearing"
+  (was "No rain is expected in the near term" whenever the model at home went dry: rain
+  followed within an hour 18 times in 32).
 
 ### 2.9 Land model-probes — frugal airmass confirmation
 Scattered land showers often sit *between* the EA gauges, so gauge-only detection can read

@@ -18,6 +18,17 @@ exact tag.
 
 ## 2026-10-22
 
+- **Rain alerts: audit of every spoken message against measurements.** All rain-voice and nowcast messages in the rain recorder logs (30 Sep – 22 Oct) were checked against the radar at home, the gauge within 5 km and current area readings. Fixed:
+  - **Rain at home** now also counts the radar at home (wet on two frames running), not only the 2.9 km gauge, which missed 10.5 mm/h at home on 22 Oct 18:05.
+  - **Showers / continuous** name what is falling now at measured points (gauges, radar net), each the lower of its last two readings; the 90-min peak is no longer spoken (13 of 38 overstated). "Continuous rain has set in" is now "Continuous rain across the area." and stays quiet within 30 min of rain at home (it was mostly spoken 15–20 min after rain ended at home). A changed area message repeats no sooner than 20 min.
+  - **Nowcast at-home lines** use the measured home reading (10 of 36 claimed rain at home while it was measured dry); "starting" and "getting heavier soon" removed. "Confirmed by nearby gauges" needs a gauge within 5 km (was 8 km; 10 of 16 dropped). "Picking up" / "easing" only while rain is measured at home.
+  - **Visibility drop** says visibility only ("Rain expected soon" was wrong 7 times in 8). Rising pressure when dry no longer says "the rain is easing". The pressure + heavy rain line no longer claims rising wind or persistence (neither is measured).
+  - **All-clear** "The rain has cleared from the area." only when the area is clear, nothing approaching, no minute-ahead onset, and not alongside the rain voice's own "clearing". The old "No rain is expected in the near term" was followed by rain at home within an hour 18 times in 32.
+  - Same replay through the new code: rain voice 122 messages (was 148); no intensity word above what was measured.
+  - Forecast view: the state line shows the current area intensity, with the 90-min peak in brackets only when higher.
+
+  (`rain_probe.py` 261022.2, `forecast_view.html` 261022.2)
+
 - **Home pressure plot.** A small trace of logged home pressure under the Pressure reading in the EA page's weather panel. `pressure_history.json` now keeps 72 h per location (was 4 h); the 3-hour tendency is unchanged. Readings come one per fresh OpenWeather fetch (about every 15 min; longer outside the forecast window when its quiet multiplier is on). The time axis spans whatever history exists, up to 72 h; the last 3 h (tendency window) is shaded; y range at least 10 mB because OpenWeather pressure is whole mB; gaps over 75 min break the line; hover shows time and value. `/api/ea` adds `wind.conditions.pressure_series` ([[epoch_s, hPa], …]) from the same file, no extra API calls. Sunrise and sunset moved to the bottom of the temperature block to keep the blocks the same height.
 
   (`grid_server.py` 261022.1, `grid_dashboard.html` 261022.1)
@@ -472,6 +483,7 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **260930.1** (2026-09-30) — Radar net ignores the quiet-hours multiplier; mobiles keep source and radar frame time (confirmed for RV or OC4); approach ETA corrected for the lead reading's age (`data_age_s`).
 - **261014.1** (2026-10-14) — Rainfall prediction fine tuning: radar at home counts as arrival; "fizzled out" only when radar shows the upwind sector clear (`fizzle_held` otherwise).
 - **261022.1** (2026-10-22) — "At your location" intensity measured at home (radar box at home / nearest gauge < 5 km, two-reading smoothing) instead of the 40 km 90-min peak; at-home heartbeats 20/60 min; re-entry hold and upgrade window 30 min; hourly heavier-rain-nearby note.
+- **261022.2** (2026-10-22) — Alert audit fixes: rain at home also from radar (two frames); area words from current measured readings, "Continuous rain across the area", quiet after rain at home, 20-min re-announce floor; nowcast lines from measured home reading, gauge confirm within 5 km, visibility-only fog line, no wind/persistence claims; all-clear only when the area is clear.
 
 ### `forecast_view.html`
 
@@ -481,6 +493,7 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 - **260929.1** (2026-09-29) — Late-gauge rings and count; radar net labels; OM-local counted separately in the API line; RainViewer credit.
 - **260930.1** (2026-09-30) — Mobile tracker tooltip names the reading's source (radar / OpenWeather / Open-Meteo) instead of "OC4 confirmed".
 - **261022.1** (2026-10-22) — "at-home voice" row: the measured at-home reading and its source.
+- **261022.2** (2026-10-22) — State line shows the current area intensity; 90-min peak in brackets only when higher.
 
 ### `metar.py`
 
