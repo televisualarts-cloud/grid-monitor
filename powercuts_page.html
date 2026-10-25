@@ -1,9 +1,10 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 261015.1  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 261025.3  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>if(window.top===window)document.documentElement.classList.add("top");</script>
 <title>UK &amp; Ireland Power Cuts — monitor (prototype)</title>
 <style>
   :root{
@@ -16,13 +17,22 @@
        font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   h1,h2{font-weight:600;margin:0}
   a{color:var(--accent)}
-  .wrap{max-width:1280px;margin:0 auto;padding:16px}
+  .wrap{max-width:1320px;margin:0 auto;padding:22px 20px 60px}
+  /* Same size rules as the dashboard: content at most 1,320 px wide and centred, single column
+     below 980 px, and the dashboard's gentle zoom on very wide screens. The zoom applies only when
+     this page is opened on its own: inside a dashboard pop-up it already inherits the dashboard's. */
+  @media(min-width:1600px){ html.top body{ zoom:0.94; } }
+  @media(min-width:1900px){ html.top body{ zoom:0.90; } }
+  @media(min-width:2200px){ html.top body{ zoom:0.86; } }
+  @media(min-width:2560px){ html.top body{ zoom:0.82; } }
+
   .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
   .top h1{font-size:16px;letter-spacing:.5px}
   .muted{color:var(--dim)}
   .pill{display:inline-block;padding:1px 7px;border:1px solid var(--line);border-radius:10px;font-size:11px}
   .grid{display:grid;gap:14px;grid-template-columns:1.4fr 1fr;margin-top:12px}
-  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  @media(max-width:520px){ .wrap{padding:16px 12px 40px} }   /* phones: narrower side margins (all pages alike) */
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
   .panel h2{font-size:12px;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin-bottom:8px}
   .big{font-size:26px;font-weight:600}
@@ -132,7 +142,7 @@
   .modal.wide .card{max-width:1000px;width:94%;max-height:92vh;overflow:auto}
   /* monitored postcode areas */
   .btn.watch-hit{border-color:var(--bad);color:var(--bad)}
-  .wa-row{display:grid;grid-template-columns:22px 100px 130px 1fr 28px;gap:8px;align-items:center;margin:5px 0}
+  .wa-row{display:grid;grid-template-columns:22px 100px 130px 1fr 52px 28px;gap:8px;align-items:center;margin:5px 0}
   .wa-head{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin:8px 0 2px}
   .wa-row .n{color:var(--dim);font-size:11px;text-align:right}
   .wa-row input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:6px;
@@ -141,6 +151,8 @@
   .wa-row .pl{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .wa-row .pl.bad{color:var(--bad)}
   .wa-row .pl.cut{color:var(--bad);font-weight:600}
+  .wa-row .rp{display:flex;justify-content:center}
+  .wa-row .rp input{width:16px;height:16px;accent-color:var(--bad);cursor:pointer}
   .wa-x{background:#1a2430;border:1px solid var(--line);color:var(--dim);border-radius:6px;cursor:pointer;
         font:inherit;font-size:12px;height:26px;padding:0}
   .wa-x:hover{color:var(--bad);border-color:var(--bad)}
@@ -196,7 +208,7 @@
               <div><b>SPEN</b> SP Energy Networks</div>
               <div><b>SSEN</b> Scottish &amp; Southern Elec. Networks</div>
               <div><b>NIE</b> NIE Networks (N. Ireland)</div>
-              <div><b>ESB</b> ESB Networks (Rep. of Ireland)</div>
+              <div><b>ESB</b> ESB Networks (Ireland)</div>
             </div>
             <div class="mk-scale">
               <div class="mk-t">Unplanned cut — customers affected<br><span>(dot size &amp; colour)</span></div>
@@ -327,7 +339,7 @@
     <h2>Feeds &amp; API keys</h2>
     <p class="note">NGED, UK Power Networks and Northern Powergrid are open — no key needed.
        Electricity North West, SP Energy Networks and NIE Networks (Northern Ireland) need a free
-       OpenDataSoft key. ESB Networks (Republic of Ireland) works on a shared key by default — leave
+       OpenDataSoft key. ESB Networks (Ireland) works on a shared key by default — leave
        it blank unless you want to override it. Keys are stored by the local server only and never shown here again.</p>
     <div id="keyrows"></div>
     <div class="row" style="margin-top:12px;justify-content:flex-end">
@@ -345,7 +357,9 @@
        postcode — or, where the operator publishes sectors only (SP Energy Networks), its sector,
        announced as “may be affected”. Electricity North West publishes no postcodes and ESB uses Eircodes, so areas
        they supply can’t be matched. Alerts sound on the dashboard (alarm category “Monitored postcode areas”).
-       Add an optional name (e.g. “Les”) to hear “Les in Plymouth” instead of the postcode.</p>
+       Add an optional name (e.g. “Les”) to hear “Les in Plymouth” instead of the postcode.
+       Tick <b>Repeat</b> to sound the alarm again every 30 minutes while a cut in that area continues
+       (planned works repeat only once they have started).</p>
     <div id="waRows" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px;justify-content:flex-end">
       <span class="note" id="waMsg"></span>
@@ -360,13 +374,16 @@
 // ---- config -----------------------------------------------------------------
 var API = "/api/powercuts";
 var KEY_LINKS = {
+  NPg:  "https://northernpowergrid.opendatasoft.com/",
+  UKPN: "https://ukpowernetworks.opendatasoft.com/",
   ENWL: "https://electricitynorthwest.opendatasoft.com/",
   SPEN: "https://spenergynetworks.opendatasoft.com/",
   NIE:  "https://nienetworks.opendatasoft.com/",
   ESB:  "https://powercheck.esbnetworks.ie/"
 };
-var GATED = ["ENWL","SPEN","NIE","ESB"];            // operators shown in the key settings
-var UK = {lonW:-10.8, lonE:2.1, latS:49.7, latN:59.2};   // map bounds (UK + Republic of Ireland)
+var GATED = ["NPg","UKPN","ENWL","SPEN","NIE","ESB"];   // operators shown in the key settings
+var KEY_OPTIONAL = {NPg:1, UKPN:1};                 // open feeds: a key only lifts the anonymous daily limit
+var UK = {lonW:-10.8, lonE:2.1, latS:49.7, latN:59.2};   // map bounds (UK + Ireland)
 // Coastline for orientation only — UK outline from Natural Earth 1:50m (public domain,
 // nvkelso/natural-earth-vector), Great Britain + Northern Ireland, Shetland dropped. Incident positions come from
 // their own lat/lon, not this outline.
@@ -699,7 +716,7 @@ var IE_AREAS = [{"dno":"NIE","dno_full":"Northern Ireland Electricity Networks",
 ,[-5.551,54.365],[-5.541,54.327],[-5.553,54.299],[-5.613,54.256],[-5.633,54.256],[-5.64,54.235],[-5.656,54.23],[-5.679,54.246],[-5.737,54.249],[-5.862,54.231]
 ,[-5.869,54.161],[-5.894,54.105],[-6.027,54.04],[-6.095,54.036],[-6.113,54.05],[-6.085,54.057],[-6.174,54.074],[-6.186,54.093],[-6.264,54.105],[-6.27,54.098]
 ,[-6.285,54.105],[-6.327,54.098],[-6.355,54.111],[-6.368,54.097],[-6.367,54.075],[-6.378,54.063],[-6.434,54.055],[-6.451,54.068],[-6.479,54.068],[-6.564,54.049]
-,[-6.595,54.052],[-6.616,54.037],[-6.673,54.068],[-6.657,54.092]]],"a":"NIE","b":"#173d54","s":[-9.3,55.15],"lab":[-9.3,55.15],"p":true},{"dno":"ESB","dno_full":"ESB Networks","area":"Republic of Ireland","c":[-8.145,53.178]
+,[-6.595,54.052],[-6.616,54.037],[-6.673,54.068],[-6.657,54.092]]],"a":"NIE","b":"#173d54","s":[-9.3,55.15],"lab":[-9.3,55.15],"p":true},{"dno":"ESB","dno_full":"ESB Networks","area":"Ireland","c":[-8.145,53.178]
 ,"rings":[[[-7.247,55.069],[-7.355,55.041],[-7.405,55.004],[-7.455,54.863],[-7.543,54.793],[-7.543,54.742],[-7.65,54.745],[-7.771,54.706],[-7.846,54.731]
 ,[-7.93,54.697],[-7.846,54.631],[-7.711,54.624],[-7.708,54.604],[-7.887,54.532],[-8.002,54.543],[-8.072,54.487],[-8.174,54.462],[-8.056,54.366],[-8.002,54.358]
 ,[-7.951,54.301],[-7.88,54.287],[-7.856,54.211],[-7.705,54.2],[-7.609,54.14],[-7.502,54.125],[-7.415,54.146],[-7.395,54.122],[-7.327,54.114],[-7.31,54.115]
@@ -755,9 +772,9 @@ var IE_AREAS = [{"dno":"NIE","dno_full":"Northern Ireland Electricity Networks",
 ,[-7.524,55.29],[-7.479,55.284],[-7.469,55.304],[-7.406,55.287],[-7.348,55.314],[-7.321,55.282],[-7.257,55.284],[-7.351,55.335],[-7.353,55.359],[-7.4,55.38]
 ,[-7.384,55.386],[-7.209,55.345],[-7.129,55.286],[-6.94,55.239],[-6.943,55.219],[-7.173,55.144],[-7.247,55.069]]],"a":"ESB","b":"#123650","s":[-8.2,50.4]
 ,"p":true}];
-DNO_AREAS = DNO_AREAS.concat(IE_AREAS);   // NI (NIE Networks) + Republic of Ireland (ESB Networks)
+DNO_AREAS = DNO_AREAS.concat(IE_AREAS);   // NI (NIE Networks) + Ireland (ESB Networks)
 // Coarse country outlines (Natural Earth admin-1 unions for England/Scotland/Wales + NI,
-// admin-0 for the Republic; simplified to ~2 km) used ONLY to classify each incident into a
+// admin-0 for Ireland; simplified to ~2 km) used ONLY to classify each incident into a
 // country for the per-country view. A point is tested with a small bbox tolerance and, if it
 // still falls just offshore of the coarse outline, assigned to the NEAREST country.
 var COUNTRIES = [{"name":"England","rings":[[[-4.105,50.371],[-4.191,50.418],[-4.16,50.459],[-4.201,50.459],[-4.235,50.438],[-4.229,50.397],[-4.29,50.397],[-4.194,50.377]
@@ -885,7 +902,7 @@ var COUNTRIES = [{"name":"England","rings":[[[-4.105,50.371],[-4.191,50.418],[-4
 ,[-5.798,54.845],[-5.752,54.857],[-5.69,54.793],[-5.729,54.729],[-5.891,54.672],[-5.927,54.633],[-5.907,54.606],[-5.748,54.68],[-5.575,54.68],[-5.431,54.485]
 ,[-5.475,54.359],[-5.516,54.338],[-5.577,54.403],[-5.544,54.458],[-5.558,54.512],[-5.702,54.578],[-5.716,54.537],[-5.626,54.516],[-5.67,54.506],[-5.626,54.441]
 ,[-5.709,54.352],[-5.58,54.384],[-5.551,54.365],[-5.553,54.299],[-5.656,54.23],[-5.862,54.231],[-5.894,54.105],[-6.027,54.04],[-6.355,54.111],[-6.378,54.063]
-,[-6.616,54.037],[-6.673,54.068]]]},{"name":"Republic of Ireland","rings":[[[-7.247,55.069],[-7.405,55.004],[-7.543,54.742],[-7.93,54.697],[-7.846,54.631]
+,[-6.616,54.037],[-6.673,54.068]]]},{"name":"Ireland","rings":[[[-7.247,55.069],[-7.405,55.004],[-7.543,54.742],[-7.93,54.697],[-7.846,54.631]
 ,[-7.708,54.604],[-7.887,54.532],[-8.002,54.543],[-8.174,54.462],[-7.88,54.287],[-7.856,54.211],[-7.705,54.2],[-7.609,54.14],[-7.327,54.114],[-7.326,54.155]
 ,[-7.28,54.126],[-7.249,54.197],[-7.153,54.224],[-7.209,54.293],[-7.192,54.335],[-7.018,54.413],[-6.88,54.342],[-6.882,54.277],[-6.788,54.203],[-6.64,54.168]
 ,[-6.673,54.068],[-6.631,54.042],[-6.378,54.063],[-6.355,54.111],[-6.107,54.014],[-6.161,53.974],[-6.36,54.016],[-6.378,53.935],[-6.351,53.881],[-6.243,53.865]
@@ -975,7 +992,7 @@ function renderNear(incs){
     box.innerHTML='<div class="nh">Near you</div><span class="muted">Set your location on the dashboard\'s EA page to see power cuts near you.</span>'; return; }
   var km=pcNearKm(), muted=pcMutedGet(), L=[];
   (incs||[]).forEach(function(i){
-    if(muted.indexOf(i.dno)>=0 || PC_DONE_RE.test(i.status||"") || i.lat==null || i.lon==null) return;
+    if(muted.indexOf(i.dno)>=0 || PC_DONE_RE.test(i.status||"") || i.lat==null || i.lon==null || i.outside_area) return;
     var d=pcKm(h.lat,h.lon,i.lat,i.lon); if(d>km) return;
     L.push({i:i, d:d, b:pcBearing(h.lat,h.lon,i.lat,i.lon)});
   });
@@ -1325,6 +1342,7 @@ function mapTipHtml(h, others){
     var aq=/^([\s\S]*?as quickly as possible)/i.exec(String(i.status).replace(/\s+/g," "));
     L.push('<span class="mt-d">'+esc(aq? aq[1].trim()+"." : clipSentence(i.status,160))+"</span>"); }
   if(i.postcodes) L.push('<span class="mt-d">'+esc(clip(i.postcodes,80))+"</span>");
+  if(i.pos_note) L.push('<span class="mt-w">'+esc(i.pos_note)+"</span>");
   var home=pcHome();
   if(home && i.lat!=null && i.lon!=null){ var d=pcKm(home.lat,home.lon,i.lat,i.lon);
     L.push('<span class="mt-d">'+(d<1?"<1":d<10?d.toFixed(1):Math.round(d))+" km "+
@@ -1578,8 +1596,13 @@ function paintMap(incs){
       x.strokeStyle = "rgba("+col+","+(0.55*(1-phase)).toFixed(3)+")"; x.lineWidth=1.5*ds; x.stroke();
     }
     x.beginPath(); x.arc(q[0],q[1],r,0,7);
+    if(i.outside_area){                    // outside the operator's own area: faded, dashed rim
+      x.fillStyle="rgba("+col+",.35)"; x.fill();
+      x.setLineDash([2*ds,2*ds]); x.strokeStyle="rgba(235,244,252,.7)"; x.lineWidth=0.9*ds; x.stroke(); x.setLineDash([]);
+    } else {
     x.fillStyle="rgb("+col+")"; x.fill();
     x.strokeStyle="rgba(235,244,252,.6)"; x.lineWidth=0.7*ds; x.stroke();  // light rim pops on dark fills
+    }
     _mapHits.push({i:i, x:q[0]*view.scale+view.tx, y:q[1]*view.scale+view.ty, r:r*view.scale, isNew:isNew, muted:mdot});
   });
   if(_hq){                                  // home marker, drawn over the dots
@@ -1944,6 +1967,7 @@ function openModal(){
     var st=(byDno[dno]||{}).status||"no-key";
     var lbl={ok:"live","stale":"stale","no-key":"key needed","no-feed":"no feed",error:"down"}[st]||st;
     var ph=(dno==="ESB") ? "ESB PowerCheck subscription key — shared key active"
+         : KEY_OPTIONAL[dno] ? "optional OpenDataSoft key — own daily allowance"
                          : "paste OpenDataSoft API key";
     return '<div class="keyrow"><label>'+dno+'</label>'+
       '<input type="password" data-dno="'+dno+'" placeholder="'+ph+' ('+lbl+')">'+
@@ -1993,13 +2017,14 @@ function waNote(a, act){
 }
 function waRender(){
   var act=waActive(), byPc={}; waAreas.forEach(function(a){ byPc[a.pc]=a; });
-  var rows=['<div class="wa-row wa-head"><span></span><span>Postcode</span><span>Name (optional)</span><span>Place</span><span></span></div>'];
+  var rows=['<div class="wa-row wa-head"><span></span><span>Postcode</span><span>Name (optional)</span><span>Place</span><span style="text-align:center" title="Repeat the alarm every 30 minutes while a cut continues">Repeat</span><span></span></div>'];
   for(var i=0;i<WA_SLOTS;i++){
     var a=waAreas[i], n=waNote(a, act);
     rows.push('<div class="wa-row"><span class="n">'+(i+1)+'</span>'+
       '<input class="wa-pc" data-i="'+i+'" maxlength="9" spellcheck="false" autocomplete="off" value="'+waEsc(a?a.pc:"")+'">'+
       '<input class="wa-al" data-i="'+i+'" maxlength="30" spellcheck="false" autocomplete="off" placeholder="e.g. Les" value="'+waEsc(a&&a.alias?a.alias:"")+'">'+
       '<span class="pl '+(n.cls||"")+'" title="'+waEsc(n.t||"")+'">'+waEsc(n.t||"")+'</span>'+
+      '<span class="rp"><input type="checkbox" class="wa-rp" data-i="'+i+'" title="Repeat the alarm every 30 minutes while a cut here continues"'+(a&&a.repeat?' checked':'')+'></span>'+
       '<button class="wa-x" data-i="'+i+'" title="Remove">✕</button></div>');
   }
   $("waRows").innerHTML=rows.join("");
@@ -2023,15 +2048,15 @@ $("waClose").addEventListener("click",function(){ $("waModal").classList.remove(
 $("waRows").addEventListener("click",function(e){
   var x=e.target.closest(".wa-x"); if(!x) return;
   var row=x.parentNode, inp=row.querySelector(".wa-pc"), al=row.querySelector(".wa-al"), pl=row.querySelector(".pl");
-  inp.value=""; al.value=""; pl.textContent=""; pl.className="pl"; inp.focus();
+  inp.value=""; al.value=""; pl.textContent=""; pl.className="pl"; row.querySelector(".wa-rp").checked=false; inp.focus();
   $("waMsg").textContent="removed — Save to keep the change";
 });
 $("waSave").addEventListener("click",function(){
   var list=[], orphan=0;
   Array.prototype.forEach.call(document.querySelectorAll("#waRows .wa-row:not(.wa-head)"),function(row){
     var v=row.querySelector(".wa-pc").value.trim().toUpperCase().replace(/\s+/g," ");
-    var al=row.querySelector(".wa-al").value.replace(/\s+/g," ").trim();
-    if(v) list.push(al?{pc:v, alias:al}:v); else if(al) orphan++; });
+    var al=row.querySelector(".wa-al").value.replace(/\s+/g," ").trim(), rp=row.querySelector(".wa-rp").checked;
+    if(v) list.push({pc:v, alias:al||undefined, repeat:rp||undefined}); else if(al) orphan++; });
   $("waMsg").textContent="checking postcodes…";
   fetch("/api/powercut-watch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({areas:list})})
     .then(function(r){ return r.json(); })
@@ -2043,7 +2068,7 @@ $("waSave").addEventListener("click",function(){
       if(rej.length){
         var rowsEl=document.querySelectorAll("#waRows .wa-row:not(.wa-head)"), k=waAreas.length;
         rej.forEach(function(r){ if(k>=WA_SLOTS) return; var row=rowsEl[k], pl=row.querySelector(".pl");
-          row.querySelector(".wa-pc").value=r.input; row.querySelector(".wa-al").value=r.alias||"";
+          row.querySelector(".wa-pc").value=r.input; row.querySelector(".wa-al").value=r.alias||""; row.querySelector(".wa-rp").checked=false;
           pl.textContent=r.error; pl.title=r.error; pl.className="pl bad"; k++; });
       }
       $("waMsg").innerHTML = !j.ok ? '<span class="err">error: '+waEsc(j.error||"?")+'</span>'
@@ -2068,6 +2093,10 @@ function wcUnit(){ return wcMetric==="faults"?"new faults/hr":"customers off/hr"
 function ensureWcRegions(){
   var box=$("wcRegions"); if(!box||box.getAttribute("data-built")) return;
   var keys=Object.keys((wc&&wc.regions)||{}); if(!keys.length) return;
+  // Northern Ireland and Ireland are each one country AND one licence area with the same
+  // data, so keep only the country button for them (no second identically named button)
+  var countryLbl={}; keys.forEach(function(k){ if(k.indexOf("country:")===0) countryLbl[wcLabel(k)]=1; });
+  keys=keys.filter(function(k){ return !(k.indexOf("area:")===0 && countryLbl[wcLabel(k)]); });
   box.innerHTML=keys.map(function(k){ return '<button class="btn'+(k===wcRegion?" on":"")+'" data-r="'+k+'">'+wcLabel(k)+'</button>'; }).join("");
   box.setAttribute("data-built","1");
   box.addEventListener("click",function(e){
@@ -2100,6 +2129,7 @@ function updateWcPred(el){
 function drawWcCurve(cv, small){
   if(!cv) return;
   var H=small?150:360, g=fitCanvas(cv,H), x=g.x; x.clearRect(0,0,g.w,g.h);
+  x.font="11.33px sans-serif";            // canvas default 10px + 1 pt
   var e=wcEntry(), cur=e&&e.curves&&e.curves[wcMetric], bins=(cur&&cur.bins)||[];
   if(!bins.length){
     x.fillStyle="#54637a"; x.textAlign="center"; var m=(wc&&wc.maturity)||{};
@@ -2109,20 +2139,22 @@ function drawWcCurve(cv, small){
   }
   var binkt=(wc.bin_kt||5), gmax=bins[bins.length-1].g+binkt, ymax=1;
   bins.forEach(function(b){ ymax=Math.max(ymax,b.mean+b.sd); }); ymax=niceMax(ymax);
-  var L=small?38:48, R=10, T=8, B=small?18:24;
+  var L=small?38:48, R=10, T=8, B=small?30:36;   // room for tick labels AND the axis title under them
   function PXx(gg){ return L+(g.w-L-R)*(gg/gmax); }
   function PYy(v){ return (H-B)-(H-B-T)*(v/ymax); }
   x.strokeStyle="#1c2836"; x.lineWidth=1; x.beginPath(); x.moveTo(L,T); x.lineTo(L,H-B); x.lineTo(g.w-R,H-B); x.stroke();
   var yn=small?3:4; x.textBaseline="middle";
   for(var k=0;k<=yn;k++){ var v=ymax*k/yn, yy=PYy(v);
     x.strokeStyle="#161f2b"; x.beginPath(); x.moveTo(L,yy); x.lineTo(g.w-R,yy); x.stroke();
-    x.fillStyle="#54637a"; x.textAlign="right"; x.fillText(nfmt(v), L-4, yy); }
+    x.font="12.67px sans-serif";        // y-axis values: a further 1 pt
+    x.fillStyle="#6b7a90"; x.textAlign="right"; x.fillText(nfmt(v), L-4, yy); x.font="11.33px sans-serif"; }
   x.textBaseline="alphabetic"; x.textAlign="center";
   var step=(gmax>60?20:10);
   for(var gg=0; gg<=gmax; gg+=step){ var xx=PXx(gg);
     x.strokeStyle="#141d28"; x.beginPath(); x.moveTo(xx,T); x.lineTo(xx,H-B); x.stroke();
-    x.fillStyle="#54637a"; x.fillText(gg, xx, H-6); }
-  x.textAlign="right"; x.fillStyle="#3f5168"; x.fillText("gust kt", g.w-R, H-6); x.textAlign="left";
+    x.fillStyle="#54637a"; x.fillText(gg, xx, H-B+14); }
+  // axis title centred below the tick labels (it used to sit on top of the last one)
+  x.fillStyle="#7f8fa6"; x.fillText("gust (kt)", L+(g.w-L-R)/2, H-3); x.textAlign="left";
   // baseline (calm background)
   var by=PYy(cur.baseline||0); x.strokeStyle="#3a4b5f"; x.setLineDash([4,3]);
   x.beginPath(); x.moveTo(L,by); x.lineTo(g.w-R,by); x.stroke(); x.setLineDash([]);
@@ -2145,7 +2177,7 @@ function drawWcCurve(cv, small){
     if(pp&&pp.expected!=null){ x.beginPath(); x.arc(lx,PYy(Math.min(pp.expected,ymax)),3.5,0,7); x.fillStyle="#ffb454"; x.fill(); }
     if(!small){ x.fillStyle="#ffb454"; x.textAlign="center"; x.fillText("now "+Math.round(lg)+"kt", Math.min(Math.max(lx,L+18),g.w-R-18), T+9); x.textAlign="left"; }
   }
-  if(!small){ x.save(); x.translate(12,H/2); x.rotate(-Math.PI/2); x.fillStyle="#54637a"; x.textAlign="center"; x.fillText(wcUnit(),0,0); x.restore(); }
+  if(!small){ x.save(); x.font="12.67px sans-serif"; x.translate(13,H/2); x.rotate(-Math.PI/2); x.fillStyle="#7f8fa6"; x.textAlign="center"; x.fillText(wcUnit(),0,0); x.restore(); }
 }
 (function(){
   var t=$("tgWind"); if(t) t.addEventListener("change",function(e){ var on=e.target.checked;

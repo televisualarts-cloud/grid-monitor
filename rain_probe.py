@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261022.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -421,6 +421,8 @@ class ProbeState:
     land_active: bool = False                          # was a land front approaching last cycle?
     land_last_dir: str | None = None                   # spoken direction of the tracked land front
     announced: dict = field(default_factory=dict)      # key -> last-announced phrase (edge-triggered)
+    home_wet_since: float = 0.0                        # start of the current spell of rain measured at home (0 = dry)
+    home_wet_last: float = 0.0                         # last cycle rain was measured at home (gap tolerance)
     was_active: bool = False                            # was the situation non-calm last cycle?
     # ---- approach episode (the single owner of "rain approaching" speech) ----
     appr_ep: dict = field(default_factory=dict)        # live episode: {state,id,cls,dir,alert_ts,...}; {} = idle
@@ -531,7 +533,8 @@ def compute_forward(minute, now, current_band):
         return None
     peak = max(v for _, v in fut)
     raining = current_band not in (None, "dry")
-    out = {"onset_eta_min": None, "intensify": False, "peak_mmh": round(peak, 2)}
+    out = {"onset_eta_min": None, "intensify": False, "intensify_eta_min": None,
+           "peak_mmh": round(peak, 2)}
     if not raining:
         for dt, v in fut:
             if v >= FORWARD_ONSET_MMH:
@@ -539,7 +542,26 @@ def compute_forward(minute, now, current_band):
                 break
     elif _BANDRANK.get(classify_intensity(peak), 0) > _BANDRANK.get(current_band, 0):
         out["intensify"] = True
+        cur = _BANDRANK.get(current_band, 0)
+        for dt, v in fut:                       # first minute in a heavier band than now
+            if _BANDRANK.get(classify_intensity(v), 0) > cur:
+                out["intensify_eta_min"] = max(0, int(round((dt - now) / 60.0)))
+                break
     return out
+
+
+HEAVIER_CONTINUING_S = 30 * 60   # raining at home this long -> "Rain is continuing ... and is expected to ..."
+HOME_WET_GAP_S       = 20 * 60   # a dry spell shorter than this doesn't end the rain spell
+
+
+def heavier_when(eta_min):
+    """Spoken timing for 'become heavier': 'in a few minutes' / 'in about N minutes' /
+    'soon' when the time isn't known. Never 'shortly'."""
+    if eta_min is None:
+        return "soon"
+    if eta_min <= 5:
+        return "in a few minutes"
+    return f"in about {_round5(eta_min)} minutes"
 
 
 def eta_from_speed(dist_km, speed_kmh, measured=False):
@@ -2019,7 +2041,8 @@ TEMPLATES = {
     "gauge_confirm": ("notice",  "Rain at your location is now confirmed by nearby gauges."),
     "compound_wet":  ("warning", "Heavy rain at your location, with pressure falling quickly."),
     "flood_corrob":  ("warning", "Heavy rain here, and a flood alert is in force for the area. Keep an eye on local water levels."),
-    "nowcast_heavier": ("notice", "The rain is expected to become heavier shortly."),
+    "nowcast_heavier": ("notice", "The rain is expected to become heavier {when}."),
+    "nowcast_heavier_cont": ("notice", "Rain is continuing at your location and is expected to become heavier {when}."),
     "fwd_onset":      ("notice", "Rain is expected within about {eta} minutes."),
     "fwd_onset_soon": ("notice", "Rain is expected within the next few minutes."),
     "settled":       ("notice",  "The rain has cleared from the area."),
@@ -2153,7 +2176,15 @@ def select(situation):
             cands.append(("forward", TEMPLATES["fwd_onset"][0],
                           TEMPLATES["fwd_onset"][1].format(eta=eta)))
     elif fwd and raining and fwd.get("intensify"):
-        cands.append(("forward", *TEMPLATES["nowcast_heavier"]))
+        # after a long spell of rain the listener may have stopped noticing it, so say it
+        # is still raining; the timing comes from the minute nowcast. The 4th element is
+        # the throttle identity: the countdown changing ("about 10" -> "a few minutes")
+        # must not re-speak it.
+        tkey = ("nowcast_heavier_cont"
+                if (situation.get("wet_for_s") or 0) >= HEAVIER_CONTINUING_S else "nowcast_heavier")
+        cands.append(("forward", TEMPLATES[tkey][0],
+                      TEMPLATES[tkey][1].format(when=heavier_when(fwd.get("intensify_eta_min"))),
+                      "heavier"))
 
     # "settled" (all-clear) is NOT emitted here — it is a one-shot handled in
     # run_probe on the active->calm transition, so it never repeats or fires out
@@ -3756,6 +3787,14 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                  "approach": appr, "land": land, "sea": sea, "confirmed": confirmed,
                  "model_only": model_only, "flood_active": flood_active,
                  "wind_from": wind_from, "forward": forward}
+    # length of the current spell of rain MEASURED at home (brief dry gaps tolerated)
+    if home_band not in (None, "dry"):
+        if not state.home_wet_since or now - (state.home_wet_last or 0) > HOME_WET_GAP_S:
+            state.home_wet_since = now
+        state.home_wet_last = now
+    elif state.home_wet_since and now - (state.home_wet_last or 0) > HOME_WET_GAP_S:
+        state.home_wet_since = 0.0
+    situation["wet_for_s"] = (now - state.home_wet_since) if state.home_wet_since else 0
 
     cands = select(situation)
 
@@ -3765,15 +3804,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # A persistent state is therefore announced ONCE, never on a repeating timer.
     would = []
     now_keys = {}
-    for key, tier, phrase in cands:
+    for c in cands:
+        key, tier, phrase = c[:3]
+        ident = c[3] if len(c) > 3 else phrase     # optional stable identity for the edge trigger
         if key not in now_keys:
-            now_keys[key] = (tier, phrase)
-    for key, (tier, phrase) in now_keys.items():
+            now_keys[key] = (tier, phrase, ident)
+    for key, (tier, phrase, ident) in now_keys.items():
         if key in APPR_RETIRED_KEYS:
             continue            # approach speech is owned by the approach episode (below)
-        if state.announced.get(key) != phrase:
+        if state.announced.get(key) != ident:
             would.append({"tier": tier, "key": key, "phrase": phrase})
-    state.announced = {k: v[1] for k, v in now_keys.items() if k not in APPR_RETIRED_KEYS}
+    state.announced = {k: v[2] for k, v in now_keys.items() if k not in APPR_RETIRED_KEYS}
 
     # Land-front fade: a ONE-SHOT when a front that was approaching weakens or
     # veers away before arriving (and hasn't simply arrived — the band/confirm

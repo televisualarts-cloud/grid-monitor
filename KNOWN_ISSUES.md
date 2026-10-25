@@ -8,7 +8,7 @@ plausibility**. Estimated, derived, stale, or basis-mismatched data must be
 labelled as such; a display that is individually accurate but invites a
 misleading reading is treated as a bug.
 
-Last reviewed: 261014.
+Last reviewed: 261023.
 
 ---
 
@@ -17,6 +17,18 @@ Last reviewed: 261014.
 - Weather and EA rain gauge API feeds are flakey. EA endpoints regularly error 503;
   OM and OWM APIs appear to time out. Using a fixed IP and avoiding a VPN doesn't
   seem to help. Investigations ongoing (see the candidate issues below).
+
+---
+
+## Transmission wall — line flows are modelled (BY DESIGN)
+
+- **What:** the wall's line flows come from a DC load flow on the OpenStreetMap-derived network, not measurements (NESO does not publish per-circuit flows, breaker states or live outages). Demand is spread by DNO-area customer share. Embedded generation is not in the BM data, so it shows only as lower demand.
+- **Scotland → England transfer** is measured across the England–Scotland border from the region outlines (coarse: 13 shared points), with offshore nodes assigned by which side of the border's sea ends they lie. NESO's SCOTEX boundary is not exactly the border, so the comparison is indicative.
+- **Internal HVDC:** Western Link flow is estimated as a share of the Scotland→England transfer (2,250 MW against NESO's SCOTEX limit); Caithness–Moray as a capped parallel path. To check over the coming days: modelled Scotland→England against NESO's SCOTEX day-ahead flow.
+- **Placement:** units go to the nearest network node from Terravolt coordinates, so a station can appear under a neighbouring substation's name (Sizewell at "Galloper", Torness at "Neart na Gaoithe"). About a quarter of nodes have no OpenStreetMap name. Shetland units are placed at Blackhillock (Shetland HVDC landing).
+- **132 kV distribution** (England, Wales, NI) is drawn for detail only and is not in the flow model: DNOs often run these networks split, so a meshed model would put flow where none goes. Nothing below 132 kV is in the source network.
+- **Line loading %** is not shown: OSM-derived ratings make radial offshore cables look overloaded.
+- **History:** the per-unit charts (2 h) and the interconnectors' 15-minute change build only while the wall or the network pop-up is open, and are not kept across server restarts.
 
 ---
 

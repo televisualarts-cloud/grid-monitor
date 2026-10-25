@@ -23,6 +23,7 @@ gauge_mutes.json
 rain_home.json
 server_port.json
 powercut_watch.json
+outcode_centroids.json
 
 # ── Logs / accumulating history ──
 margin_history.json
@@ -32,6 +33,22 @@ alert_history/
 octopus_history/
 rain_episodes-*.jsonl
 rain_threats-*.jsonl
+powercuts-*.jsonl
+powercut_last_ids.json
+gas_probe-*.jsonl
+windcuts-*.jsonl
+windcuts_state.json
+windcuts_binstats.json
+api_calls.jsonl
+api_usage_daily.json
+om_debug.jsonl
+pressure_history.json
+winddir_history.json
+wind_budget.json
+forecast_window.json
+ring_sample_ts.json
+wall_history.json
+captures/
 reservoir_levels-*.jsonl
 reservoir_cache.json
 reservoir_company_log.jsonl
@@ -40,6 +57,12 @@ reservoir_store.bak.json
 balancing_store.json
 balancing_store.bak.json
 balancing_store.tmp
+
+# ── Local working files (not part of the app) ──
+catalogue_raw.json
+catalogue_matches.txt
+dno_boundaries.json
+*.pdf
 
 # ── Python ──
 __pycache__/

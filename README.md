@@ -38,10 +38,10 @@ A dashboard for monitoring the GB electricity grid and GB gas supply in real tim
   what NESO spends each day to keep the system balanced. It is optional; without
   it the panel says the module isn't installed.
 
-  `gas_probe.py` is an optional companion too: it watches National Gas's published
-  notices and a derived gas-margin signal and logs what a gas alert would say (a
-  diagnostic — it doesn't sound an alarm of its own). Put it in the same folder to
-  enable it.
+  `gas_probe.py` is an optional companion too: it runs the gas alarm ladder
+  (National Gas's published notices plus derived supply-margin and linepack signals),
+  logs every reading, and feeds the dashboard's **Gas supply & margin** alarm category.
+  Put it in the same folder to enable it.
 
   `powercuts.py` aggregates the live outage feeds and `powercuts_page.html` is its
   map page; `metar.py` and `windcuts.py` add the optional wind vs power-cuts
@@ -85,7 +85,7 @@ Once running, the server writes these into the same folder as needed:
 - `api_usage_daily.json` and `api_calls.jsonl` — the per-UTC-day tally of upstream weather calls by source and purpose, plus a rolling event log of each real call.
 - `om_debug.jsonl` — one line per Open-Meteo HTTP attempt (outcome, HTTP status, exact rejection text, and any rate-limit / Retry-After headers). This is the evidence trail for diagnosing an "Open-Meteo down" report: it shows which limit (per minute, hour or day) Open-Meteo said was hit — or whether a "daily / try again tomorrow" reply came despite a low real call count, which points to a shared/CGNAT IP rather than this app's usage.
 - `rain_episodes-YYYY-MM.jsonl` and `rain_threats-YYYY-MM.jsonl` — the rain engine's record of each approaching-rain episode (alert, confirm, arrival or fizzle) and of every approach it weighed, alerted or not, used to tune the rain alerts.
-- `gas_probe-YYYY-MM.jsonl` (when `gas_probe.py` is installed) — the gas probe's readings and the phrase it would have spoken.
+- `gas_probe-YYYY-MM.jsonl` (when `gas_probe.py` is installed) — the gas alarm readings each hour and anything spoken.
 - `ring_sample_ts.json` — the last time the OpenWeather backup gauges (see *weather API limits*) were sampled, so their sampling interval survives a server restart and doesn't re-spend the quota on every restart.
 - A `captures/` folder — PNG images you save from the frequency-history viewer's **⭳ save** button.
 - Power-cuts data (when the power-cuts files are installed): `powercut_keys.json` — the operator API keys you enter on the page (git-ignored; sent only to the operator they belong to); `powercuts-YYYY-MM.jsonl` — the outage history; `powercut_last_ids.json` — the incident IDs seen last poll, for counting new and cleared cuts; `powercut_watch.json` — your monitored postcode areas (git-ignored); and, for the wind-correlation model, `windcuts_binstats.json` and `windcuts_state.json` plus a `windcuts-YYYY-MM.jsonl` audit log. These are written by the server's background sampler whether or not the power-cuts page is open.
@@ -110,9 +110,9 @@ After you enter Octopus Energy credentials:
 ### Status and header
 - **Status badge (top area):** a green flashing icon and "nominal" means the server is pulling data correctly. It turns amber or red for warnings and alarms.
 - **Summary chips (top centre):** quick-glance pills for electricity, gas, floods and UK & Ireland power cuts. The electricity chip is always shown; the gas and flood chips only appear when there's something worth flagging; the power-cuts chip shows the live UK & Ireland customers-off total (bold, coloured by severity, with a planned/unplanned split in its tooltip) whenever the power-cuts feed is up. Click a chip to jump to the relevant page. (The gas chip is a *derived* signal, not an official National Grid Margins Notice — the tooltip says so.)
-- **Buttons (top right), left to right:** **live powercuts map** (opens the UK & Ireland power-cuts map — the same as clicking the power-cuts chip), **alarms**, **gas**, **ea** (Environment Agency), **my home**, and **history**, which opens the alert history and statistics view (see *Alert system* below).
+- **Buttons (top right), left to right:** **live powercuts map** (opens the UK & Ireland power-cuts map — the same as clicking the power-cuts chip), **alarms**, **gas**, **ea** (Environment Agency), **my home**, **history**, which opens the alert history and statistics view (see *Alert system* below), **🗺 network**, which opens the transmission network map as a full-page pop-up, and **▦ wall**, which opens the transmission wall in its own window (see *Transmission wall* below). On narrow screens the buttons wrap onto more lines.
 
-Press **Esc** to close any of the full-screen pages (generators, gas, power cuts, EA, My Home, colourgramme, alert history, balancing costs).
+Press **Esc** to close any of the full-screen pages (generators, gas, power cuts, EA, My Home, colourgramme, alert history, balancing costs, network map).
 
 ---
 
@@ -126,13 +126,13 @@ Press **Esc** to close any of the full-screen pages (generators, gas, power cuts
 - **National Demand** — current demand, plus an *estimated* national consumption figure (labelled "est").
 - **Carbon Intensity** — grams of CO₂ per kWh, with the current index band (e.g. low/moderate/high) and the trend versus an hour ago.
 - **Generation and Imports by Source** — a bar chart sorted from biggest contributor down (very small ones are omitted). Each source shows a trend arrow versus an hour ago, and estimated figures carry an "est" tag. A legend shows the renewable and low-carbon percentages. The interconnectors are drawn in a graded blue family so each one is distinguishable when stacked.
-  - **generators button** — opens a full-screen "tree-map" style view of all the major generating units currently feeding the grid.
+  - **generators button** — opens a full-screen "tree-map" style view of all the major generating units currently feeding the grid, one tile per station under its site name. Each unit's level is NESO's latest accepted (instructed) level where one applies, else its Physical Notification, so plant running on NESO instructions is counted even when it notified 0 MW. Small supplier/aggregator units are one "Aggregated small sites" tile per fuel.
   - **7-day button** — opens a generation-history pop-up. Two live plots cover the last seven days — output (MW) and share (%), stacked by fuel — above an **archive panel** that shows any one week, Sunday→Saturday, all in UTC. The archive steps by whole weeks (◀ ▶ or the year/month/day pickers, back to 2017), toggles between MW and %-share, and always shows the full seven days even where data is missing (gaps read as zero; the current week fills left to right). Each week's data is rolled into a permanent weekly file automatically. Any week with missing periods — including the **current, in-progress week** — can have just those gaps filled on demand with **fill from BMRS** / **fill gaps** (Elexon FUELINST for the metered fuels plus Sheffield PVLive for embedded solar, both modelled/external and labelled as such). Only the already-elapsed gaps are added and self-logged readings are always kept, so a week that mixes both is shown as "gaps filled (BMRS)"; the not-yet-elapsed part of the current week is left untouched. A week that is entirely a prior BMRS pull instead offers **re-pull** to refresh it. Self-logged data is never overwritten by a fill.
 - **Balancing Costs** — what NESO spends each day to keep the system balanced: six summary figures, with an optional daily cost chart in the panel and a **details** pop-out. See *Balancing costs* below.
 - **Resource Conditions** — weather at 12 renewable-energy sites (needs an OpenWeather key — see below).
 - **Insight** — a short plain-language read on current conditions, including a cross-check of forecast wind against metered wind where available.
 - **Capacity Margin** — how much generation could be called up at medium notice, shown as a radial gauge plus a −24h/+24h trend graph.
-- **Immediate Operating Reserve** — how much reserve is instantly available if a generating unit trips off. Shows spinning reserve, the largest single unit (infeed), and whether reserve covers it — with a warning if it doesn't.
+- **Immediate Operating Reserve** — how much reserve is instantly available if a generating unit trips off. Shows spinning reserve, the largest single unit (infeed), and whether reserve covers it — with a warning if it doesn't. Units are counted at their NESO-instructed level where one applies (the same rule as the generators view and battery figure).
 - **How Demand Is Being Met Now** — the split between domestic generation and imports, plus a 12-hour wholesale electricity price graph.
 - **Interconnector Flows** — which interconnectors are importing and which are exporting; direction is detected live and recolours if a link reverses.
 - **System Warnings** — official NESO notices from the last 48 hours. Notices in force are listed first with their severity; recent ones that were cancelled, replaced by a newer notice, have ended, or are operational (IT, trades, tests) follow, dimmed. Severity follows the notice type: demand control is critical; high risk of demand reduction, a Capacity Market Notice or risk of system disturbance is a warning; an Electricity Margin Notice and other advisory notices are a notice. An Electricity Margin Notice is a market signal, not a sign that power cuts are expected.
@@ -239,7 +239,17 @@ Open with the **gas** button. It shows the current supply and demand across the 
 - An animated flow diagram (sources → the NTS "spine" → demand and exports), with brightness waves along the connectors.
 - Interconnectors that can flow both ways are detected and recoloured according to direction.
 - A supply/demand **balance** percentage on the header badge and on the spine label.
-- A **48-hour linepack trend** chart (how much gas is "in the pipes").
+- A **48-hour linepack trend** chart (how much gas is "in the pipes"), with National Gas's latest forecast of today's lowest linepack and when it falls.
+- An **Alarm levels** strip: each measure the gas alarms watch, outlined blue, amber or red at notice, warning or critical (hover for the levels).
+
+**Gas alarms** (alarm category **Gas supply & margin**, off by default). Gas has its own tones — a softer, lower triangle wave (notice one note, warning two rising, critical three rising) — and every spoken line starts "Gas:".
+- **Official notices**, spoken as published: Gas Deficit Warning (warning) and Gas Balancing Notification (critical), and when either is withdrawn.
+- **Forecast demand** (National Gas's NTS forecast, tomorrow's once published at about 13:10): 300 mcm notice, 350 warning, 400 critical — announced once per day and level, and critical only if supply is also tight. A peak winter day can exceed 400 mcm (417 in 2017).
+- **Demand against expected available supply** — the test a real Margins Notice uses. Available supply is estimated as non-storage supply flowing now (UK shelf, Norway, interconnector imports) plus the published daily deliverability of the LNG terminals and storage sites (about 410 mcm/d in October 2026): 90 % (or under 50 mcm/d spare) notice, 95 % warning, 100 % critical.
+- **Linepack**: predicted closing linepack under 5 mcm above National Gas's forecast minimum (warning) or at or below it (critical); live linepack more than 5 mcm below the forecast minimum (warning); predicted closing linepack revised down more than 10 mcm in 3 hours (notice); linepack falling faster than normal for the hour (warning, only alongside another signal).
+- **Storage** stock lasting under 5 days at full withdrawal (notice), and the **system average price** at twice its 30-day median or more (notice).
+
+The derived levels are first-pass and are being calibrated over the winter; each must last 2 hours before it speaks, then repeats every 3 hours while it lasts, with a one-off "back to normal" when it clears. The server evaluates them hourly (`/api/gas-probe`) and logs each reading to `gas_probe-YYYY-MM.jsonl`. The header's "gas margin tight" chip (demand over supply by 10 % or more right now) is visual only.
 
 The **balance** is the live supply−demand flow imbalance (total supply minus total demand, in mcm/d) taken directly from the National Gas feed — it is a flow measurement, not a derived rate of change of linepack. The linepack trend (a stock, in mcm) and the balance (a flow) are independent measurements and are not an integral/derivative pair, so short-term movements in one need not match the other. There's no official published "tight" threshold, so any such note is explanatory only.
 
@@ -258,8 +268,7 @@ works on its own at the `/powercuts` URL, independently of the dashboard.
 
 The map draws every distribution network operator's live outages in one place: the
 14 GB DNO licence areas (NGED, UKPN, Northern Powergrid, ENWL, SPEN, SSEN) plus
-**NIE Networks** (Northern Ireland) and **ESB Networks PowerCheck** (Republic of
-Ireland), all in one style and folded into a single national total. Each incident
+**NIE Networks** (Northern Ireland) and **ESB Networks PowerCheck** (Ireland), all in one style and folded into a single national total. Each incident
 is a dot sized and coloured by how many customers it affects; planned and unplanned
 cuts are distinguished; and per-operator and per-country breakdowns, history plots
 over 6h/24h/7d/30d, and a statistics panel sit alongside. Where an operator
@@ -313,7 +322,9 @@ plot says so. Flood warnings are not included, as they are not kept historically
 
 **API keys.** NGED, UKPN, Northern Powergrid and SSEN need no key, and ESB works out of
 the box (a shared default key is built in). Electricity North West, SP Energy Networks and
-NIE Networks each need a free OpenDataSoft key, entered via **⚙ feeds / keys** on the page. Keys are stored
+NIE Networks each need a free OpenDataSoft key, entered via **⚙ feeds / keys** on the page. Northern
+Powergrid and UKPN also accept an optional key there: without one they share OpenDataSoft's anonymous
+allowance of 5,000 calls a day per internet address, and a free account key gets its own allowance. Keys are stored
 server-side in `powercut_keys.json` and are sent only to the operator they belong to.
 
 **Wind vs power cuts (optional).** With `metar.py` and `windcuts.py` installed, the
@@ -365,7 +376,9 @@ speech: "A monitored postcode area has suffered a power cut. The area is PL3 5, 
 (it publishes none) and when the operator hasn't confirmed one yet. Several areas at once
 become a single message, and each area is announced again, with a soft tone, when its
 power is restored. Muted providers are skipped, and each cut is announced only once, even
-across page reloads.
+across page reloads — unless the area's **Repeat** box is ticked: then the alarm sounds
+again (siren, then a spoken reminder with customers off and estimated restoration) every
+30 minutes while a cut there continues. Planned works repeat only once they have started.
 
 ---
 
@@ -642,8 +655,23 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
+## Transmission wall (`/wall`)
+
+A control-room style page: the GB transmission network at true scale with modelled live flows. Open it from the dashboard's **▦ wall** button or at `http://localhost:8412/wall`. The dashboard's **🗺 network** button opens the same zoomable map as a full-page pop-up (✕ or Esc to close). The pop-up is capped at 1,320 px wide like the other pop-ups; on a phone or narrow window the substation panel moves under the map and the page scrolls.
+
+- **Layouts.** Each window picks its own (press **M**, or add `?screen=` to the address): `hd` 1920×1080, `uw` 5120×1440, `d1` + `d2` for an ultrawide plus an HD screen, `h1` + `h2` for two HD screens. **F** toggles full screen. On screen 1 of a pair, **▶ start screen 2** opens the other layout full screen on your second display (Chrome/Edge ask permission once). `start_wall.bat` opens both as app windows; set each monitor's position and size at the top of the file.
+- **What is measured and what is modelled.** Unit outputs are published by Elexon: each unit's Physical Notification, or its NESO-accepted level where it has been instructed (shown "NESO"). Interconnector flows are metered (FUELINST). **Line flows are a model** (DC load flow in the browser), because measured per-circuit flows are not public; demand is spread by region; internal HVDC flows are estimates. Everything modelled is labelled.
+- **Getting back.** Esc clears the selected substation (so do "✕ clear selection" in the substation panel and a click on empty map).
+- **Regional map.** Pick a preset, or scroll to zoom, drag to move and double-click to zoom in (+/− buttons too). "Follow selection" keeps the selected substation centred.
+- **Regional panel source.** The buttons in its title switch it between the network detail map and the power-cuts map, gas page, rivers & floods page, rain radar, generators treemap, 7-day generation view or My home energy page. Each page keeps running once opened, and each layout remembers its choice.
+- **Reading it.** Each map has a key in a strip below it (the key button hides it and the map grows back). Line colour = voltage; line width grows with modelled MW (2 px per GW); moving dashes = modelled flow direction (faster and brighter = more MW). A circuit value with a tinted background changed at the last model run (about once a minute) by at least 10 MW and 10 %, and shows the direction and amount (▲ / ▼, ⇄ reversed): blue to green rising, yellow to orange to red falling, stronger for a bigger change; it stays until the next run. Values never overlap (some are left out where it's busy) and fade as the map zooms out. Circles = generation at a substation now (area ∝ MW, colour = main fuel). An arc travelling round a circle shows the last 15 minutes: green and clockwise while rising, orange and anticlockwise while falling; a longer arc is a bigger change, a faster one a quicker change (shown from 50 MW and 10 %). Interconnectors are drawn along their cable routes, width proportional to MW (2 px per GW), blue importing and orange exporting, with dashes moving in or out and a label at the far end; the same arc sits at the landing point; ⇄ = direction change scheduled within the hour. The Western Link and Caithness–Moray HVDC lines (dotted amber, estimates) also widen with their estimated MW. The Scotland → England transfer is labelled once, near the middle of the border. Corner brackets mark the selected substation. The "132 kV dist." button in a map's key strip adds the 132 kV distribution lines in England, Wales and Northern Ireland (thin olive lines, detail only, not in the flow model).
+- **System frequency panel.** The wall shows the dashboard's own System frequency panel (value, 1-minute cycle, deviation dial, system risk and 2-hour trace) through its embedded view, `/grid_dashboard.html#embed=freq`, scaled to fit. It is on screen 2 of both dual layouts and at the top left of the ultrawide single layout.
+- **Outages (reported).** Operators' REMIT unavailability reports, fetched from Elexon every 5 minutes, for units and interconnectors reduced now or within 24 hours. A dashed red ring marks a substation with a reduced unit (details in its tooltip and substation panel); interconnector labels show reduced capacity ("cap 1,000/2,000"); the **Outages** panel (screen 2, and the ultrawide single layout) lists them biggest first. These are the operators' own reports, not estimates. Closures and reports running over 6 months are left out.
+- **Data files.** `grid_network.json` (built by `build_network.py`, rarely re-run) must sit next to `grid_server.py`.
+
 ## Other files in this repository
 
+- `wall.py`, `grid_wall.html`, `build_network.py`, `grid_network.json`, `start_wall.bat` — the transmission wall; see *Transmission wall*.
 - `balancing.py` — the balancing-costs module (NESO and Elexon fetchers, estimates, events); see *Balancing costs*.
 - `CHANGELOG.md` — what changed and when, with each file's own build history at the end.
 - `WEATHER_ALERT_DESIGN.md` — how the rain engine works: gauges, sea points, tracking, the approach alert and its tuning values.
@@ -652,4 +680,4 @@ Those features need their own credentials (OpenWeather for weather; Octopus Ener
 
 ---
 
-*README build 261017.1*
+*README build 261025.1*

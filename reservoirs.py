@@ -1,6 +1,6 @@
 """Reservoir storage for the EA page: regional and national readouts plus history.
 
-Build 261016.3  (version = YYMMDD.N in UT; bump on every change to this file)
+Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
 Copyright (c) 2026 Andy Smith, G7IZU. Same MIT licence as grid_server.py.
 
 Standard library only, except that the monthly regional table is
@@ -29,7 +29,7 @@ Sources (all Open Government Licence v3.0 unless noted):
 
 Not available as data: Wales (Dwr Cymru and NRW publish no % full figures),
 Scotland (Scottish Water's page refuses automated requests), Northern Ireland
-(NI Water publishes nothing), Republic of Ireland (Uisce Eireann publishes
+(NI Water publishes nothing), Ireland (Uisce Eireann publishes
 no reservoir storage series).
 
 Public entry point: get_reservoirs(lat, lon, country) -> dict. Cheap: it returns

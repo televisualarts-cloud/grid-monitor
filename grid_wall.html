@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GB Grid Wall</title>
+<!-- GB Energy Monitor · transmission wall · HTML build 261024.15 -->
+<style>:root{
+  --bg:#05080d; --bg2:#0a0e14; --panel:#0d141e; --panel2:#0a1018;
+  --line:#1a2533; --line2:#243346;
+  --ink:#e6edf5; --ink-dim:#8595a8; --ink-faint:#566277;
+  --ok:#39d98a; --warn:#f5b942; --crit:#ff5c6c; --accent:#3fb6c9; --accent2:#5b8def;
+  --v400:#e5574e; --v275:#3f9be6; --v132:#5fb36d; --voff:#a77de0; --vdc:#e2b13c;
+  --imp:#5a97ec; --vdist:#7f9a6a; --exp:#f5934a;
+  --mono:"Cascadia Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --disp:"Space Grotesk",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased;overflow:hidden}
+#stage{position:absolute;left:0;top:0;transform-origin:0 0;background:var(--bg)}
+html.popup,html.popup body{background:var(--bg)}
+html.popup.narrow,html.popup.narrow body{overflow-x:hidden;overflow-y:auto}
+.slot{position:absolute;overflow:hidden}
+.pn{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:10px;padding:14px 16px;height:100%;display:flex;flex-direction:column;min-height:0}
+.pn h2{font-family:var(--mono);font-size:var(--h2,11px);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 10px;font-weight:500;display:flex;align-items:baseline;gap:10px;flex:none}
+.pn h2 .tag{letter-spacing:.06em;text-transform:none;color:var(--warn);border:1px solid rgba(245,185,66,.4);border-radius:4px;padding:0 5px;font-size:.9em}
+.pn h2 .rt{margin-left:auto;letter-spacing:.04em;text-transform:none;color:var(--ink-faint)}
+.body{flex:1;min-height:0;position:relative}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.dim{color:var(--ink-dim)} .faint{color:var(--ink-faint)}
+canvas{display:block}
+
+/* header */
+.hdr{display:flex;align-items:center;gap:22px;height:100%;padding:0 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0b111a,#070b11)}
+.hdr .ttl{font-size:var(--ttl,20px);font-weight:600;letter-spacing:.02em;display:flex;align-items:center;gap:10px}
+.hdr .sub{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.12em;text-transform:uppercase}
+.hdr .clk{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:var(--clk,18px);display:flex;gap:18px;margin-left:auto}
+.hdr .clk span b{font-weight:500;color:var(--ink)} .hdr .clk span{color:var(--ink-faint)}
+.hdr .snap{font-family:var(--mono);font-size:12px;color:var(--warn);border:1px solid rgba(245,185,66,.4);border-radius:6px;padding:4px 9px}
+.hdr button{font-family:var(--mono);font-size:12px;color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:5px 11px;cursor:pointer}
+.hdr button:hover,.hdr button:focus-visible{color:var(--ink);border-color:var(--accent);outline:none}
+
+/* big numbers */
+.kpis{display:grid;grid-template-columns:repeat(var(--kc,3),1fr);gap:10px 16px}
+.kpi .k{font-family:var(--mono);font-size:var(--kk,10px);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)}
+.kpi .v{font-size:var(--kv,28px);font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.kpi .v small{font-family:var(--mono);font-size:.42em;color:var(--ink-dim);font-weight:400;margin-left:4px}
+.kpi .s{font-family:var(--mono);font-size:var(--ks,11px);color:var(--ink-dim);margin-top:2px}
+
+/* rows with bars */
+.rows{display:flex;flex-direction:column;gap:var(--rg,7px)}
+.row{display:grid;grid-template-columns:var(--rc,130px 1fr 70px);align-items:center;gap:10px;font-size:var(--rf,12.5px)}
+.row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-dim)}
+.row .val{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar{position:relative;height:var(--bh,12px);background:#121b27;border-radius:3px;overflow:visible}
+.bar i{position:absolute;top:0;bottom:0;border-radius:3px}
+.bar .lim{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink-dim)}
+.bar .mid{position:absolute;top:-3px;bottom:-3px;left:50%;width:1px;background:var(--line2)}
+
+.stack{display:flex;height:var(--sh,20px);border-radius:4px;overflow:hidden;gap:1px;background:#000}
+.stack span{height:100%}
+.lg{display:flex;flex-wrap:wrap;gap:6px 14px;font-family:var(--mono);font-size:var(--lf,11px);color:var(--ink-dim)}
+.lg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.lg i.ln{height:3px;width:18px;border-radius:0;vertical-align:3px}
+.note{font-family:var(--mono);font-size:var(--nf,10.5px);color:var(--ink-faint);line-height:1.5}
+.warnbox{font-family:var(--mono);font-size:var(--rf,12.5px);color:var(--ink-dim);line-height:1.5}
+
+.tbl{width:100%;border-collapse:collapse;font-size:var(--rf,12.5px)}
+.tbl td{padding:4px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl td.r{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.tbl td.nm{overflow:hidden;text-overflow:ellipsis;max-width:0;width:100%;color:var(--ink-dim)}
+.vchip{display:inline-block;font-family:var(--mono);font-size:.8em;padding:0 5px;border-radius:3px;color:#000;font-weight:600}
+
+/* zoom presets */
+.zbtns{display:flex;flex-wrap:wrap;gap:6px;flex:none;margin-bottom:8px}
+.zbtns button{font-family:var(--mono);font-size:var(--zb,11px);color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:3px 9px;cursor:pointer}
+.zbtns button.on{color:#05221f;background:var(--accent);border-color:var(--accent)}
+.zbtns button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+#tip{position:fixed;pointer-events:none;background:#0b1119;border:1px solid var(--line2);border-radius:7px;padding:7px 10px;font-size:12px;line-height:1.45;max-width:320px;z-index:50;display:none;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+#tip b{font-weight:600}
+
+/* mode picker */
+#picker{position:fixed;inset:0;background:rgba(2,4,8,.88);display:none;align-items:center;justify-content:center;z-index:100}
+#picker.open{display:flex}
+#picker .box{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:26px 28px;width:min(880px,94vw)}
+#picker h3{margin:0 0 4px;font-size:20px;font-weight:600}
+#picker p{margin:0 0 18px;color:var(--ink-dim);font-size:14px;line-height:1.5}
+#picker .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+#picker .opt{background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:14px;cursor:pointer;text-align:left;color:var(--ink);font:inherit}
+#picker .opt:hover,#picker .opt:focus-visible{border-color:var(--accent);outline:none}
+#picker .opt.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+#picker .opt b{display:block;font-size:15px;margin-bottom:3px}
+#picker .opt span{font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+#picker .opt .sch{display:block;margin-top:10px;height:46px;position:relative}
+#picker .opt .sch i{position:absolute;bottom:0;border:1px solid var(--ink-faint);border-radius:2px;background:#121b27}
+#picker .opt .sch i.hi{border-color:var(--accent);background:rgba(63,182,201,.18)}
+#picker .foot{margin-top:16px;font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+@media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
+/* live additions */
+.hdr .live{font-family:var(--mono);font-size:12px;color:var(--ok);border:1px solid rgba(57,217,138,.4);border-radius:6px;padding:4px 9px;white-space:nowrap;max-width:560px;overflow:hidden;text-overflow:ellipsis}
+.hdr .live.bad{color:var(--crit);border-color:rgba(255,92,108,.5)}
+.hdr a.hbtn{font-family:var(--mono);font-size:12px;color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:6px;padding:5px 11px;text-decoration:none}
+.hdr a.hbtn:hover,.hdr a.hbtn:focus-visible{color:var(--ink);border-color:var(--accent);outline:none}
+.up{color:var(--ok)} .dn{color:var(--exp)} .warnc{color:var(--warn)}
+.chip{font-family:var(--mono);font-size:.78em;color:var(--warn);border:1px solid rgba(245,185,66,.45);border-radius:3px;padding:0 4px;margin-left:4px}
+i.fd{display:inline-block;width:9px;height:9px;border-radius:50%}
+.mv{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.mvh{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 5px}
+.wn{border:1px solid var(--line2);border-radius:8px;padding:9px 11px;margin-bottom:8px;font-size:var(--rf,12.5px);line-height:1.45}
+.wn-crit{border-color:rgba(255,92,108,.6)} .wn-warn{border-color:rgba(245,185,66,.6)} .wn-note{border-color:rgba(91,141,239,.5)}
+#fsprompt{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(2,4,8,.85);z-index:120;cursor:pointer;font-size:22px;color:var(--ink)}
+#fsprompt.open{display:flex}
+.pn h2 .rsrc{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;letter-spacing:0;text-transform:none}
+.pn h2 .rsrc button{white-space:nowrap;font-family:var(--mono);font-size:var(--zb,11px);color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:2px 8px;cursor:pointer}
+.pn h2 .rsrc button.on{color:#05221f;background:var(--accent);border-color:var(--accent)}
+.pn h2 .rsrc button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.zbtns .zhint{align-self:center;margin-left:auto;font-size:10.5px}
+.pn h2 .rtitle{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.mkey{flex:none;position:relative;margin-top:6px;font-family:var(--mono);font-size:var(--mk,10.5px);color:var(--ink-dim);border-top:1px solid var(--line);padding:5px 140px 0 0;line-height:1.5}
+.mkey .mkb{display:flex;flex-wrap:wrap;gap:1px 14px}
+.mkey .mkb>div{white-space:nowrap}
+.mkey .mkt{position:absolute;right:0;top:5px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:none;border:1px solid var(--line2);border-radius:4px;padding:0 6px;cursor:pointer}
+.mkey .mkt:focus-visible{outline:2px solid var(--accent)}
+.mkey.off{padding:3px 140px 0 0;min-height:20px}
+.mkey.off .mkb{display:none}
+.mkey i.ln{display:inline-block;width:16px;height:3px;vertical-align:3px;margin:0 5px 0 2px}
+.mkey i.ln.dash{background:repeating-linear-gradient(90deg,var(--vdc) 0 4px,transparent 4px 7px)!important}
+.mkey i.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px;opacity:.8}
+.mkey .arcs{margin-right:6px;font-weight:700}
+.mkey .brk{margin-right:6px;color:var(--ink)}
+.mkey .mkd{position:absolute;right:46px;top:5px;font-family:var(--mono);font-size:10px;color:var(--ink-faint);background:none;border:1px solid var(--line2);border-radius:4px;padding:0 6px;cursor:pointer;white-space:nowrap}
+.mkey .mkd.on{color:#0a1209;background:var(--vdist);border-color:var(--vdist)}
+.mkey .mkd:focus-visible{outline:2px solid var(--accent)}
+.mkey i.ln.thin{height:1.5px;vertical-align:4px}
+.pn h2 .rt .clr{font-family:var(--mono);font-size:11px;letter-spacing:0;text-transform:none;color:var(--ink);background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:2px 9px;cursor:pointer}
+.pn h2 .rt .clr:hover,.pn h2 .rt .clr:focus-visible{border-color:var(--accent);outline:none}
+.mkey i.ln.dash2{background:repeating-linear-gradient(90deg,#8595a8 0 5px,transparent 5px 9px)!important}
+.popbar{display:flex;align-items:center;gap:16px;height:100%;padding:0 74px 0 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#0b111a,#070b11)}
+.popbar .pt{font-size:20px;font-weight:600}
+.popbar .ps{font-family:var(--mono);font-size:12px;color:var(--ink-faint)}
+@media(max-width:899px){.popbar{gap:10px;padding:0 56px 0 12px}.popbar .pt{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.popbar .ps{display:none}.popbar .clk{font-size:13px}.popbar .live{font-size:11px;padding:3px 6px}}
+html.popup.narrow .mkey{padding-right:0}html.popup.narrow .mkey .mkb>div{white-space:normal}html.popup.narrow .mkey .mkt,html.popup.narrow .mkey .mkd{position:static;margin:4px 6px 0 0}
+.popbar .live{font-family:var(--mono);font-size:12px;color:var(--ok);border:1px solid rgba(57,217,138,.4);border-radius:6px;padding:4px 9px;white-space:nowrap}
+.popbar .live.bad{color:var(--crit);border-color:rgba(255,92,108,.5)}
+.popbar .clk{margin-left:auto;font-family:var(--mono);font-size:16px;color:var(--ink-faint)}
+.popbar .clk b{color:var(--ink);font-weight:500}
+.pn h2 .rsrc[hidden]{display:none}
+/* regional panel: the title keeps its full width; the source buttons wrap onto a second line when they don't fit */
+.pn h2:has(.rsrc){flex-wrap:wrap;row-gap:6px}
+.pn h2:has(.rsrc) .rtitle{flex:none}
+</style></head><body>
+<div id="stage"></div><div id="tip"></div>
+<div id="fsprompt" role="button" tabindex="0">Click anywhere to show this screen full screen</div>
+<div id="picker" role="dialog" aria-modal="true" aria-labelledby="pkT"><div class="box">
+<h3 id="pkT">Choose this screen's layout</h3>
+<p>Each browser window picks its own layout, so for two screens open this page twice and choose screen 1 on one and screen 2 on the other. Clicking a substation on one screen shows its detail on the other. Press M to come back here, F for full screen.</p>
+<div class="opts">
+<button class="opt" data-m="hd"><b>Single · HD</b><span>1920 × 1080</span><span class="sch"><i class="hi" style="left:0;width:62px;height:33px"></i></span></button>
+<button class="opt" data-m="uw"><b>Single · ultrawide</b><span>5120 × 1440</span><span class="sch"><i class="hi" style="left:0;width:150px;height:42px"></i></span></button>
+<button class="opt" data-m="d1"><b>Dual · screen 1</b><span>5120 × 1440 · network wall</span><span class="sch"><i class="hi" style="left:0;width:120px;height:34px"></i><i style="left:124px;width:46px;height:25px"></i></span></button>
+<button class="opt" data-m="d2"><b>Dual · screen 2</b><span>1920 × 1080 · system figures</span><span class="sch"><i style="left:0;width:120px;height:34px"></i><i class="hi" style="left:124px;width:46px;height:25px"></i></span></button>
+<button class="opt" data-m="h1"><b>Dual HD · screen 1</b><span>1920 × 1080 · network</span><span class="sch"><i class="hi" style="left:0;width:62px;height:33px"></i><i style="left:66px;width:62px;height:33px"></i></span></button>
+<button class="opt" data-m="h2"><b>Dual HD · screen 2</b><span>1920 × 1080 · system figures</span><span class="sch"><i style="left:0;width:62px;height:33px"></i><i class="hi" style="left:66px;width:62px;height:33px"></i></span></button>
+</div><div class="foot">Layouts are drawn at the exact pixel size and scaled to fit the window. On screen 1 of a dual layout, “start screen 2” opens the other screen full screen on your second display (Chrome/Edge ask permission once).</div></div></div>
+<script>"use strict";
+/* GB transmission wall — live. Data: /api/wall-network (static), /api/wall + /api/grid (60 s),
+   /api/gen-history (10 min), /api/wall-history?node= on demand.
+   Line flows are a DC load flow computed here from the published injections: a model, labelled so. */
+const $ = (s, r = document) => r.querySelector(s);
+const fmt = n => n == null || isNaN(n) ? "—" : Math.round(n).toLocaleString("en-GB");
+const gw = n => n == null || isNaN(n) ? "—" : (n / 1000).toFixed(1);
+const sgn = n => (n > 0 ? "+" : n < 0 ? "−" : "") + fmt(Math.abs(n));
+function when(iso) {                               // UK local: "17:30", "tomorrow 06:00" or "Mon 2 Nov 08:00"
+  if (!iso) return "open-ended"; const d = new Date(iso), tz = { timeZone: "Europe/London" };
+  const day = x => x.toLocaleDateString("en-GB", tz), hm = d.toLocaleTimeString("en-GB", Object.assign({ hour: "2-digit", minute: "2-digit" }, tz));
+  const now = new Date(), tm = new Date(now.getTime() + 864e5);
+  return day(d) === day(now) ? hm : day(d) === day(tm) ? "tomorrow " + hm : d.toLocaleDateString("en-GB", Object.assign({ weekday: "short", day: "numeric", month: "short" }, tz)) + " " + hm;
+}
+const outCause = e => { let c = (e.cause || "").toLowerCase().trim(); if (e.planned) c = c.replace(/^planned\s+/, ""); return c === "planned" || c === "unplanned" ? "" : c; };
+const outKind = e => e.kind === "consumption" ? "pumping/demand" : e.kind === "transmission" ? "link capacity" : "output";
+function outText(e) {                              // one REMIT report in words
+  return `−${fmt(e.lost)} MW of ${fmt(e.normal)} ${outKind(e)} · ${e.planned ? "planned" : "unplanned"}${outCause(e) ? " (" + outCause(e) + ")" : ""} · ${e.soon ? "from " + when(e.start) + " " : ""}until ${when(e.end)}`;
+}
+const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const CSSV = {}; const css = n => CSSV[n] || (CSSV[n] = getComputedStyle(document.documentElement).getPropertyValue(n).trim());
+const UKT = d => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
+const RAMP_MW = 50, RAMP_PCT = 10;              // same thresholds as the dashboard's generator ramps
+const rampFlag = (a, b) => { if (a == null || b == null) return 0; const d = b - a; if (Math.abs(d) < RAMP_MW) return 0; if (100 * Math.abs(d) / Math.max(Math.abs(a), Math.abs(b), 1) < RAMP_PCT) return 0; return d > 0 ? 1 : -1; };
+
+/* ---------------- fuel + interconnector presentation ---------------- */
+const FUEL = { wind: ["Wind", "#3fb6c9"], gas: ["Gas", "#f2683c"], ccgt: ["Gas", "#f2683c"], ocgt: ["Gas OCGT", "#f28f5c"],
+  nuclear: ["Nuclear", "#c96fd6"], biomass: ["Biomass", "#7bb662"], hydro: ["Hydro", "#4f8cff"], pumped: ["Pumped storage", "#7a86ff"],
+  battery: ["Battery", "#e0b0ff"], coal: ["Coal", "#8a8a8a"], oil: ["Oil", "#8a5a3c"], solar: ["Solar", "#f5c542"],
+  other: ["Other", "#9aa0aa"], syncon: ["Sync. compensator", "#566277"], npshyd: ["Hydro", "#4f8cff"] };
+const fuelOf = k => FUEL[k] || FUEL.other;
+const ICMETA = {
+  INTFR: ["IFA", "France", [0.25, 1]], INTIFA2: ["IFA2", "France", [-0.1, 1]], INTELEC: ["ElecLink", "France", [0.6, 1]],
+  INTNEM: ["Nemo", "Belgium", [1, 0.25]], INTNED: ["BritNed", "Netherlands", [1, -0.15]], INTVKL: ["Viking", "Denmark", [1, -0.35]],
+  INTNSL: ["North Sea Link", "Norway", [1, -0.6]], INTIRL: ["Moyle", "N. Ireland", [-1, 0.1]], INTEW: ["East–West", "Ireland", [-1, 0]],
+  INTGRNL: ["Greenlink", "Ireland", [-1, 0.2]]
+};
+const BND_DESC = { SCOTEX: "Scottish export" };
+
+/* ---------------- state ---------------- */
+let NET = null, N = [], L = [], HV = [], LAND = [], MAIN = [], IDX = null;
+let W = null, G = null, GH = null;               // /api/wall, /api/grid, /api/gen-history
+let CHG = new Map();                               // line index -> {d, rel, up, rev, k}: notable change at the last model run
+let ICOUT = {};                                    // interconnector code -> {imp, exp}: REMIT reports reducing it now
+const CHG_MW = 10, CHG_PCT = 10;                   // a circuit change counts at >= 10 MW and >= 10 % between model runs
+const OUTC = "#ff5c5c";                            // reported outage (REMIT)
+let FLOW = null;                                 // {line: Float64Array, hvdc: [], b6ac, b6dc}
+let SEL = null;
+const views = [];
+let lastOK = 0, lastErr = "";
+
+/* ---------------- network load ---------------- */
+function vmax(n) { return n.v[0]; }
+const vcol = v => v >= 380 ? css("--v400") : v >= 260 ? css("--v275") : (v >= 200 || v === 150 || v === 170 || v === 145) ? css("--voff") : css("--v132");
+const vname = v => v >= 380 ? "400 kV" : v >= 260 ? "275 kV" : v >= 200 ? v + " kV offshore" : v + " kV";
+const short = s => (s || "").replace(/\s*\b(\d{3}\s?kV)\b/ig, "").replace(/\b(Grid Supply Point|Substation|Sub Station|Converter Station|converter station|Static Inverter Plant|Wind Farm|onshore substation|Main Intake)\b/ig, "").replace(/\s{2,}/g, " ").trim();
+const nodeName = n => short(n.name) || `Unnamed ${vname(vmax(n))} node`;
+async function loadNetwork() {
+  const r = await fetch("/api/wall-network", { cache: "no-cache" }); if (!r.ok) throw new Error("network " + r.status);
+  NET = await r.json();
+  N = NET.nodes.map((n, i) => ({ i, x: n[0], y: n[1], v: n[2], name: n[3], ni: !!n[4], region: n[5], deg: 0, lines: [], gen: 0, units: [] }));
+  L = NET.lines.map((l, i) => ({ i, a: l[0], b: l[1], v: l[2], ug: !!l[3], km: l[4], s: l[5], x: l[6], g: l[7] }));
+  for (const l of L) {
+    N[l.a].deg++; N[l.b].deg++; N[l.a].lines.push(l); N[l.b].lines.push(l);
+    const g0 = l.g[0], A = N[l.a], B = N[l.b];
+    if ((g0[0] - B.x) ** 2 + (g0[1] - B.y) ** 2 < (g0[0] - A.x) ** 2 + (g0[1] - A.y) ** 2) l.g = l.g.slice().reverse();
+    l.ni = A.ni || B.ni;
+  }
+  HV = NET.hvdc.map(h => Object.assign({}, h));
+  MAIN = N.filter(n => !n.ni).map(n => n.i);
+  IDX = new Int32Array(N.length).fill(-1); MAIN.forEach((n, k) => IDX[n] = k);
+  // regional demand weights
+  const cnt = {}; for (const n of N) if (n.region) cnt[n.region] = (cnt[n.region] || 0) + 1;
+  const tot = Object.values(NET.regions).reduce((a, b) => a + b, 0);
+  for (const n of N) n.w = n.region && cnt[n.region] ? NET.regions[n.region] / tot / cnt[n.region] : 0;
+  LAND = NET.land || [];
+  classifyScotland();
+}
+
+/* ---------------- England–Scotland border ----------------
+   Nodes are split by the real Scotland outline (offshore nodes by which side of the border's sea ends
+   they lie), so the modelled transfer is measured across the border that the map labels. */
+let BORDER = [];
+function inPoly(lon, lat, rings) { let ins = false; for (const ring of rings) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+  const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) ins = !ins; } return ins; }
+function classifyScotland() {
+  const sc = LAND.find(c => c.name === "Scotland"), en = LAND.filter(c => c.name === "England" || c.name === "Wales");
+  for (const n of N) {
+    if (n.ni) { n.scot = false; continue; }
+    if (sc && inPoly(n.x, n.y, sc.rings)) n.scot = true;
+    else if (en.some(c => inPoly(n.x, n.y, c.rings))) n.scot = false;
+    else n.scot = n.y >= (n.x > -2.6 ? 55.8 : 54.95);       // at sea: Solway (west) or Berwick (east) side
+  }
+  // border line: Scotland outline points shared with England, chained from the Solway end
+  BORDER = [];
+  const E = LAND.find(c => c.name === "England"); if (!sc || !E) return;
+  const ep = E.rings.flat(), pts = sc.rings.flat().filter(p => p[0] > -3.7 && p[0] < -1.9 && p[1] > 54.85 && p[1] < 55.9 && ep.some(q => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) < .03));
+  if (pts.length < 2) return;
+  let cur = pts.reduce((a, b) => b[0] < a[0] ? b : a); const left = new Set(pts); left.delete(cur); BORDER.push(cur);
+  while (left.size) { let best = null, bd = 1e9; for (const p of left) { const d = (p[0] - cur[0]) ** 2 + (p[1] - cur[1]) ** 2; if (d < bd) { bd = d; best = p; } } left.delete(best); BORDER.push(best); cur = best; }
+}
+
+/* ---------------- DC load flow (Cholesky on the reduced susceptance matrix) ---------------- */
+const FACT = new Map();
+function factor(skipHV) {        // skipHV: bitmask of HVDC links removed (fixed at their cap)
+  if (FACT.has(skipHV)) return FACT.get(skipHV);
+  const n = MAIN.length, slack = 0, m = n - 1, B = new Float64Array(m * m);
+  const add = (a, b, y) => { const i = IDX[a] - 1, j = IDX[b] - 1;
+    if (i >= 0) B[i * m + i] += y; if (j >= 0) B[j * m + j] += y; if (i >= 0 && j >= 0) { B[i * m + j] -= y; B[j * m + i] -= y; } };
+  for (const l of L) if (!l.ni) add(l.a, l.b, 1 / Math.max(l.x, 1e-5));
+  HV.forEach((h, k) => { if (!(skipHV & (1 << k))) add(h.a, h.b, 1 / h.x_pu); });
+  for (let j = 0; j < m; j++) {                          // in-place Cholesky, lower triangle
+    let s = B[j * m + j]; for (let k = 0; k < j; k++) s -= B[j * m + k] * B[j * m + k];
+    const d = Math.sqrt(Math.max(s, 1e-12)); B[j * m + j] = d;
+    for (let i = j + 1; i < m; i++) { let t = B[i * m + j]; for (let k = 0; k < j; k++) t -= B[i * m + k] * B[j * m + k]; B[i * m + j] = t / d; }
+  }
+  const f = { m, B, slack }; FACT.set(skipHV, f); return f;
+}
+function solve(f, P) {                                  // P: Float64Array(n) in MW -> theta (rad*100MVA)
+  const { m, B } = f, y = new Float64Array(m);
+  for (let i = 0; i < m; i++) { let t = P[i + 1] / 100; for (let k = 0; k < i; k++) t -= B[i * m + k] * y[k]; y[i] = t / B[i * m + i]; }
+  for (let i = m - 1; i >= 0; i--) { let t = y[i]; for (let k = i + 1; k < m; k++) t -= B[k * m + i] * y[k]; y[i] = t / B[i * m + i]; }
+  const th = new Float64Array(m + 1); th.set(y, 1); return th;
+}
+function nodeInjections(src) {           // src: {node: MW} (gen + storage + interconnectors) -> P incl. demand
+  const P = new Float64Array(MAIN.length); let tot = 0;
+  for (const [k, mw] of Object.entries(src)) { const i = IDX[+k]; if (i >= 0) { P[i] += mw; tot += mw; } }
+  let wsum = 0; for (const n of MAIN) wsum += N[n].w;
+  for (const n of MAIN) P[IDX[n]] -= tot * N[n].w / (wsum || 1);   // transmission demand spread by region
+  return { P, tot };
+}
+/* Western HVDC: its flow isn't published. NESO runs it to carry Scottish surplus south alongside the
+   AC border circuits, so it is modelled as a fixed share of the Scotland->England transfer: its rating
+   against the AC capability, taken as NESO's current SCOTEX day-ahead limit (6,000 MW if none), capped
+   at 2,250 MW. Other internal HVDC links are modelled as parallel paths, capped at their rating.
+   Both are estimates and labelled as such. */
+const isScot = n => !!n.scot;      // set at load from the Scotland outline (see classifyScotland)
+function wlShare(k) {
+  const sc = (W && W.boundaries) ? (W.boundaries.rows[W.boundaries.keys[0]] || []).find(r => r.g === "SCOTEX") : null;
+  const ac = sc && sc.lim > 0 ? sc.lim : 6000;
+  return HV[k].cap / (HV[k].cap + ac);
+}
+function runFlow(src) {
+  const { P, tot } = nodeInjections(src);
+  let skip = 0, fixed = HV.map(() => 0), res = null;
+  const wk = HV.findIndex(h => /Western/.test(h.name));
+  if (wk >= 0) { let T = 0; for (const n of MAIN) if (isScot(N[n])) T += P[IDX[n]];
+    skip |= (1 << wk); fixed[wk] = Math.max(-HV[wk].cap, Math.min(HV[wk].cap, T * wlShare(wk))); }
+  for (let it = 0; it < 4; it++) {
+    const Q = P.slice();
+    HV.forEach((h, k) => { if (skip & (1 << k)) { Q[IDX[h.a]] -= fixed[k]; Q[IDX[h.b]] += fixed[k]; } });
+    const th = solve(factor(skip), Q);
+    const hv = HV.map((h, k) => (skip & (1 << k)) ? fixed[k] : (th[IDX[h.a]] - th[IDX[h.b]]) / h.x_pu * 100);
+    let again = false;
+    HV.forEach((h, k) => { if (!(skip & (1 << k)) && Math.abs(hv[k]) > h.cap) { skip |= (1 << k); fixed[k] = Math.sign(hv[k]) * h.cap; again = true; } });
+    res = { th, hv };
+    if (!again) break;
+  }
+  const lf = new Float64Array(L.length).fill(NaN);
+  for (const l of L) if (!l.ni) lf[l.i] = (res.th[IDX[l.a]] - res.th[IDX[l.b]]) / Math.max(l.x, 1e-5) * 100;
+  let b6ac = 0;
+  for (const l of L) if (!l.ni) { const sa = isScot(N[l.a]), sb = isScot(N[l.b]); if (sa !== sb) b6ac += sa ? lf[l.i] : -lf[l.i]; }
+  return { line: lf, hvdc: res.hv, b6ac, b6dc: wk >= 0 ? res.hv[wk] : 0, demand: tot };
+}
+
+/* ---------------- apply live data ---------------- */
+function applyWall(prevNodes) {
+  for (const n of N) { n.out = []; n.units = []; n.gen = 0; n.gen15 = 0; n.gen30 = 0; n.net = 0; n.fuel = null; }
+  const byNodeF = {};
+  for (const [k, us] of Object.entries(W.units || {})) {
+    const n = N[+k]; if (!n) continue;
+    for (const u of us) {
+      const [code, now, m15, p30, p60, fuel, instr, name] = u;
+      n.units.push({ code, now, m15, p30, p60, fuel, instr, name });
+      n.net += now;
+      if (now > 0) n.gen += now; if ((m15 ?? now) > 0) n.gen15 += (m15 ?? now); if ((p30 ?? now) > 0) n.gen30 += (p30 ?? now);
+      if (now > 0) { const f = fuelOf(fuel); const b = byNodeF[k] = byNodeF[k] || {}; b[f[0]] = (b[f[0]] || [0, f[1]]); b[f[0]][0] += now; }
+    }
+    n.units.sort((a, b) => b.now - a.now);
+  }
+  for (const [k, b] of Object.entries(byNodeF)) { const top = Object.entries(b).sort((a, c) => c[1][0] - a[1][0])[0]; N[+k].fuel = { name: top[0], col: top[1][1] }; }
+  const src = {}; for (const n of N) if (n.net) src[n.i] = n.net;
+  for (const [code, e] of Object.entries(W.ic || {})) if (e.node != null) src[e.node] = (src[e.node] || 0) + e.mw;
+  const prevF = FLOW; FLOW = runFlow(src);
+  if (prevF) markChanges(prevF.line, FLOW.line);
+  ICOUT = {};
+  for (const e of W.outages || []) {
+    if (e.soon) continue;
+    if (e.ic) { const o = ICOUT[e.ic] = ICOUT[e.ic] || {}; if (!o[e.dir] || e.avail < o[e.dir].avail) o[e.dir] = e; }
+    else if (e.node != null && N[e.node]) N[e.node].out.push(e);
+  }
+}
+/* A circuit's modelled flow counts as changed when it moves by >= CHG_MW and >= CHG_PCT % between model
+   runs (about one a minute), or reverses with >= CHG_MW either way. The change is kept until the next run:
+   its label is tinted and shows the direction and amount. k = 0..1 strength (100 MW or 50 % = full). */
+function markChanges(a, b) {
+  CHG = new Map();
+  for (let i = 0; i < b.length; i++) {
+    const x = a[i], y = b[i]; if (isNaN(x) || isNaN(y)) continue;
+    const rev = Math.sign(x) !== Math.sign(y) && Math.abs(x) >= CHG_MW && Math.abs(y) >= CHG_MW, d = Math.abs(y) - Math.abs(x);
+    const rel = Math.abs(d) / Math.max(Math.abs(x), 1);
+    if (rev || (Math.abs(d) >= CHG_MW && rel * 100 >= CHG_PCT))
+      CHG.set(i, { d: rev ? y - x : d, rel, up: !rev && d > 0, rev,
+        k: rev ? 1 : Math.max(0, Math.min(1, Math.max((Math.abs(d) - CHG_MW) / (100 - CHG_MW), (rel - CHG_PCT / 100) / (.5 - CHG_PCT / 100)))) });
+  }
+}
+function chgRGB(c) {                               // rising: blue -> green; falling: yellow -> orange -> red (reversal red)
+  const mix = (A, B, f) => A.map((v, j) => Math.round(v + (B[j] - v) * f));
+  if (c.up) return mix([79, 156, 255], [57, 217, 138], c.k);
+  return c.k < .5 ? mix([245, 215, 66], [245, 150, 40], c.k * 2) : mix([245, 150, 40], [255, 77, 77], (c.k - .5) * 2);
+}
+
+/* ---------------- projection + map renderer ---------------- */
+const KX = Math.cos(54.5 * Math.PI / 180);
+function makeProj(bb, w, h, pad) {
+  const bw = (bb[2] - bb[0]) * KX, bh = bb[3] - bb[1];
+  const s = Math.min((w - 2 * pad) / bw, (h - 2 * pad) / bh);
+  const ox = (w - bw * s) / 2, oy = (h - bh * s) / 2;
+  return { s, P: (x, y) => [ox + (x - bb[0]) * KX * s, oy + (bb[3] - y) * s],
+           inv: (px, py) => [bb[0] + (px - ox) / (KX * s), bb[3] - (py - oy) / s] };
+}
+const GB_BB = [-8.3, 49.85, 2.05, 59.05];
+const ZOOMS = [
+  ["Scotland–England border", [-5.4, 54.35, -1.1, 56.25]], ["Central Belt", [-5.1, 55.45, -2.3, 56.45]],
+  ["North of Scotland", [-6.3, 56.4, -1.6, 58.75]], ["North Wales & Mersey", [-4.8, 52.75, -1.9, 53.85]],
+  ["Humber & East Anglia", [-1.4, 52.0, 2.0, 54.0]], ["London & South East", [-1.3, 50.75, 1.7, 51.95]],
+  ["South West & Wales", [-5.6, 50.0, -2.0, 51.95]],
+  ["All GB", [-8.3, 49.85, 2.05, 59.05]]
+];
+function curFlow() { return FLOW; }
+
+/* Trend marker: a coloured arc travelling round the circle's edge, clockwise and green while output has
+   risen over the last 15 min, anticlockwise and orange while it has fallen. Arc length grows with the size
+   of the change, speed with its rate. Shown only for changes of at least 50 MW and 10 %. */
+function sweepArc(g, x, y, r, d, t, k) {
+  const dir = Math.sign(d); if (!dir) return;
+  const lw = 6 * Math.min(Math.max(k, .8), 1.3), len = Math.min(Math.PI * 1.6, Math.abs(d) / 600 * Math.PI * 1.2 + .4);
+  const a0 = RM ? -Math.PI / 2 : dir * (t / 1000 * Math.sqrt(Math.abs(d)) / 12 * 1.5);
+  const rb = Math.max(r, 6 * Math.min(Math.max(k, .8), 1.3));      // small circles still get a readable ring
+  g.beginPath(); g.arc(x, y, rb + 2 + lw / 2, a0, a0 + dir * len, dir < 0);
+  g.strokeStyle = dir > 0 ? css("--ok") : css("--exp"); g.lineWidth = lw; g.lineCap = "round"; g.globalAlpha = .9; g.stroke();
+  g.lineCap = "round"; g.globalAlpha = 1;
+}
+/* Interconnector route: the cable geometry from grid_network.json, or (if the network file predates
+   routes) a short stub from the landing point towards the neighbouring country, so a link never vanishes. */
+function icRoute(code, e) {
+  const rt = NET && NET.icroute && NET.icroute[code]; if (rt && rt.length >= 2) return rt;
+  const m = ICMETA[code]; if (!m || e.node == null || !N[e.node]) return null;
+  const n = N[e.node], [dx, dy] = m[2], L2 = Math.hypot(dx, dy) || 1;
+  return [[n.x, n.y], [n.x + dx / L2 * 0.9 / KX, n.y - dy / L2 * 0.9]];
+}
+class MapView {
+  constructor(host, opt) {
+    this.host = host; this.opt = opt; this.bb = opt.bb;
+    this.c = document.createElement("canvas"); host.appendChild(this.c); this.g = this.c.getContext("2d");
+    this.c.addEventListener("mousemove", e => this.hover(e));
+    this.c.addEventListener("mouseleave", () => tip(null));
+    this.c.addEventListener("click", e => { if (this._dragged) { this._dragged = false; return; } const n = this.pick(e); if (n) select(n.i, true); else if (SEL != null) select(null, true); });
+    if (opt.zoom) this.enablePanZoom();
+    this.addKey();
+    this.resize();
+  }
+  addKey() {                       // compact key in the corner of every map; hide/show is remembered
+    const d = document.createElement("div"); d.className = "mkey";
+    d.innerHTML = `<button class="mkd" title="Show or hide 132 kV distribution lines (England, Wales, NI; not modelled)" aria-pressed="false">132 kV dist.</button><button class="mkt" title="Show or hide the key" aria-expanded="true">key</button><div class="mkb">
+      <div><i class="ln" style="background:var(--v400)"></i>400 kV <i class="ln" style="background:var(--v275)"></i>275 kV <i class="ln" style="background:var(--v132)"></i>132 kV <i class="ln" style="background:var(--voff)"></i>offshore <i class="ln dash" style="background:var(--vdc)"></i>HVDC</div>
+      <div><i class="ln" style="background:#f4f7fb"></i>dashes: modelled flow, faster = more MW</div>
+      <div><i class="dot" style="background:#3fb6c9"></i><i class="dot" style="background:#f2683c"></i><i class="dot" style="background:#c96fd6"></i><i class="dot" style="background:#7bb662"></i>circle: generation now, area ∝ MW, colour = fuel</div>
+      <div><span class="arcs"><b style="color:var(--ok)">↻</b> <b style="color:var(--exp)">↺</b></span>arc: rising / falling over 15 min, longer = bigger</div>
+      <div><i class="ln" style="background:var(--imp)"></i>import <i class="ln" style="background:var(--exp)"></i>export, width ∝ MW · ⇄ reverses within 1 h</div>
+      <div><span class="brk">⌜⌟</span>selected substation <span class="brk" style="color:${OUTC}">◌</span>reported outage (REMIT)</div>
+      <div>line width ∝ modelled MW · <span style="background:rgba(57,217,138,.3);padding:0 3px">863 <b style="color:#39d98a">▲42</b></span> <span style="background:rgba(255,77,77,.35);padding:0 3px">412 <b style="color:#ff4d4d">▼96</b></span> changed at the last model run (blue→green rising, yellow→orange→red falling, stronger = bigger)</div>
+      <div><span class="brk">▼</span>Scotland → England: modelled transfer across the border</div>
+      <div><i class="ln thin" style="background:var(--vdist)"></i>132 kV distribution (DNO, not modelled)</div></div>`;
+    this.host.after(d); this.key = d;
+    const set = on => { d.classList.toggle("off", !on); d.querySelector(".mkt").setAttribute("aria-expanded", on); };
+    // phones / narrow pop-up: the key starts hidden (it would take most of the map's height); own setting
+    const KK = document.documentElement.classList.contains("narrow") ? "gbWallKey.narrow" : "gbWallKey";
+    let on = KK === "gbWallKey"; try { const v = localStorage.getItem(KK); if (v != null) on = v !== "0"; } catch (e) {} set(on);
+    const dk = "gbWallDist." + (this.opt.zoom ? "zoom" : "gb");
+    let dist = !!this.opt.zoom; try { const v = localStorage.getItem(dk); if (v != null) dist = v === "1"; } catch (e) {}
+    const setD = on => { this.showDist = on; d.querySelector(".mkd").classList.toggle("on", on); d.querySelector(".mkd").setAttribute("aria-pressed", on); };
+    setD(dist);
+    d.querySelector(".mkd").onclick = ev => { ev.stopPropagation(); setD(!this.showDist); try { localStorage.setItem(dk, this.showDist ? "1" : "0"); } catch (e) {} };
+    d.querySelector(".mkt").onclick = ev => { ev.stopPropagation(); on = d.classList.contains("off"); set(on); try { localStorage.setItem(KK, on ? "1" : "0"); } catch (e) {}
+      document.querySelectorAll(".mkey").forEach(x => { x.classList.toggle("off", !on); x.querySelector(".mkt").setAttribute("aria-expanded", on); });
+      views.forEach(v => { if (!v.hidden) v.resize(); }); };
+    ["pointerdown", "wheel", "dblclick"].forEach(t => d.addEventListener(t, ev => ev.stopPropagation()));
+  }
+  /* Regional view: wheel zooms about the cursor, drag pans, double-click zooms in. */
+  local(e) { const r = this.c.getBoundingClientRect(), k = r.width / this.w; return [(e.clientX - r.left) / k, (e.clientY - r.top) / k]; }
+  zoomAt(px, py, f) {
+    const [gx, gy] = this.pr.inv(px, py), bb = this.bb;
+    let w = (bb[2] - bb[0]) * f, h = (bb[3] - bb[1]) * f;
+    const minW = 0.12, maxW = 14; if (w < minW) { h *= minW / w; w = minW; } if (w > maxW) { h *= maxW / w; w = maxW; }
+    const fx = (gx - bb[0]) / (bb[2] - bb[0]), fy = (gy - bb[1]) / (bb[3] - bb[1]);
+    this.userBB([gx - fx * w, gy - fy * h, gx - fx * w + w, gy - fy * h + h]);
+  }
+  userBB(bb) {                     // a free zoom/pan: no preset is active any more
+    this.setBBFast(bb);
+    if (this.slot) this.slot.querySelectorAll(".zbtns button[data-i]").forEach(b => b.classList.remove("on"));
+  }
+  setBBFast(bb) {                  // re-project now, re-place labels once the movement settles
+    this.bb = bb; this.pr = makeProj(bb, this.w, this.h, this.opt.pad ?? 12); this.labels = [];
+    clearTimeout(this._lt); this._lt = setTimeout(() => this.layoutLabels(), 120);
+  }
+  enablePanZoom() {
+    const c = this.c; c.style.cursor = "grab"; c.style.touchAction = "none";
+    c.addEventListener("wheel", e => { e.preventDefault(); const [px, py] = this.local(e); this.zoomAt(px, py, Math.pow(1.0015, e.deltaY)); }, { passive: false });
+    c.addEventListener("dblclick", e => { e.preventDefault(); const [px, py] = this.local(e); this.zoomAt(px, py, 0.5); });
+    c.addEventListener("pointerdown", e => {
+      if (e.button !== 0) return; const [px, py] = this.local(e);
+      this._drag = { px, py, bb: this.bb.slice(), id: e.pointerId }; this._dragged = false;
+    });
+    c.addEventListener("pointermove", e => {
+      const d = this._drag; if (!d) return; const [px, py] = this.local(e);
+      if (!this._dragged && Math.hypot(px - d.px, py - d.py) < 4) return;
+      if (!this._dragged) { this._dragged = true; c.setPointerCapture(d.id); c.style.cursor = "grabbing"; tip(null); }
+      const s = this.pr.s, dx = (px - d.px) / (KX * s), dy = (py - d.py) / s;
+      this.userBB([d.bb[0] - dx, d.bb[1] + dy, d.bb[2] - dx, d.bb[3] + dy]);
+    });
+    const end = () => { if (this._drag) { this._drag = null; c.style.cursor = "grab"; } };
+    c.addEventListener("pointerup", end); c.addEventListener("pointercancel", end);
+  }
+  resize() {
+    const r = this.host.getBoundingClientRect(), k = stageScale();
+    if (r.width < 2 || r.height < 2) return;                    // hidden (e.g. pop-up closed): keep the last layout
+    this.w = Math.max(10, r.width / k); this.h = Math.max(10, r.height / k);
+    const dpr = Math.min(2, (devicePixelRatio || 1) * k);
+    this.c.width = Math.round(this.w * dpr); this.c.height = Math.round(this.h * dpr);
+    this.c.style.width = this.w + "px"; this.c.style.height = this.h + "px"; this.dpr = dpr; this.setBB(this.bb);
+  }
+  setBB(bb) { this.bb = bb; this.pr = makeProj(bb, this.w, this.h, this.opt.pad ?? 12); this.layoutLabels(); }
+  detail() { return !!this.opt.zoom && (this.bb[3] - this.bb[1]) < 4.5; }   // all names + MW labels only once zoomed in
+  scaleK() { return Math.min(Math.max(this.pr.s / 95, .8), this.opt.zoom ? 1.7 : 1.3); }
+  layoutLabels() {
+    const P = this.pr.P, zoom = this.detail(), fs = this.opt.font; this.g.font = `${fs}px ${css("--mono")}`;
+    const cand = N.filter(n => n.name && !n.ni && (zoom || (vmax(n) >= 275 && (n.deg >= 4 || n.gen >= 900))))
+      .map(n => ({ n, pr: n.gen + (vmax(n) >= 380 ? 400 : 0) + n.deg * 60 })).sort((a, b) => b.pr - a.pr);
+    const boxes = [], out = [], maxN = zoom ? 140 : this.opt.maxLabels;
+    for (const { n } of cand) {
+      if (out.length >= maxN) break;
+      const [x, y] = P(n.x, n.y); if (x < 0 || y < 0 || x > this.w || y > this.h) continue;
+      const t = nodeName(n), tw = this.g.measureText(t).width;
+      const bx = { x: x + 7, y: y - fs * 0.6, w: tw, h: fs * 1.2 }; if (bx.x + bx.w > this.w - 4) bx.x = x - 7 - tw;
+      if (boxes.some(b => !(bx.x > b.x + b.w + 3 || bx.x + bx.w + 3 < b.x || bx.y > b.y + b.h || bx.y + bx.h < b.y))) continue;
+      boxes.push(bx); out.push({ n, t, bx });
+    }
+    this.labels = out;
+  }
+  pick(e) {
+    const r = this.c.getBoundingClientRect(), k = r.width / this.w, mx = (e.clientX - r.left) / k, my = (e.clientY - r.top) / k;
+    let best = null, bd = 14 * 14;
+    for (const n of N) { const [x, y] = this.pr.P(n.x, n.y); const d = (x - mx) ** 2 + (y - my) ** 2; if (d < bd) { bd = d; best = n; } }
+    return best;
+  }
+  hover(e) {
+    if (this._drag && this._dragged) return;
+    const n = this.pick(e); if (!n) { tip(null); this.c.style.cursor = this.opt.zoom ? "grab" : ""; return; }
+    this.c.style.cursor = "pointer";
+    const tr = rampFlag(n.gen15, n.gen), sch = rampFlag(n.gen, n.gen30);
+    tip(`<b>${esc(nodeName(n))}</b><br><span class="faint">${[...new Set(n.v.map(vname))].join(" · ")}</span>` +
+      (n.gen ? `<br>Generation ${fmt(n.gen)} MW${n.fuel ? " · mostly " + n.fuel.name.toLowerCase() : ""}` +
+        (tr ? `<br>${tr > 0 ? "▲ up" : "▼ down"} ${fmt(Math.abs(n.gen - n.gen15))} MW in 15 min` : "") +
+        (sch ? `<br><span class="faint">scheduled ${fmt(n.gen30)} MW by +30 min</span>` : "") : "") +
+      (n.w ? `<br><span class="faint">Modelled demand ${fmt((FLOW ? FLOW.demand : 0) * n.w / sumW())} MW</span>` : "") +
+      (n.out && n.out.length ? `<br><span style="color:${OUTC}">Reported outages (REMIT):</span>` + n.out.slice(0, 4).map(o => `<br><span style="color:${OUTC}">${esc(o.name)}</span> <span class="faint">${esc(outText(o))}</span>`).join("") + (n.out.length > 4 ? `<br><span class="faint">+${n.out.length - 4} more</span>` : "") : ""), e.clientX, e.clientY);
+  }
+  draw(t) {
+    const g = this.g, P = this.pr.P, k = this.scaleK(), z = !!this.opt.zoom, F = curFlow();
+    g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); g.clearRect(0, 0, this.w, this.h);
+    g.lineJoin = "round"; g.lineCap = "round";
+    for (const c of LAND) {
+      g.beginPath(); for (const ring of c.rings) { ring.forEach((p, i) => { const [x, y] = P(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); }
+      const foreign = /Ireland/.test(c.name); g.fillStyle = foreign ? "#0a0f16" : "#0d1520"; g.fill();
+      g.strokeStyle = foreign ? "#141c27" : "#1c2836"; g.lineWidth = 1; g.stroke();
+    }
+    if (!F) return;
+    // England–Scotland border: drawn by the land outlines, the same as the England–Wales border
+    // 132 kV distribution (England, Wales, NI): detail only, not in the flow model
+    if (this.showDist && NET && NET.dist) {
+      g.strokeStyle = css("--vdist"); g.lineWidth = (z ? 1.1 : .8) * Math.min(k, 1.3); g.globalAlpha = z ? .75 : .55;
+      for (const [v, ug, geo] of NET.dist) {
+        g.beginPath(); geo.forEach((p, i) => { const [x, y] = P(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+        if (ug) g.setLineDash([2, 2]); g.stroke(); if (ug) g.setLineDash([]);
+      }
+      g.globalAlpha = 1;
+    }
+    // internal HVDC (estimated flow, capped at rating); dotted amber = estimate
+    HV.forEach((h, i) => {
+      const [ax, ay] = P(...h.route[0]), [cx, cy] = P(...h.route[1]), [bx, by] = P(...h.route[2]);
+      g.beginPath(); g.moveTo(ax, ay); g.quadraticCurveTo(cx, cy, bx, by);
+      g.setLineDash([6, 5]); g.lineDashOffset = RM ? 0 : -Math.sign(F.hvdc[i]) * (t / 1000 * Math.sqrt(Math.abs(F.hvdc[i])) * .45 % 11);
+      // width by estimated flow, on the same scale as the circuits (2 px per GW over a 400 kV base)
+      g.strokeStyle = css("--vdc"); g.globalAlpha = .75; g.lineWidth = 2.4 * k * .55 + Math.abs(F.hvdc[i]) / 1000 * 2 * Math.min(Math.max(k, .8), 1.3);
+      g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+      if (z || this.opt.hvdcLabels) { g.font = `${this.opt.font}px ${css("--mono")}`; g.fillStyle = css("--vdc"); g.fillText(`${h.name} ≈${fmt(Math.abs(F.hvdc[i]))} MW (estimated)`, cx + 6, cy); }
+    });
+    const widthFor = v => (v >= 380 ? 2.4 : v >= 260 ? 1.8 : v >= 200 || v === 150 ? 1.3 : 1.0) * k;
+    const sorted = this._sorted || (this._sorted = L.slice().sort((a, b) => a.v - b.v));
+    const kc = Math.min(Math.max(k, .8), 1.3);
+    const flowW = (l, f) => isNaN(f) ? widthFor(l.v) * .7 : widthFor(l.v) * .55 + Math.abs(f) / 1000 * 2 * kc;   // width grows 2 px per GW of modelled flow
+    const path = l => { g.beginPath(); l.g.forEach((p, i) => { const [x, y] = P(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); };
+    for (const l of sorted) {
+      const f = F.line[l.i]; path(l);
+      g.strokeStyle = l.ni ? "#3a4656" : vcol(l.v); g.lineWidth = flowW(l, f);
+      g.globalAlpha = isNaN(f) ? .35 : .32 + .45 * Math.min(1, Math.abs(f) / 1200);
+      if (l.ug) g.setLineDash([3, 2]); g.stroke(); g.setLineDash([]);
+    }
+    g.globalAlpha = 1;
+    for (const l of sorted) {
+      const f = F.line[l.i]; if (isNaN(f) || Math.abs(f) < 40) continue; path(l);
+      const seg = 3 * k, gap = 14 * k; g.setLineDash([seg, gap]);
+      g.lineDashOffset = RM ? 0 : -Math.sign(f) * ((t / 1000) * Math.pow(Math.abs(f), .6) * 0.3 * k % (seg + gap));
+      g.strokeStyle = "#f4f7fb"; g.globalAlpha = .3 + .65 * Math.min(1, Math.abs(f) / 1200); g.lineWidth = Math.max(widthFor(l.v) * .8, flowW(l, f) * .55); g.stroke();
+    }
+    g.setLineDash([]); g.globalAlpha = 1;
+    this.drawICRoutes(g, P, k, t);
+    for (const n of N) {
+      const [x, y] = P(n.x, n.y); if (x < -10 || y < -10 || x > this.w + 10 || y > this.h + 10) continue;
+      const s = (vmax(n) >= 380 ? 3.2 : vmax(n) >= 260 ? 2.6 : 1.8) * k;
+      g.fillStyle = "#05080d"; g.strokeStyle = n.ni ? "#3a4656" : vcol(vmax(n)); g.lineWidth = 1.1;
+      g.fillRect(x - s, y - s, 2 * s, 2 * s); g.strokeRect(x - s, y - s, 2 * s, 2 * s);
+    }
+    // generation: circle area ~ MW now; sweep arc = 15-min trend (clockwise green rising, anticlockwise orange falling)
+    const R = mw => Math.sqrt(Math.max(mw, 0)) * 0.26 * k;
+    const list = N.filter(n => n.gen >= 20).sort((a, b) => b.gen - a.gen);
+    for (const n of list) {
+      const [x, y] = P(n.x, n.y); if (x < -30 || y < -30 || x > this.w + 30 || y > this.h + 30) continue;
+      const mw = n.gen, col = n.fuel ? n.fuel.col : "#9aa0aa", r = R(mw);
+      g.beginPath(); g.arc(x, y, r, 0, 7); g.fillStyle = col; g.globalAlpha = .5; g.fill(); g.globalAlpha = .95; g.strokeStyle = col; g.lineWidth = 1; g.stroke(); g.globalAlpha = 1;
+      if (rampFlag(n.gen15, n.gen)) sweepArc(g, x, y, r, n.gen - n.gen15, t, k);
+    }
+    // reported outages (REMIT): dashed red ring round the substation
+    g.setLineDash([3, 3]); g.strokeStyle = OUTC; g.globalAlpha = .5; g.lineWidth = 1.6 * Math.min(Math.max(k, .8), 1.3);
+    for (const n of N) { if (!n.out || !n.out.length) continue; const [x, y] = P(n.x, n.y); if (x < -30 || y < -30 || x > this.w + 30 || y > this.h + 30) continue;
+      g.beginPath(); g.arc(x, y, Math.max(6 * k, R(n.gen)) + 4 * Math.min(k, 1.3) + 2, 0, 7); g.stroke(); }
+    g.setLineDash([]); g.globalAlpha = 1;
+    if (SEL != null) {                                 // selection: static corner brackets
+      const n = N[SEL], [x, y] = P(n.x, n.y), rr = Math.max(8 * k, R(n.gen)) + 6 * Math.min(k, 1.3) + 4, l = 6 * Math.min(k, 1.3);
+      g.strokeStyle = "#e6edf5"; g.lineWidth = 1.6; g.beginPath();
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { g.moveTo(x + sx * rr, y + sy * (rr - l)); g.lineTo(x + sx * rr, y + sy * rr); g.lineTo(x + sx * (rr - l), y + sy * rr); }
+      g.stroke();
+    }
+    g.font = `${this.opt.font}px ${css("--mono")}`; g.textBaseline = "middle";
+    for (const { n, t: tx, bx } of this.labels) { g.fillStyle = "rgba(5,8,13,.72)"; g.fillRect(bx.x - 2, bx.y, bx.w + 4, bx.h); g.fillStyle = n.gen >= 900 ? "#e6edf5" : "#9fb0c3"; g.fillText(tx, bx.x, bx.y + bx.h / 2); }
+    if (this.detail()) {
+      const fs = this.opt.font - 1; g.font = `${fs}px ${css("--mono")}`;
+      for (const b of this.lineLabels(g, P, fs)) {
+        g.globalAlpha = b.a; g.fillStyle = "rgba(5,8,13,.8)"; g.fillRect(b.x, b.y, b.w, b.h);
+        if (b.c) { g.fillStyle = `rgba(${b.rgb.join(",")},${(.12 + .28 * b.c.k).toFixed(2)})`; g.fillRect(b.x, b.y, b.w, b.h); }
+        g.fillStyle = b.c ? "#f4f7fb" : b.vc; g.fillText(b.s, b.x + 4, b.y + b.h / 2);
+        if (b.c) { g.fillStyle = `rgb(${b.rgb.map(v => Math.round(v + (255 - v) * .35)).join(",")})`; g.fillText(b.e, b.x + 4 + b.sw + 4, b.y + b.h / 2); }
+      }
+      g.globalAlpha = 1;
+    }
+    this.drawICLabels(g, P, k, t);
+    this.drawBorderLabels(g, P, k, F);
+  }
+  /* Circuit values (zoomed-in regional map): circuits over 150 MW, plus any that changed at the last model
+     run. Changed ones are placed first, then the heaviest flows; each tries a few points along its circuit
+     and is left out if it would overlap another value or a substation name. Values fade on wider views
+     (changed ones less so). Laid out once per view / model run. */
+  lineLabels(g, P, fs) {
+    const c0 = this._ll; if (c0 && c0.pr === this.pr && c0.F === FLOW && c0.lb === this.labels && c0.fs === fs) return c0.out;
+    const F = FLOW, out = [], boxes = (this.labels || []).map(l => ({ x: l.bx.x - 2, y: l.bx.y, w: l.bx.w + 4, h: l.bx.h }));
+    const span = this.bb[3] - this.bb[1], fade = Math.max(.35, Math.min(1, (4.5 - span) / 2));
+    const cand = [];
+    for (const l of L) { const f = F.line[l.i]; if (isNaN(f)) continue; const c = CHG.get(l.i);
+      if (Math.abs(f) < 150 && !c) continue; cand.push([c ? 1e6 + c.k * 1e5 + Math.abs(f) : Math.abs(f), l, f, c]); }
+    cand.sort((a, b) => b[0] - a[0]);
+    const h = fs + 5;
+    for (const [, l, f, c] of cand) {
+      const s = fmt(Math.abs(f)), sw = g.measureText(s).width;
+      const e = c ? (c.rev ? "⇄" : c.up ? "▲" : "▼") + fmt(Math.abs(c.d)) : "", w = sw + 8 + (c ? g.measureText(e).width + 4 : 0);
+      for (const q of [.5, .35, .65, .2, .8]) {
+        const m = l.g[Math.min(l.g.length - 1, Math.round((l.g.length - 1) * q))], [x, y] = P(m[0], m[1]);
+        const bx = { x: x - w / 2, y: y - h / 2, w, h };
+        if (bx.x < 2 || bx.y < 2 || bx.x + w > this.w - 2 || bx.y + h > this.h - 2) continue;
+        if (boxes.some(o => bx.x < o.x + o.w + 2 && bx.x + w + 2 > o.x && bx.y < o.y + o.h + 1 && bx.y + h + 1 > o.y)) continue;
+        boxes.push(bx); out.push(Object.assign(bx, { s, sw, e, c, vc: vcol(l.v), rgb: c ? chgRGB(c) : null, a: c ? Math.max(.8, fade) : fade }));
+        break;
+      }
+    }
+    this._ll = { pr: this.pr, F, lb: this.labels, fs, out }; return out;
+  }
+  /* Scotland -> England transfer: one label near the middle of the border (on the regional map zoomed in,
+     the middle of the part in view). Positions along the border either side of the middle, with the box to
+     the left or right of the arrow, are scored by how many circuits, interconnector routes and substation
+     names they would cover; the clearest wins (left of the arrow preferred). Recomputed only when the view
+     changes. */
+  borderSpot(P, bw, bh, s) {
+    const c = this._bs; if (c && c.pr === this.pr && c.lb === this.labels && c.d === this.showDist && c.W === W && c.bw === Math.round(bw)) return c.r;
+    const pts = BORDER.map(p => P(p[0], p[1]));
+    const inside = p => p[0] >= 0 && p[1] >= 0 && p[0] <= this.w && p[1] <= this.h;
+    const at = (q, sel) => { const seg = []; let tot = 0; for (let i = 1; i < pts.length; i++) { const d = sel(i) ? Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) : 0; seg.push(d); tot += d; }
+      if (tot < 1) return null; let r = tot * q; for (let i = 0; i < seg.length; i++) { if (r <= seg[i] && seg[i] > 0) { const t = r / seg[i], a = pts[i], b = pts[i + 1]; return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; } r -= seg[i]; } return null; };
+    const m0 = at(.5, () => true), sel = m0 && inside(m0) ? () => true : i => inside(pts[i]) && inside(pts[i - 1]);
+    // obstacles in screen space: circuit and route segments, plus substation name boxes
+    const segs = [], addPath = (geo) => { let p0 = null; for (const q of geo) { const p1 = P(q[0], q[1]); if (p0) segs.push(p0[0], p0[1], p1[0], p1[1]); p0 = p1; } };
+    for (const l of L) addPath(l.g);
+    for (const [code, e] of Object.entries(W ? W.ic : {})) { const rt = icRoute(code, e); if (rt) addPath(rt); }
+    if (this.showDist && NET && NET.dist) for (const d of NET.dist) addPath(d[2]);
+    const hits = (x0, y0, x1, y1) => {          // segments crossing the box (Liang–Barsky clip) + label overlaps
+      let n = 0;
+      for (let i = 0; i < segs.length; i += 4) {
+        const ax = segs[i], ay = segs[i + 1], bx = segs[i + 2], by = segs[i + 3];
+        if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(ay, by) < y0 || Math.min(ay, by) > y1) continue;
+        const dx = bx - ax, dy = by - ay; let t0 = 0, t1 = 1, ok = true;
+        for (const [pp, qq] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]]) {
+          if (pp === 0) { if (qq < 0) { ok = false; break; } } else { const r = qq / pp; if (pp < 0) { if (r > t1) { ok = false; break; } if (r > t0) t0 = r; } else { if (r < t0) { ok = false; break; } if (r < t1) t1 = r; } }
+        }
+        if (ok) n++;
+      }
+      for (const lb of this.labels || []) { const b = lb.bx; if (!(x0 > b.x + b.w || x1 < b.x || y0 > b.y + b.h || y1 < b.y)) n += 8; }
+      return n;
+    };
+    let best = null;
+    [.5, .44, .56, .38, .62, .32, .68, .26, .74].forEach((q, qi) => {
+      const p = at(q, sel); if (!p || !inside(p)) return;
+      const [x, y] = p, by = y - bh / 2;
+      [x - s - 6 - bw, x + s + 6].forEach((bx, si) => {
+        if (bx < 4 || bx + bw > this.w - 4 || by < 4 || by + bh > this.h - 4) return;
+        const sc = hits(bx - 3, by - 3, bx + bw + 3, by + bh + 3) * 10 + hits(x - s, y - s, x + s, y + s) * 4 + qi * 1.5 + si;
+        if (!best || sc < best.sc) best = { sc, x, y, bx, by };
+      });
+    });
+    this._bs = { pr: this.pr, lb: this.labels, d: this.showDist, W, bw: Math.round(bw), r: best }; return best;
+  }
+  drawBorderLabels(g, P, k, F) {
+    if (BORDER.length < 2 || !F) return;
+    const v = F.b6ac + F.b6dc, fs = this.opt.font;
+    const txt = `Scotland → England ${gw(Math.abs(v))} GW`, sub = v >= 0 ? "modelled, southbound" : "modelled, northbound";
+    const s = 7 * Math.min(Math.max(k, .8), 1.3), dir = v >= 0 ? 1 : -1;
+    g.font = `600 ${fs}px ${css("--mono")}`; const w1 = g.measureText(txt).width; g.font = `${fs - 1}px ${css("--mono")}`; const w2 = g.measureText(sub).width;
+    const bw = Math.max(w1, w2) + 10, bh = fs * 2.5;
+    const spot = this.borderSpot(P, bw, bh, s); if (!spot) return;     // no room anywhere: draw neither arrow nor label
+    const { x, y, bx, by } = spot;
+    // arrow across the border in the direction of the transfer
+    g.beginPath(); g.moveTo(x - s, y - dir * s * .6); g.lineTo(x + s, y - dir * s * .6); g.lineTo(x, y + dir * s); g.closePath();
+    g.fillStyle = "#e6edf5"; g.globalAlpha = .9; g.fill(); g.globalAlpha = 1;
+    g.fillStyle = "rgba(5,8,13,.82)"; g.fillRect(bx, by, bw, bh); g.textBaseline = "middle";
+    g.font = `600 ${fs}px ${css("--mono")}`; g.fillStyle = "#e6edf5"; g.fillText(txt, bx + 5, by + fs * .75);
+    g.font = `${fs - 1}px ${css("--mono")}`; g.fillStyle = css("--warn"); g.fillText(sub, bx + 5, by + fs * 1.85);
+  }
+  /* Interconnectors: each drawn along its real cable route (OSM geometry) to the neighbouring country,
+     width growing with MW, coloured import (blue) / export (orange), with flow dashes moving in or out. */
+  icMW(code, e) { return e.mw; }
+  drawICRoutes(g, P, k, t) {
+    for (const [code, e] of Object.entries(W ? W.ic : {})) {
+      const rt = icRoute(code, e); if (!rt) continue;
+      const mw = this.icMW(code, e), idle = Math.abs(mw) < 20, imp = mw > 0;
+      const col = idle ? "#566277" : imp ? css("--imp") : css("--exp");
+      const w = idle ? 1 : Math.max(.6, Math.abs(mw) / 1000 * 2 * Math.min(Math.max(k, .8), 1.3));   // width ∝ MW: 2 px per GW
+      const path = () => { g.beginPath(); rt.forEach((p, i) => { const [x, y] = P(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); };
+      g.lineJoin = "round"; g.lineCap = "round";
+      path(); g.strokeStyle = col; g.globalAlpha = idle ? .45 : .8; g.lineWidth = w; if (idle) g.setLineDash([3, 4]); g.stroke(); g.setLineDash([]);
+      if (!idle) {
+        // flow dashes: route runs GB -> abroad, so imports move towards GB
+        const seg = 3 * Math.min(k, 1.3), gap = 12 * Math.min(k, 1.3); path(); g.setLineDash([seg, gap]);
+        g.lineDashOffset = RM ? 0 : (imp ? 1 : -1) * ((t / 1000) * Math.sqrt(Math.abs(mw)) * 0.55 * Math.min(k, 1.3) % (seg + gap));
+        g.strokeStyle = "#f4f7fb"; g.globalAlpha = .7; g.lineWidth = Math.max(1, w * .6); g.stroke(); g.setLineDash([]);
+      }
+      g.globalAlpha = 1;
+    }
+  }
+  drawICLabels(g, P, k, t) {
+    const fs = this.opt.font + 1, placed = [];
+    g.textBaseline = "middle";
+    const ents = Object.entries(W ? W.ic : {}).sort((a, b) => Math.abs(b[1].mw) - Math.abs(a[1].mw));
+    for (const [code, e] of ents) {
+      const m = ICMETA[code], rt = icRoute(code, e); if (!m || e.node == null) continue;
+      const mw = this.icMW(code, e), idle = Math.abs(mw) < 20, imp = mw > 0;
+      const col = idle ? "#566277" : imp ? css("--imp") : css("--exp");
+      const n = N[e.node], [nx, ny] = P(n.x, n.y);
+      { g.beginPath(); g.arc(nx, ny, 4 * Math.min(k, 1.3), 0, 7); g.fillStyle = col; g.fill(); if (e.m15 != null && rampFlag(e.m15, e.mw)) sweepArc(g, nx, ny, 4 * Math.min(k, 1.3), e.mw - e.m15, t, k); }
+      // anchor: the last point of the route still inside the map (or the landing point if none)
+      let ax = nx, ay = ny, dx = m[2][0], dy = m[2][1];
+      if (rt) { let prev = null;
+        for (const p of rt) { const [x, y] = P(p[0], p[1]); if (x < 8 || y < 8 || x > this.w - 8 || y > this.h - 8) break; if (prev) { dx = x - prev[0]; dy = y - prev[1]; } prev = [x, y]; ax = x; ay = y; }
+        const L2 = Math.hypot(dx, dy) || 1; dx /= L2; dy /= L2; }
+      if (ax < -20 || ay < -20 || ax > this.w + 20 || ay > this.h + 20) continue;
+      const flip = e.p60 != null && Math.abs(e.mw) >= 20 && Math.abs(e.p60) >= 20 && Math.sign(e.p60) !== Math.sign(e.mw);
+      const oc = ICOUT[code], ro = oc && (imp || idle ? oc.imp : oc.exp);       // REMIT-reduced capacity this way
+      const txt = `${m[0]} ${idle ? "idle" : fmt(Math.abs(mw)) + " MW"}${flip ? " ⇄" : ""}${ro ? ` · cap ${fmt(ro.avail)}/${fmt(ro.normal)}` : ""}`;
+      g.font = `${fs - 1}px ${css("--mono")}`; const bw = g.measureText(txt).width + 8, bh = fs * 1.35;
+      let bx = ax + dx * 6 - (dx < -.3 ? bw : dx > .3 ? 0 : bw / 2), by = ay + dy * 6 - (dy < -.3 ? bh : dy > .3 ? 0 : bh / 2);
+      bx = Math.max(4, Math.min(bx, this.w - bw - 4)); by = Math.max(4, Math.min(by, this.h - bh - 4));
+      for (let it = 0; it < 8; it++) { const hit = placed.find(p => bx < p.x + p.w + 3 && bx + bw + 3 > p.x && by < p.y + p.h + 2 && by + bh + 2 > p.y); if (!hit) break;
+        by = (by + bh / 2 < hit.y + hit.h / 2) ? hit.y - bh - 2 : hit.y + hit.h + 2; by = Math.max(4, Math.min(by, this.h - bh - 4)); }
+      placed.push({ x: bx, y: by, w: bw, h: bh });
+      g.fillStyle = "rgba(5,8,13,.8)"; g.fillRect(bx, by, bw, bh); g.fillStyle = col; g.fillText(txt, bx + 4, by + bh / 2);
+    }
+    if (!this.opt.zoom && W) {                         // totals, top right of the GB map
+      let im = 0, ex = 0; for (const [code, e] of Object.entries(W.ic)) { const v = this.icMW(code, e); if (v > 0) im += v; else ex -= v; }
+      const t = `interconnectors: in ${gw(im)} · out ${gw(ex)} · net ${im - ex >= 0 ? "+" : "−"}${gw(Math.abs(im - ex))} GW`;
+      g.font = `${fs - 1}px ${css("--mono")}`; const bw = g.measureText(t).width + 12, bh = fs * 1.5, bx = this.w - bw - 8, by = 8;
+      g.fillStyle = "rgba(5,8,13,.8)"; g.fillRect(bx, by, bw, bh); g.fillStyle = "#9fb0c3"; g.fillText(t, bx + 6, by + bh / 2);
+    }
+  }
+}
+let _sw = 0; function sumW() { if (!_sw) for (const n of MAIN) _sw += N[n].w; return _sw || 1; }
+
+/* ---------------- panels ---------------- */
+const IS_POPUP = new URLSearchParams(location.search).get("screen") === "map";          // the dashboard's full-page network map (/wall?screen=map)
+if (IS_POPUP) document.documentElement.classList.add("popup");
+const bc = ("BroadcastChannel" in window && !IS_POPUP) ? new BroadcastChannel("gb-grid-wall") : null;
+function select(i, broadcast) { SEL = i ?? null; renderNodePanels(); if (SEL != null) views.forEach(v => { if (v.opt.zoom && v.follow) centreZoom(v, N[SEL]); }); if (broadcast && bc) bc.postMessage({ sel: SEL }); }
+if (bc) bc.onmessage = e => { const d = e.data || {}; if ("sel" in d) select(d.sel, false); if (d.zoom != null) setZoomAll(d.zoom, false); };
+function tip(html, x, y) { const t = $("#tip"); if (!html) { t.style.display = "none"; return; } t.innerHTML = html; t.style.display = "block"; t.style.left = (x + 14) + "px"; t.style.top = (y + 12) + "px"; }
+function card(slot, title, extra = "") { slot.innerHTML = `<div class="pn"><h2>${title}${extra}</h2><div class="body"></div></div>`; return $(".body", slot); }
+function sparkline(cv, ys, opt) {
+  const r = cv.parentElement.getBoundingClientRect(), k = stageScale(), w = Math.max(10, r.width / k), h = opt.h, dpr = Math.min(2, (devicePixelRatio || 1) * k);
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + "px"; cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const vals = ys.filter(v => v != null && !isNaN(v)); if (vals.length < 2) { g.fillStyle = "#566277"; g.font = `11px ${css("--mono")}`; g.fillText("no data yet", 6, h / 2); return; }
+  let lo = opt.lo ?? Math.min(...vals), hi = opt.hi ?? Math.max(...vals); if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const X = i => 4 + i / (ys.length - 1) * (w - 8), Y = v => h - 14 - (v - lo) / (hi - lo) * (h - 24);
+  g.font = `10px ${css("--mono")}`;
+  for (const ref of opt.refs || []) { const y = Y(ref[0]); g.setLineDash([3, 4]); g.strokeStyle = ref[1]; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); g.setLineDash([]); g.fillStyle = "#566277"; if (ref[2]) g.fillText(ref[2], 4, y - 6); }
+  const line = (arr, col, lw, l0, h0) => { const YY = v => h - 14 - (v - l0) / (h0 - l0) * (h - 24); g.beginPath(); let st = false; arr.forEach((v, i) => { if (v == null || isNaN(v)) { st = false; return; } st ? g.lineTo(X(i), YY(v)) : g.moveTo(X(i), YY(v)); st = true; }); g.strokeStyle = col; g.lineWidth = lw; g.stroke(); };
+  if (opt.fill) { g.beginPath(); ys.forEach((v, i) => i ? g.lineTo(X(i), Y(v ?? lo)) : g.moveTo(X(i), Y(v ?? lo))); g.lineTo(X(ys.length - 1), h - 14); g.lineTo(X(0), h - 14); g.closePath(); g.fillStyle = opt.fill; g.fill(); }
+  line(ys, opt.col, opt.lw || 1.5, lo, hi);
+  if (opt.series2) line(opt.series2.ys, opt.series2.col, 1.3, lo, hi);
+  if (opt.axis) { g.fillStyle = "#566277"; g.fillText(opt.axis[0], 4, h - 3); const t = opt.axis[1]; g.fillText(t, w - g.measureText(t).width - 4, h - 3); if (opt.axis[2]) g.fillText(opt.axis[2], w / 2 - g.measureText(opt.axis[2]).width / 2, h - 3); }
+}
+const kpi = (k, v, unit, s, col) => `<div class="kpi"><div class="k">${k}</div><div class="v"${col ? ` style="color:${col}"` : ""}>${v}<small>${unit}</small></div><div class="s">${s}</div></div>`;
+
+const P_ = {};
+P_.header = (slot, cfg) => {
+  const s1 = /^(d1|h1)$/.test(MODE);
+  slot.innerHTML = `<div class="hdr">
+    <div><div class="ttl"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="var(--accent)"/></svg>GB transmission system</div><div class="sub">${esc(cfg.sub)}</div></div>
+    <span class="live" id="liveChip">connecting…</span>
+    <div class="clk"><span>UTC <b id="cU">--:--:--</b></span><span>UK <b id="cL">--:--:--</b></span></div>
+    ${s1 ? `<button id="startBtn" title="Open screen 2 full screen on the other display">▶ start screen 2</button>` : ""}
+    <button id="modeBtn" title="Choose this screen's layout (M)">⧉ ${esc(LAY.label)}</button>
+    <button id="fsBtn" title="Full screen (F)">⛶ full screen</button>
+    <a class="hbtn" href="/" title="Back to the dashboard">← dashboard</a></div>`;
+  $("#modeBtn").onclick = openPicker; $("#fsBtn").onclick = toggleFS; if (s1) $("#startBtn").onclick = startScreen2;
+};
+P_.popbar = (slot) => {
+  slot.innerHTML = `<div class="popbar"><span class="pt">🗺 GB transmission network</span><span class="ps">modelled line flows · live units and interconnectors</span>
+    <span class="live" id="liveChip">connecting…</span><span class="clk"><span>UK <b id="cL">--:--:--</b></span><b id="cU" hidden></b></span></div>`;
+};
+P_.map = (slot, cfg) => {
+  const b = card(slot, cfg.compact ? "Network · live flows" : "Transmission network · live flows", `<span class="tag">flows modelled</span>${cfg.compact ? "" : `<span class="rt">click a substation for detail</span>`}`);
+  b.style.display = "flex"; b.style.flexDirection = "column";
+  const host = document.createElement("div"); host.style.cssText = "flex:1;min-height:0;position:relative"; b.appendChild(host);
+  views.push(new MapView(host, { bb: GB_BB, font: cfg.font || 10, maxLabels: cfg.labels || 34, pad: 10 }));
+};
+function centreZoom(v, n) { const w = v.bb[2] - v.bb[0], h = v.bb[3] - v.bb[1]; v.setBB([n.x - w / 2, n.y - h / 2, n.x + w / 2, n.y + h / 2]); }
+function setZoomAll(i, broadcast) {
+  for (const v of views) if (v.opt.zoom) { v.setBB(ZOOMS[i][1]); v.slot.querySelectorAll(".zbtns button[data-i]").forEach((b, j) => b.classList.toggle("on", j === i)); }
+  if (broadcast && bc) bc.postMessage({ zoom: i });
+}
+/* The regional panel shows the network detail map or one of the monitor's other pages, embedded. */
+const REGION_SRC = [
+  { k: "net", label: "Network", title: "Regional detail" },
+  { k: "pc", label: "Power cuts", title: "Power cuts", url: "/powercuts" },
+  { k: "gas", label: "Gas", title: "Gas system", url: "/grid_dashboard.html#embed=gas" },
+  { k: "ea", label: "Rivers & floods", title: "Rivers & floods", url: "/grid_dashboard.html#embed=ea" },
+  { k: "radar", label: "Rain radar", title: "Rain radar", url: "/forecast?view=radar" },
+  { k: "gen", label: "Generators", title: "GB generators", url: "/grid_dashboard.html#embed=gen" },
+  { k: "gh", label: "7-day generation", title: "Generation · 7 days", url: "/grid_dashboard.html#embed=gh" },
+  { k: "octo", label: "My home", title: "My home energy", url: "/grid_dashboard.html#embed=octo" }
+];
+const REGION_KEY = () => "gbWallRegion." + MODE;
+P_.zoom = (slot, cfg) => {
+  slot.innerHTML = `<div class="pn"><h2><span class="rtitle">Regional detail</span><span class="tag rtag">flows modelled</span>
+    <span class="rsrc" role="tablist" aria-label="Regional panel shows"${cfg.noSrc ? " hidden" : ""}>${REGION_SRC.map(r => `<button role="tab" data-k="${r.k}">${r.label}</button>`).join("")}</span></h2><div class="body"></div></div>`;
+  const b = $(".body", slot); b.style.display = "flex"; b.style.flexDirection = "column";
+  const netBox = document.createElement("div"); netBox.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column"; b.appendChild(netBox);
+  const bt = document.createElement("div"); bt.className = "zbtns";
+  bt.innerHTML = ZOOMS.map((z, i) => `<button data-i="${i}">${z[0]}</button>`).join("") + `<button data-f="1" title="Centre on the selected substation">follow selection</button>` +
+    `<button data-z="0.67" title="Zoom in (or scroll / double-click on the map)" aria-label="Zoom in">+</button><button data-z="1.5" title="Zoom out" aria-label="Zoom out">−</button>` +
+    `<span class="zhint faint mono">scroll to zoom · drag to move · MW on circuits above 150 MW</span>`;
+  netBox.appendChild(bt); const host = document.createElement("div"); host.style.cssText = "flex:1;min-height:0;position:relative"; netBox.appendChild(host);
+  const frames = document.createElement("div"); frames.style.cssText = "flex:1;min-height:0;position:relative;display:none"; b.appendChild(frames);
+  const v = new MapView(host, { bb: ZOOMS[cfg.preset || 0][1], font: cfg.font || 12, zoom: true, pad: 4, hvdcLabels: true }); v.slot = slot; views.push(v);
+  bt.addEventListener("click", e => { const x = e.target.closest("button"); if (!x) return;
+    if (x.dataset.z) { v.zoomAt(v.w / 2, v.h / 2, +x.dataset.z); return; }
+    if (x.dataset.f) { v.follow = !v.follow; x.classList.toggle("on", v.follow); if (v.follow && SEL != null) centreZoom(v, N[SEL]); return; } setZoomAll(+x.dataset.i, true); });
+  bt.querySelectorAll("button")[cfg.preset || 0].classList.add("on");
+  const show = k => {
+    const r = REGION_SRC.find(x => x.k === k) || REGION_SRC[0];
+    $(".rtitle", slot).textContent = cfg.noSrc ? "Network" : r.title; $(".rtag", slot).style.display = r.k === "net" ? "" : "none";
+    slot.querySelectorAll(".rsrc button").forEach(x => { const on = x.dataset.k === r.k; x.classList.toggle("on", on); x.setAttribute("aria-selected", on); });
+    netBox.style.display = r.k === "net" ? "flex" : "none"; frames.style.display = r.k === "net" ? "none" : "block";
+    v.hidden = r.k !== "net";
+    frames.querySelectorAll("iframe").forEach(f => f.style.display = f.dataset.k === r.k ? "block" : "none");
+    if (r.url && !frames.querySelector(`iframe[data-k="${r.k}"]`)) {      // load on first use, then keep it running
+      const f = document.createElement("iframe"); f.dataset.k = r.k; f.title = r.title; f.src = r.url;
+      f.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:6px;background:var(--bg)"; frames.appendChild(f);
+    }
+    if (r.k === "net") v.resize();
+    try { localStorage.setItem(REGION_KEY(), r.k); } catch (e) {}
+  };
+  slot.querySelector(".rsrc").addEventListener("click", e => { const x = e.target.closest("button"); if (x) show(x.dataset.k); });
+  let k0 = "net"; if (!cfg.noSrc) try { k0 = localStorage.getItem(REGION_KEY()) || "net"; } catch (e) {}
+  show(k0);
+};
+/* Panels that depend on data render through refreshers keyed by slot. */
+const REFRESH = [];
+function dataCard(slot, title, extra, fn, cfg) { const b = card(slot, title, extra); const r = () => { try { fn(b, cfg || {}); } catch (e) { b.innerHTML = `<div class="note">— (${esc(e.message)})</div>`; } }; REFRESH.push(r); r(); }
+const nowFreq = () => { const tp = G && G.frequency && G.frequency.trace_points; return tp && tp.length ? tp : null; };
+const icNetMW = () => W ? Object.values(W.ic).reduce((s, e) => s + e.mw, 0) : null;
+const fuelMW = code => { const f = G && G.generation && G.generation.fuels.find(x => x.code === code); return f ? f.mw : null; };
+P_.system = (slot, cfg) => dataCard(slot, "System now", `<span class="rt" id="sysT"></span>`, b => {
+  const tp = nowFreq(), f = tp ? tp[tp.length - 1].hz : null, d = G && G.demand, pr = G && G.price;
+  const lo = W && W.lolp && W.lolp.length ? W.lolp : null, m = lo ? Math.min(...lo.slice(0, 6).map(x => x.drm)) : null;
+  b.innerHTML = `<div class="kpis">
+    ${cfg.noFreq ? "" : kpi("Frequency", f != null ? f.toFixed(3) : "—", "Hz", f != null ? `${((f - 50) * 1000).toFixed(0)} mHz from 50` : "feed down", f != null && Math.abs(f - 50) > .1 ? "var(--warn)" : "")}
+    ${kpi("Demand", gw(d && d.national_mw), "GW", d && d.delta_1h != null ? `${sgn(d.delta_1h)} MW in 1 h` : "national, excl. embedded")}
+    ${kpi("Wind", gw(fuelMW("WIND")), "GW", "transmission-metered", "#3fb6c9")}
+    ${kpi("Net imports", gw(icNetMW()), "GW", "10 interconnectors", "var(--imp)")}
+    ${kpi("Price", pr && pr.gbp_per_mwh != null ? "£" + pr.gbp_per_mwh.toFixed(0) : "—", "/MWh", pr && pr.delta_1h != null ? `${pr.delta_1h >= 0 ? "▲" : "▼"} £${Math.abs(pr.delta_1h).toFixed(0)} in 1 h` : "market index")}
+    ${kpi("Derated margin", gw(m), "GW", lo ? `LoLP ${Math.max(...lo.slice(0, 6).map(x => x.lolp)).toFixed(2)} next 3 h` : "—", "var(--ok)")}
+  </div>${cfg.spark ? `<div style="margin-top:10px;flex:1"><div class="faint mono" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase">Frequency · last hour</div><canvas class="sp"></canvas></div>` : ""}`;
+  if (cfg.spark && tp) { const ys = tp.map(x => x.hz); sparkline($("canvas.sp", b), ys, { h: cfg.spark, col: "#3fb6c9", lo: Math.min(49.9, ...ys) - .005, hi: Math.max(50.1, ...ys) + .005, refs: [[50, "#2b3d52", ""], [49.95, "rgba(245,185,66,.35)", ""], [50.05, "rgba(245,185,66,.35)", ""]], axis: ["−60 min", "now", "−30 min"] }); }
+}, cfg);
+/* System frequency: the dashboard's own panel (value, 1-min cycle, deviation dial, system risk, 2 h trace),
+   shown through its embedded view so the wall and dashboard always match. */
+P_.freq = (slot) => {
+  // The panel lays out in one row from about 820 px wide and needs about 400 px of height, so the frame is
+  // drawn at that size (or larger, matching the slot's shape) and scaled down to fit the slot.
+  const w = parseFloat(slot.style.width), h = parseFloat(slot.style.height), sc = Math.min(1, w / 820, h / 400);
+  // no wall frame of its own: the dashboard card's border (drawn inside the frame) is the panel's edge
+  slot.innerHTML = `<div class="pn" style="padding:0;overflow:hidden;position:relative;border:0;background:none"><iframe title="System frequency (dashboard panel)" src="/grid_dashboard.html#embed=freq"
+    style="position:absolute;left:0;top:0;width:${w / sc}px;height:${h / sc}px;transform:scale(${sc});transform-origin:0 0;border:0;background:var(--bg)"></iframe></div>`;
+};
+P_.mix = (slot, cfg) => dataCard(slot, "Generation & imports by source", `<span class="rt" id="mixT"></span>`, b => {
+  const fu = G && G.generation ? G.generation.fuels : []; if (!fu.length) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const imp = fu.filter(f => f.category === "interconnector").reduce((s, f) => s + Math.max(0, f.mw), 0);
+  const items = fu.filter(f => f.category !== "interconnector" && f.mw > 0).map(f => [f.name, f.mw, f.colour, f.delta_1h]).concat([["Imports", imp, "#5b8def", null]]).sort((a, b) => b[1] - a[1]);
+  const tot = items.reduce((s, x) => s + x[1], 0), mx = items[0][1];
+  b.innerHTML = `<div class="stack">${items.map(x => `<span style="width:${100 * x[1] / tot}%;background:${x[2]}" title="${esc(x[0])}"></span>`).join("")}</div>
+    <div class="rows" style="margin-top:10px">${items.slice(0, cfg.n || 10).map(x => { const tr = rampFlag(x[1] - (x[3] || 0), x[1]);
+      return `<div class="row" style="--rc:120px 1fr 64px 52px"><span class="nm">${esc(x[0])}</span><span class="bar"><i style="left:0;width:${100 * x[1] / mx}%;background:${x[2]}"></i></span><span class="val">${fmt(x[1])}</span><span class="val ${tr > 0 ? "up" : tr < 0 ? "dn" : "faint"}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}${x[3] != null && tr ? fmt(Math.abs(x[3])) : (100 * x[1] / tot).toFixed(0) + "%"}</span></div>`; }).join("")}</div>
+    <div class="note" style="margin-top:6px">▲▼ = change over the last hour where it is notable; otherwise share.</div>`;
+  const mt = $("#mixT"); if (mt && G.generation.publishTime) mt.textContent = "FUELINST " + UKT(new Date(G.generation.publishTime));
+}, cfg);
+function bndRows(k) { return W && W.boundaries ? (W.boundaries.rows[W.boundaries.keys[k]] || []) : []; }
+P_.transfer = (slot, cfg) => dataCard(slot, "Scotland → England transfer", `<span class="tag">modelled</span>`, b => {
+  const F = curFlow(); const sc = bndRows(0).find(r => r.g === "SCOTEX");
+  b.innerHTML = `<div class="kpis" style="--kc:3">
+    ${kpi("Modelled now", F ? gw(F.b6ac + F.b6dc) : "—", "GW", F ? `AC ${gw(F.b6ac)} + HVDC ≈${gw(F.b6dc)} est.` : "")}
+    ${kpi("NESO forecast", sc ? gw(sc.f) : "—", "GW", "SCOTEX day-ahead flow")}
+    ${kpi("NESO limit", sc ? gw(sc.lim) : "—", "GW", "SCOTEX day-ahead limit")}</div>`;
+}, cfg);
+P_.boundaries = (slot, cfg) => dataCard(slot, "Boundary constraints · NESO", `<span class="tag">day-ahead</span><span class="rt" id="bndT"></span>`, b => {
+  const rows = bndRows(0).slice().sort((a, c) => c.f / c.lim - a.f / a.lim).slice(0, cfg.n || 12);
+  if (!rows.length) { b.innerHTML = `<div class="note">No NESO day-ahead rows for this half-hour yet.</div>`; return; }
+  const nx = Object.fromEntries(bndRows(2).map(r => [r.g, r]));
+  const mx = Math.max(...rows.map(r => Math.max(r.f, r.lim))) || 1;
+  b.innerHTML = `<div class="rows">${rows.map(r => { const over = r.f > r.lim, c = over ? "var(--crit)" : r.f / r.lim > .85 ? "var(--warn)" : "var(--accent)";
+    const n = nx[r.g], tr = n ? rampFlag(r.f, n.f) : 0;
+    return `<div class="row" style="--rc:${cfg.rc || "150px 1fr 120px 22px"}"><span class="nm" title="NESO constraint group">${esc(r.g)}${BND_DESC[r.g] ? ` <span class="faint">· ${BND_DESC[r.g]}</span>` : ""}</span>
+      <span class="bar"><i style="left:0;width:${100 * Math.min(r.f, mx) / mx}%;background:${c};opacity:.85"></i><span class="lim" style="left:${100 * r.lim / mx}%"></span></span>
+      <span class="val">${fmt(r.f)} <span class="faint">/ ${fmt(r.lim)}</span></span><span class="val ${tr > 0 ? "dn" : tr < 0 ? "up" : ""}" title="forecast flow in an hour">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}</span></div>`; }).join("")}</div>
+    <div class="note" style="margin-top:10px">Bar = NESO's forecast flow before any action; tick = the limit. ▲▼ = forecast flow an hour ahead. Above the limit, NESO expects to constrain plant behind the boundary.</div>`;
+  const bt = $("#bndT", slot); if (bt) bt.textContent = (W.boundaries.keys[0] || "").slice(11, 16) + " half-hour";
+}, cfg);
+P_.ics = (slot, cfg) => dataCard(slot, "Interconnectors", `<span class="rt">← export · import → · 15 min · next hour</span>`, b => {
+  if (!W) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const rows = Object.entries(W.ic).sort((a, c) => c[1].mw - a[1].mw); const net = rows.reduce((s, r) => s + r[1].mw, 0);
+  b.innerHTML = `<div class="rows">${rows.map(([k, e]) => { const m = ICMETA[k] || [k, "", [0, 0]], mw = e.mw, w = Math.min(50, 50 * Math.abs(mw) / 2000), c = mw > 0 ? "var(--imp)" : "var(--exp)";
+    const r15 = rampFlag(e.m15, mw), flip = e.p60 != null && Math.abs(mw) >= 20 && Math.abs(e.p60) >= 20 && Math.sign(e.p60) !== Math.sign(mw);
+    const nxt = e.p60 != null ? (flip ? `<span class="warnc" title="Scheduled direction change within the hour (trader notifications)">⇄ ${sgn(e.p60)}</span>` : (rampFlag(mw, e.p60) ? `→ ${sgn(e.p60)}` : "")) : (e.verified === false ? `<span class="faint" title="Trader schedule doesn't match the metered flow, so it isn't shown">n/a</span>` : "");
+    const oc = ICOUT[k], ro = oc && (mw >= 0 ? oc.imp : oc.exp);
+    const cap = ro ? ` <span style="color:${OUTC}" title="${esc(outText(ro))} (REMIT report)">cap ${fmt(ro.avail)}</span>` : "";
+    return `<div class="row" style="--rc:${cfg.rc || "140px 1fr 70px 26px 76px"}"><span class="nm">${esc(m[0])}${cap} <span class="faint">· ${esc(m[1])}</span></span>
+      <span class="bar"><span class="mid"></span>${Math.abs(mw) >= 20 ? `<i style="${mw > 0 ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:${c}"></i>` : ""}</span>
+      <span class="val" style="color:${Math.abs(mw) < 20 ? "var(--ink-faint)" : c}">${Math.abs(mw) < 20 ? "idle" : sgn(mw)}</span>
+      <span class="val ${r15 > 0 ? "up" : r15 < 0 ? "dn" : ""}">${r15 > 0 ? "▲" : r15 < 0 ? "▼" : ""}</span><span class="val faint">${nxt}</span></div>`; }).join("")}
+    <div class="row" style="--rc:${cfg.rc || "140px 1fr 70px 26px 76px"};border-top:1px solid var(--line2);padding-top:6px"><span class="nm" style="color:var(--ink)">Net</span><span></span><span class="val" style="color:var(--imp)">${sgn(net)}</span><span></span><span></span></div></div>`;
+}, cfg);
+P_.outages = (slot, cfg) => dataCard(slot, "Outages", `<span class="tag" style="color:${OUTC};border-color:${OUTC}">reported · REMIT</span>`, b => {
+  const all = (W && W.outages) || []; if (!W) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const now = all.filter(e => !e.soon), soon = all.filter(e => e.soon), lim = cfg.n || 8;
+  const lost = now.reduce((s, e) => s + e.lost, 0);
+  const row = e => { const ic = e.ic && ICMETA[e.ic], nm = ic ? `${ic[0]} ${e.dir === "imp" ? "import" : "export"}` : e.name;
+    return `<tr${e.node != null ? ` data-n="${e.node}"` : ""}><td><i class="fd" style="background:${ic ? "var(--imp)" : fuelOf(FUELK[e.fuel] || "other")[1]}"></i></td><td class="nm">${esc(nm)} <span class="faint">· ${e.planned ? "planned" : "unplanned"}${outCause(e) ? " · " + esc(outCause(e)) : ""}</span></td><td class="r" style="color:${OUTC}">−${fmt(e.lost)}</td><td class="r faint">${e.soon ? "from " + when(e.start) : "to " + when(e.end)}</td></tr>`; };
+  b.innerHTML = `<div class="note" style="margin-bottom:6px">${now.length} reductions in force, ${gw(lost)} GW off normal capacity${soon.length ? ` · ${soon.length} more within 24 h` : ""}</div>
+    <table class="tbl">${now.slice(0, lim).map(row).join("")}</table>
+    ${soon.length && lim > 4 ? `<div class="mvh" style="margin-top:8px">Starting within 24 h</div><table class="tbl">${soon.slice(0, Math.max(2, Math.round(lim / 3))).map(row).join("")}</table>` : ""}
+    <div class="note" style="margin-top:6px">Operators' own unavailability reports (REMIT, via Elexon), biggest first. Closures and reports running over 6 months are left out.</div>`;
+  b.querySelectorAll("tr[data-n]").forEach(tr => tr.onclick = () => select(+tr.dataset.n, true));
+}, cfg);
+const FUELK = { "Fossil Gas": "gas", "Nuclear": "nuclear", "Biomass": "biomass", "Wind Offshore": "wind", "Wind Onshore": "wind", "Hydro Pumped Storage": "pumped",
+  "Hydro Run-of-river and poundage": "hydro", "Hydro Water Reservoir": "hydro", "Other": "other", "Fossil Hard coal": "coal", "Fossil Oil": "oil", "Solar": "solar", "Energy Storage": "battery" };
+P_.topflows = (slot, cfg) => dataCard(slot, "Heaviest circuits", `<span class="tag">modelled</span>`, b => {
+  const F = curFlow(); if (!F) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const rows = L.filter(l => !isNaN(F.line[l.i]) && N[l.a].name && N[l.b].name && l.v >= 260).sort((a, c) => Math.abs(F.line[c.i]) - Math.abs(F.line[a.i])).slice(0, cfg.n || 10);
+  b.innerHTML = `<table class="tbl">${rows.map(l => { const f = F.line[l.i], [fr, to] = f > 0 ? [N[l.a], N[l.b]] : [N[l.b], N[l.a]];
+    return `<tr data-n="${fr.i}"><td><span class="vchip" style="background:${vcol(l.v)}">${l.v >= 380 ? 400 : 275}</span></td><td class="nm">${esc(nodeName(fr))} → ${esc(nodeName(to))}</td><td class="r">${fmt(Math.abs(f))} MW</td></tr>`; }).join("")}</table>
+    <div class="note" style="margin-top:8px">DC load flow from published unit outputs (PN, or NESO's instructed level where one applies), interconnectors at their landing points and demand spread by region. Not NESO measurements.</div>`;
+  b.querySelectorAll("tr").forEach(tr => tr.onclick = () => select(+tr.dataset.n, true));
+}, cfg);
+P_.movers = (slot, cfg) => dataCard(slot, "Movers", `<span class="rt">units & interconnectors</span>`, b => {
+  if (!W) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const us = []; for (const [k, list] of Object.entries(W.units)) for (const u of list) us.push({ node: +k, code: u[0], now: u[1], m15: u[2], p30: u[3], fuel: u[5], instr: u[6], name: u[7] });
+  for (const [k, e] of Object.entries(W.ic)) us.push({ node: e.node, code: k, now: e.mw, m15: e.m15, p30: e.p30, fuel: "ic", name: (ICMETA[k] || [k])[0] });
+  const past = us.filter(u => u.m15 != null && rampFlag(u.m15, u.now)).sort((a, c) => Math.abs(c.now - c.m15) - Math.abs(a.now - a.m15)).slice(0, cfg.n || 8);
+  const next = us.filter(u => u.p30 != null && rampFlag(u.now, u.p30)).sort((a, c) => Math.abs(c.p30 - c.now) - Math.abs(a.p30 - a.now)).slice(0, cfg.n || 8);
+  const row = (u, d, dir) => `<tr data-n="${u.node ?? ""}"><td><i class="fd" style="background:${u.fuel === "ic" ? "var(--imp)" : fuelOf(u.fuel)[1]}"></i></td><td class="nm">${esc(u.name || u.code)} <span class="faint">${esc(u.code)}</span>${u.instr ? ` <span class="chip" title="Following a NESO instruction (bid-offer acceptance)">NESO</span>` : ""}</td><td class="r ${dir}">${d > 0 ? "▲" : "▼"} ${fmt(Math.abs(d))}</td></tr>`;
+  b.innerHTML = `<div class="mv"><div><div class="mvh">Last 15 min</div><table class="tbl">${past.map(u => row(u, u.now - u.m15, u.now > u.m15 ? "up" : "dn")).join("") || `<tr><td class="faint">No notable changes</td></tr>`}</table></div>
+    <div><div class="mvh">Next 30 min <span class="faint">scheduled</span></div><table class="tbl">${next.map(u => row(u, u.p30 - u.now, u.p30 > u.now ? "up" : "dn")).join("") || `<tr><td class="faint">No notable changes scheduled</td></tr>`}</table></div></div>
+    <div class="note" style="margin-top:6px">Changes of at least 50 MW and 10 %. "Scheduled" is the unit's own notification (PN) or NESO's accepted instruction.</div>`;
+  b.querySelectorAll("tr[data-n]").forEach(tr => { if (tr.dataset.n !== "") tr.onclick = () => select(+tr.dataset.n, true); });
+}, cfg);
+P_.margin = (slot, cfg) => dataCard(slot, "Margin · next 12 h", `<span class="rt">Elexon derated margin · LoLP</span>`, b => {
+  const d = W && W.lolp; if (!d || !d.length) { b.innerHTML = `<div class="note">—</div>`; return; }
+  b.innerHTML = `<div class="kpi"><div class="v" style="color:var(--ok);font-size:${cfg.big || 28}px">${gw(Math.min(...d.map(x => x.drm)))}<small>GW lowest</small></div><div class="s">loss-of-load probability up to ${Math.max(...d.map(x => x.lolp)).toFixed(2)}</div></div><canvas class="sp"></canvas>`;
+  sparkline($("canvas.sp", b), d.map(x => x.drm / 1000), { h: cfg.h || 70, col: "#39d98a", fill: "rgba(57,217,138,.12)", lo: 0, refs: [[2, "rgba(255,92,108,.5)", "2 GW"]], axis: [UKT(new Date(d[0].t)), UKT(new Date(d[d.length - 1].t))] });
+}, cfg);
+P_.price = (slot, cfg) => dataCard(slot, "Wholesale price", `<span class="rt">market index £/MWh</span>`, b => {
+  const h = G && G.price && G.price.history; if (!h || !h.length) { b.innerHTML = `<div class="note">—</div>`; return; }
+  const ps = h.map(x => x.p);
+  b.innerHTML = `<div class="kpi"><div class="v">£${(G.price.gbp_per_mwh ?? ps[ps.length - 1]).toFixed(0)}<small>/MWh now · range £${Math.min(...ps).toFixed(0)}–${Math.max(...ps).toFixed(0)}</small></div></div><canvas class="sp"></canvas>`;
+  sparkline($("canvas.sp", b), ps, { h: cfg.h || 80, col: "#f5b942", fill: "rgba(245,185,66,.1)", axis: [UKT(new Date(h[0].t)), "now"] });
+}, cfg);
+P_.demandTrend = (slot, cfg) => dataCard(slot, "Demand & wind · 24 h", `<span class="rt"><span style="color:#e6edf5">— demand</span> &nbsp;<span style="color:#3fb6c9">— wind</span></span>`, b => {
+  if (!GH || !GH.has_data) { b.innerHTML = `<div class="note">History builds from the server's own log; none yet.</div>`; return; }
+  const dm = GH.demand.map(v => v ? v / 1000 : null), wf = GH.fuels.find(f => f.code === "WIND"), wd = wf ? wf.mw.map(v => v / 1000) : [];
+  const hi = Math.ceil(Math.max(...dm.filter(v => v != null), ...wd) / 5) * 5 || 40;
+  b.innerHTML = `<canvas class="sp"></canvas>`;
+  sparkline($("canvas.sp", b), dm, { h: cfg.h || 150, col: "#e6edf5", lo: 0, hi, refs: [[10, "#1a2533", "10 GW"], [20, "#1a2533", "20 GW"], [30, "#1a2533", "30 GW"]], axis: ["−24 h", "now", "−12 h"], series2: { ys: wd, col: "#3fb6c9" } });
+}, cfg);
+P_.warnings = (slot) => dataCard(slot, "System warnings · NESO", "", b => {
+  const w = (G && G.warnings) || []; const live = w.filter(x => x.status === "in force" && x.tier);
+  b.innerHTML = live.length ? live.map(x => `<div class="wn wn-${x.tier === "critical" ? "crit" : x.tier === "warning" ? "warn" : "note"}"><b>${esc(x.name || x.type)}</b>${x.when ? " · " + esc(x.when) : ""}<div class="faint">${esc((x.text || "").slice(0, 220))}</div></div>`).join("")
+    : `<div class="warnbox">No NESO system warnings in force.${w.length ? `<br><span class="faint">Latest notice: ${esc(w[0].type || "")}, ${UKT(new Date(w[0].time))}.</span>` : ""}</div>`;
+});
+P_.legend = (slot) => { const b = card(slot, "Key"); b.innerHTML = `<div class="lg" style="flex-direction:column;gap:7px">
+    <span><i class="ln" style="background:var(--v400)"></i>400 kV</span><span><i class="ln" style="background:var(--v275)"></i>275 kV</span>
+    <span><i class="ln" style="background:var(--v132)"></i>132 kV (Scottish transmission)</span><span><i class="ln" style="background:var(--voff)"></i>Offshore wind export (150–220 kV)</span>
+    <span><i class="ln" style="background:var(--vdc)"></i>HVDC inside GB · flow not published, estimated (Western Link: a share of the Scotland→England transfer set by its rating against NESO's SCOTEX limit)</span>
+    <span><i class="ln" style="background:#f4f7fb;opacity:.7"></i>Moving dashes: modelled flow direction, faster = more MW</span>
+    <span><i style="border-radius:50%;background:#3fb6c9"></i>Circle: generation at the substation now (area ∝ MW, colour = main fuel)</span>
+    <span><b class="up">↻</b> <b class="dn">↺</b>&nbsp; Arc travelling round a circle: output rising (green, clockwise) or falling (orange, anticlockwise) over the last 15 min; longer arc = bigger change, faster = quicker change. Shown at 50 MW and 10 % or more.</span>
+    <span><i style="background:var(--imp)"></i>Interconnector importing · <i style="background:var(--exp);margin-left:6px"></i>exporting, drawn along its cable route; width proportional to MW (2 px per GW); dashes move in for import, out for export · same arc at the landing point (green = towards import) · ⇄ direction change scheduled within the hour</span>
+    <span>⌜⌟ Corner brackets: the selected substation</span><span style="color:${OUTC}">◌ Dashed red ring: a unit there is reduced by an operator's outage report (REMIT); details in its tooltip and the substation panel</span><span>Circuit width grows with its modelled flow (2 px per GW). A circuit value with a tinted background changed by at least 10 MW and 10 % at the last model run (about once a minute) and shows the direction and amount (▲ / ▼, ⇄ reversed): blue to green rising, yellow to orange to red falling, stronger with a bigger change (full at 100 MW or 50 %). It stays until the next run. Values that would overlap are left out, and they fade on wider views.</span><span>▼ Scotland → England label, at the middle of the border: the modelled transfer across it (circuits crossing the border plus the estimated Western HVDC)</span></div>
+    <div class="note" style="margin-top:12px">Network: OpenStreetMap via the gb-dispatch-model prebuilt network (Zenodo). Live: Elexon BMRS (PN, BOALF, FUELINST, LoLP), NESO data portal. Unit locations: Terravolt.</div>`; };
+P_.node = (slot, cfg) => { const b = card(slot, "Substation detail", `<span class="rt">click a substation on the map</span>`); b.classList.add("nodebody"); b.dataset.n = cfg.n || 8; b.dataset.chart = cfg.chart || 0; renderNode(b); };
+function renderNode(b) {
+  const lim = +b.dataset.n, rt = b.parentElement && b.parentElement.querySelector("h2 .rt");
+  if (rt) { rt.innerHTML = SEL == null ? "click a substation on the map" : `<button class="clr" title="Clear the selection (Esc, or click empty map)">✕ clear selection</button>`;
+    const cb = rt.querySelector(".clr"); if (cb) cb.onclick = () => select(null, true); }
+  if (SEL == null) {
+    const top = N.filter(n => n.gen > 0 && n.name).sort((a, c) => c.gen - a.gen).slice(0, lim + 4);
+    b.innerHTML = `<div class="note" style="font-size:13px;margin-bottom:10px">Click a substation on the map, or any row here, for its units and circuits.${IS_POPUP ? "" : " In dual-screen mode a click on screen 1 shows here."} Esc, a click on empty map or ✕ clear selection comes back here.</div>
+      <div class="mvh">Largest generation by substation</div><table class="tbl">${top.map(n => { const tr = rampFlag(n.gen15, n.gen); return `<tr data-n="${n.i}"><td><i class="fd" style="background:${n.fuel ? n.fuel.col : "#9aa0aa"}"></i></td><td class="nm">${esc(nodeName(n))} <span class="faint">· ${n.fuel ? n.fuel.name.toLowerCase() : ""}</span></td><td class="r">${fmt(n.gen)} MW</td><td class="r ${tr > 0 ? "up" : tr < 0 ? "dn" : ""}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}</td></tr>`; }).join("")}</table>`;
+    b.querySelectorAll("tr").forEach(tr => tr.onclick = () => select(+tr.dataset.n, true)); return;
+  }
+  const n = N[SEL], F = curFlow();
+  const circ = n.lines.filter(l => F && !isNaN(F.line[l.i])).map(l => { const o = l.a === n.i ? N[l.b] : N[l.a]; return { o, out: l.a === n.i ? F.line[l.i] : -F.line[l.i], v: l.v }; }).sort((a, c) => Math.abs(c.out) - Math.abs(a.out));
+  b.innerHTML = `<div style="font-size:18px;font-weight:600">${esc(nodeName(n))}</div>
+    <div class="mono faint" style="font-size:11px;margin:2px 0 10px">${[...new Set(n.v.map(vname))].join(" · ")} · ${n.y.toFixed(3)}°N ${Math.abs(n.x).toFixed(3)}°${n.x < 0 ? "W" : "E"}</div>
+    <div class="kpis" style="--kc:3;--kv:22px">${kpi("Generation", fmt(n.gen), "MW", n.gen15 != null ? `${sgn(n.gen - n.gen15)} in 15 min` : "")}${kpi("Scheduled +30", fmt(n.gen30), "MW", "unit notifications")}${kpi("Modelled demand", fmt((F ? F.demand : 0) * n.w / sumW()), "MW", n.region || "offshore / none")}</div>
+    ${+b.dataset.chart && n.units.length ? `<div class="mvh" style="margin-top:12px">Output · last 2 h and next hour <span class="faint">(history builds while the wall is open)</span></div><canvas class="nch"></canvas>` : ""}
+    ${n.out && n.out.length ? `<div class="mvh" style="margin-top:12px;color:${OUTC}">Reported outages · REMIT</div><table class="tbl">${n.out.slice(0, lim).map(o => `<tr><td class="nm">${esc(o.name)} <span class="faint">${esc(o.asset)}</span><br><span class="faint">${esc(outText(o))}</span></td><td class="r" style="color:${OUTC}">−${fmt(o.lost)}</td></tr>`).join("")}</table>` : ""}
+    ${n.units.length ? `<div class="mvh" style="margin-top:12px">Units</div><table class="tbl">${n.units.slice(0, lim).map(u => { const tr = rampFlag(u.m15, u.now);
+      return `<tr><td><i class="fd" style="background:${fuelOf(u.fuel)[1]}"></i></td><td class="nm">${esc(u.name || u.code)} <span class="faint">${esc(u.code)}</span>${u.instr ? ` <span class="chip">NESO</span>` : ""}</td><td class="r">${fmt(u.now)}</td><td class="r ${tr > 0 ? "up" : tr < 0 ? "dn" : ""}">${tr ? (tr > 0 ? "▲" : "▼") : ""}</td><td class="r faint">${u.p30 != null && rampFlag(u.now, u.p30) ? "→ " + fmt(u.p30) : ""}</td></tr>`; }).join("")}</table>` : ""}
+    <div class="mvh" style="margin-top:12px">Circuits · modelled flow out</div>
+    <table class="tbl">${circ.slice(0, lim).map(c => `<tr><td><span class="vchip" style="background:${vcol(c.v)}">${c.v >= 380 ? 400 : c.v >= 260 ? 275 : c.v}</span></td><td class="nm">${esc(nodeName(c.o))}</td><td class="r">${c.out >= 0 ? "out " : "in "}${fmt(Math.abs(c.out))}</td></tr>`).join("")}</table>`;
+  const cv = $("canvas.nch", b); if (cv) drawNodeChart(cv, n);
+}
+async function drawNodeChart(cv, n) {
+  let h; try { h = await (await fetch("/api/wall-history?node=" + n.i)).json(); } catch (e) { return; }
+  const r = cv.parentElement.getBoundingClientRect(), k = stageScale(), w = Math.max(10, r.width / k), H = 130, dpr = Math.min(2, (devicePixelRatio || 1) * k);
+  cv.width = w * dpr; cv.height = H * dpr; cv.style.width = w + "px"; cv.style.height = H + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const now = Date.now(), t0 = now - 2 * 3600e3, t1 = now + 3600e3, X = t => 4 + (t - t0) / (t1 - t0) * (w - 8);
+  const us = (h.units || []).slice(0, 6); let hi = 1; for (const u of us) for (const p of u.pts) hi = Math.max(hi, p[1]); for (const u of us) for (const a of u.ahead) if (a[1] != null) hi = Math.max(hi, a[1]);
+  const Y = v => H - 14 - Math.max(0, v) / hi * (H - 22);
+  g.strokeStyle = "#1a2533"; g.beginPath(); g.moveTo(X(now), 0); g.lineTo(X(now), H - 12); g.stroke();
+  g.font = `10px ${css("--mono")}`; g.fillStyle = "#566277"; g.fillText("−2 h", 4, H - 2); g.fillText("now", X(now) - 10, H - 2); g.fillText("+1 h", w - 28, H - 2); g.fillText(fmt(hi) + " MW", 4, 10);
+  for (const u of us) {
+    const col = fuelOf(u.fuel)[1]; g.strokeStyle = col; g.lineWidth = 1.6; g.beginPath(); let st = false;
+    for (const [t, v] of u.pts) { const x = X(Date.parse(t + ":00Z")); if (x < 0) continue; st ? g.lineTo(x, Y(v)) : g.moveTo(x, Y(v)); st = true; } g.stroke();
+    const a = u.ahead; if (a[0][1] != null) { g.setLineDash([4, 3]); g.beginPath(); g.moveTo(X(now), Y(a[0][1])); if (a[1][1] != null) g.lineTo(X(now + 1800e3), Y(a[1][1])); if (a[2][1] != null) g.lineTo(X(now + 3600e3), Y(a[2][1])); g.stroke(); g.setLineDash([]); }
+  }
+}
+function renderNodePanels() { document.querySelectorAll(".nodebody").forEach(renderNode); }
+
+/* ---------------- layouts (HD 1920 x 1080, ultrawide 5120 x 1440) ---------------- */
+const UWV = { "--mk": "12.5px", "--h2": "13px", "--kv": "34px", "--kk": "11px", "--ks": "12px", "--rf": "14px", "--lf": "13px", "--nf": "12px", "--ttl": "24px", "--clk": "22px", "--bh": "14px", "--rg": "9px", "--zb": "13px" };
+const LAYOUTS = {
+  hd: { label: "1920 × 1080", w: 1920, h: 1080, sub: "Single screen · 1920 × 1080", vars: {}, slots: [
+    ["header", 0, 0, 1920, 52], ["map", 12, 62, 700, 1006, { font: 10, labels: 32 }],
+    ["system", 724, 62, 590, 262, { spark: 56 }], ["mix", 724, 334, 590, 300, { n: 8 }], ["transfer", 724, 644, 590, 118], ["movers", 724, 772, 590, 296, { n: 4 }],
+    ["boundaries", 1326, 62, 582, 330, { n: 8 }], ["ics", 1326, 402, 582, 330], ["node", 1326, 742, 582, 326, { n: 4 }] ] },
+  uw: { label: "5120 × 1440", w: 5120, h: 1440, sub: "Single screen · 5120 × 1440", vars: UWV, slots: [
+    ["header", 0, 0, 5120, 60],
+    ["freq", 20, 74, 880, 330], ["mix", 20, 418, 880, 400], ["demandTrend", 20, 832, 880, 290, { h: 230 }], ["price", 20, 1136, 880, 284, { h: 190 }],
+    ["transfer", 920, 74, 880, 150], ["boundaries", 920, 238, 880, 520, { n: 13, rc: "190px 1fr 140px 26px" }], ["movers", 920, 772, 880, 330, { n: 5 }], ["outages", 920, 1116, 880, 304, { n: 6 }],
+    ["map", 1820, 74, 1020, 1346, { font: 12, labels: 60 }], ["zoom", 2860, 74, 1320, 1346, { font: 13, preset: 0 }],
+    ["ics", 4200, 74, 900, 470, { rc: "200px 1fr 90px 30px 96px" }], ["node", 4200, 558, 900, 560, { n: 7, chart: 1 }], ["margin", 4200, 1132, 900, 288, { h: 150, big: 34 }] ] },
+  d1: { label: "Dual · screen 1 (5120 × 1440)", w: 5120, h: 1440, sub: "Dual screen · screen 1 of 2 · network", vars: UWV, slots: [
+    ["header", 0, 0, 5120, 60],
+    ["transfer", 20, 74, 880, 150], ["boundaries", 20, 238, 880, 640, { n: 18, rc: "190px 1fr 140px 26px" }], ["legend", 20, 892, 880, 528],
+    ["map", 920, 74, 1020, 1346, { font: 12, labels: 60 }], ["zoom", 1960, 74, 2300, 1346, { font: 14, preset: 0 }],
+    ["ics", 4280, 74, 820, 470, { rc: "180px 1fr 84px 28px 90px" }], ["topflows", 4280, 558, 820, 862, { n: 20 }] ] },
+  d2: { label: "Dual · screen 2 (1920 × 1080)", w: 1920, h: 1080, sub: "Dual screen · screen 2 of 2 · system", vars: {}, slots: [
+    ["header", 0, 0, 1920, 52],
+    ["system", 12, 62, 620, 240, { noFreq: 1 }], ["mix", 12, 312, 620, 330], ["price", 12, 652, 620, 200, { h: 100 }], ["margin", 12, 862, 620, 206, { h: 100 }],
+    ["freq", 644, 62, 620, 330], ["movers", 644, 402, 620, 420, { n: 7 }], ["warnings", 644, 832, 620, 236],
+    ["node", 1276, 62, 632, 600, { n: 6, chart: 1 }], ["outages", 1276, 672, 632, 396, { n: 8 }] ] },
+  h1: { label: "Dual HD · screen 1", w: 1920, h: 1080, sub: "Dual HD · screen 1 of 2 · network", vars: {}, slots: [
+    ["header", 0, 0, 1920, 52], ["map", 12, 62, 620, 1006, { font: 10, labels: 26, compact: 1 }], ["zoom", 644, 62, 720, 1006, { font: 11, preset: 0 }],
+    ["transfer", 1376, 62, 532, 118], ["boundaries", 1376, 190, 532, 470, { n: 11, rc: "120px 1fr 112px 20px" }], ["ics", 1376, 670, 532, 398, { rc: "116px 1fr 62px 20px 70px" }] ] },
+  h2: { label: "Dual HD · screen 2", w: 1920, h: 1080, sub: "Dual HD · screen 2 of 2 · system", vars: {}, slots: [
+    ["header", 0, 0, 1920, 52],
+    ["system", 12, 62, 620, 240, { noFreq: 1 }], ["mix", 12, 312, 620, 330], ["margin", 12, 652, 620, 190, { h: 80 }], ["warnings", 12, 852, 620, 216],
+    ["freq", 644, 62, 620, 320], ["movers", 644, 392, 620, 380, { n: 6 }], ["price", 644, 782, 620, 286, { h: 170 }],
+    ["node", 1276, 62, 632, 430, { n: 5, chart: 1 }], ["outages", 1276, 502, 632, 290, { n: 5 }], ["topflows", 1276, 802, 632, 266, { n: 5 }] ] }
+};
+const MODE_KEY = "gbWallMode";
+/* Network pop-up (dashboard "🗺 network"): the same size rules as the dashboard's other pop-ups —
+   content at most 1,320 px wide, centred; below 900 px wide (phones, narrow windows) the substation
+   panel goes under the map instead of beside it. Text 1.5 pt (2 px) larger than the wall. */
+const POP_MAXW = 1320, POP_STACK = 900;
+function popupLayout() {
+  const vars = { "--mk": "12.5px", "--zb": "13px", "--h2": "13px", "--rf": "14.5px", "--kv": "24px", "--kk": "12px", "--ks": "13px", "--nf": "12.5px" };
+  const W = Math.max(340, Math.min(POP_MAXW, innerWidth)), H = Math.max(480, innerHeight);
+  document.documentElement.classList.toggle("narrow", W < POP_STACK);
+  if (W < POP_STACK) {              // phone / narrow: map nearly a screen high, substation panel below; the page scrolls
+    const mh = Math.max(520, innerHeight - 64), nh = 560;
+    return { label: "Network map", w: W, h: 56 + mh + 6 + nh + 6, sub: "", narrow: 1, vars, slots: [
+      ["popbar", 0, 0, W, 50],
+      ["zoom", 6, 56, W - 12, mh, { font: 11, preset: ZOOMS.length - 1, noSrc: 1 }],
+      ["node", 6, 62 + mh, W - 12, nh, { n: 8, chart: 1 }] ] };
+  }
+  const side = Math.min(460, Math.round(W * .3));
+  return { label: "Network map", w: W, h: H, sub: "", vars, slots: [
+    ["popbar", 0, 0, W, 50],
+    ["zoom", 10, 58, W - side - 30, H - 68, { font: 14, preset: ZOOMS.length - 1, noSrc: 1 }],
+    ["node", W - side - 10, 58, side, H - 68, { n: 10, chart: 1 }] ] };
+}
+let MODE = new URLSearchParams(location.search).get("screen");
+if (MODE === "map") LAYOUTS.map = popupLayout();
+else if (!LAYOUTS[MODE]) { try { MODE = localStorage.getItem(MODE_KEY); } catch (e) { MODE = null; } if (MODE === "map") MODE = null; }
+let FIRST = !LAYOUTS[MODE]; if (FIRST) MODE = "hd";
+let LAY = LAYOUTS[MODE];
+function stageScale() { const k = LAY.narrow ? innerWidth / LAY.w : Math.min(innerWidth / LAY.w, innerHeight / LAY.h); return isFinite(k) && k > 0 ? k : 1; }
+function fitStage() { const st = $("#stage"), k = stageScale(); st.style.width = LAY.w + "px"; st.style.height = LAY.h + "px"; st.style.transform = LAY.narrow ? `scale(${k})` : `translate(${(innerWidth - LAY.w * k) / 2}px,${(innerHeight - LAY.h * k) / 2}px) scale(${k})`; }
+function build() {
+  const st = $("#stage"); st.innerHTML = ""; views.length = 0; REFRESH.length = 0;
+  for (const [k, v] of Object.entries(LAY.vars)) st.style.setProperty(k, v);
+  fitStage();
+  for (const [p, x, y, w, h, cfg] of LAY.slots) { const s = document.createElement("div"); s.className = "slot"; s.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`; st.appendChild(s); P_[p](s, Object.assign({ sub: LAY.sub }, cfg || {})); }
+  document.title = "GB Grid Wall · " + LAY.label; setLive();
+}
+function setMode(m) { FIRST = false; MODE = m; LAY = LAYOUTS[m]; try { localStorage.setItem(MODE_KEY, m); } catch (e) {} const u = new URL(location); u.searchParams.set("screen", m); u.searchParams.delete("start"); history.replaceState(null, "", u); build(); closePicker(); }
+function openPicker() { const el = $("#picker"); el.classList.add("open"); el.querySelectorAll(".opt").forEach(o => o.classList.toggle("on", o.dataset.m === MODE)); el.querySelector(`.opt[data-m="${MODE}"]`)?.focus(); }
+function closePicker() { $("#picker").classList.remove("open"); }
+$("#picker").addEventListener("click", e => { const o = e.target.closest(".opt"); if (o) setMode(o.dataset.m); else if (e.target.id === "picker" && !FIRST) closePicker(); });
+function toggleFS() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.().catch(() => {}); }
+addEventListener("keydown", e => { if (e.target.closest && e.target.closest("input")) return; if ((e.key === "m" || e.key === "M") && !IS_POPUP) openPicker(); else if ((e.key === "f" || e.key === "F") && !IS_POPUP) toggleFS(); else if (e.key === "Escape") { if ($("#picker").classList.contains("open")) closePicker(); else if (SEL != null) select(null, true); else if (IS_POPUP && window.parent !== window) window.parent.postMessage({ gbWall: "close" }, location.origin); } });
+function popupRelayout() {             // rebuild the pop-up for the current window size, keeping the view
+  if (innerWidth < 50 || innerHeight < 50) return;            // hidden by the dashboard: wait until shown
+  const z = views.find(v => v.opt.zoom), bb = z && z.bb.slice(), on = z && z.slot.querySelector(".zbtns button.on[data-i]");
+  LAYOUTS.map = LAY = popupLayout(); build();
+  const z2 = views.find(v => v.opt.zoom); if (bb && z2 && !on) z2.userBB(bb); else if (on && z2) setZoomAll(+on.dataset.i, false);
+}
+if (IS_POPUP) addEventListener("message", e => { if (e.origin === location.origin && e.data && e.data.gbWall === "shown") requestAnimationFrame(popupRelayout); });
+let rT; addEventListener("resize", () => { clearTimeout(rT); rT = setTimeout(() => {
+  if (IS_POPUP) { popupRelayout(); return; }
+  fitStage(); views.forEach(v => v.resize()); REFRESH.forEach(f => f()); }, 150); });
+
+/* screen 2 on the other display (Window Management API in Chrome/Edge; plain window elsewhere) */
+async function startScreen2() {
+  const other = MODE === "d1" ? "d2" : "h2"; const url = `${location.origin}${location.pathname}?screen=${other}&start=1`;
+  if ("getScreenDetails" in window) {
+    try {
+      const sd = await window.getScreenDetails(); const cur = sd.currentScreen; const tgt = sd.screens.find(s => s !== cur);
+      if (tgt) { window.open(url, "gbwall2", `popup,left=${tgt.availLeft},top=${tgt.availTop},width=${tgt.availWidth},height=${tgt.availHeight}`);
+        document.documentElement.requestFullscreen?.({ screen: cur }).catch(() => {}); return; }
+    } catch (e) { /* permission refused: fall through */ }
+  }
+  window.open(url, "gbwall2");
+}
+if (new URLSearchParams(location.search).get("start")) {
+  const o = $("#fsprompt"); o.classList.add("open"); o.onclick = () => { document.documentElement.requestFullscreen?.().catch(() => {}); o.classList.remove("open"); };
+  o.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); o.onclick(); } else if (e.key === "Escape") o.classList.remove("open"); }; o.focus();
+}
+
+/* ---------------- polling ---------------- */
+function setLive() {
+  const c = $("#liveChip"); if (!c) return;
+  const age = W && W.t ? (Date.now() - Date.parse(W.t)) / 1000 : null;
+  if (!W) { c.textContent = lastErr ? "no data · " + lastErr : "connecting…"; c.className = "live bad"; return; }
+  const stale = age > 240; c.className = "live" + (stale ? " bad" : "");
+  c.textContent = (stale ? "STALE · data from " : "live · units ") + UKT(new Date(W.t)) + (W.errors && W.errors.length ? " · " + W.errors.join(", ") : "");
+}
+async function poll() {
+  const prevNodes = N.length ? N.map(n => n.gen) : null;
+  try {
+    const [rw, rg] = await Promise.all([fetch("/api/wall", { cache: "no-store" }), fetch("/api/grid", { cache: "no-store" })]);
+    const w = await rw.json(); if (w.error) throw new Error(w.error);
+    W = w; try { G = await rg.json(); } catch (e) {}
+    applyWall(W === w && prevNodes && prevNodes.some(x => x) ? prevNodes : null); lastOK = Date.now(); lastErr = "";
+    for (const v of views) v.layoutLabels();
+    REFRESH.forEach(f => f()); renderNodePanels();
+  } catch (e) { lastErr = String(e.message || e).slice(0, 80); }
+  setLive();
+}
+async function pollHist() { try { GH = await (await fetch("/api/gen-history?days=1", { cache: "no-store" })).json(); REFRESH.forEach(f => f()); } catch (e) {} }
+
+/* clock + animation */
+setInterval(() => { const d = new Date(), u = $("#cU"), l = $("#cL"); if (!u) return; u.textContent = d.toISOString().slice(11, 19); l.textContent = d.toLocaleTimeString("en-GB", { timeZone: "Europe/London" }); setLive(); }, 1000);
+// Schedule the next frame first and guard each map: Firefox throws NS_ERROR_FAILURE when drawing on a
+// canvas inside a hidden iframe (the closed dashboard pop-up), and an uncaught throw here ended the loop for good.
+let last = 0; function frame(t) {
+  requestAnimationFrame(frame);
+  if (t - last <= 33) return; last = t;
+  for (const v of views) { if (v.hidden || !v.c.width || !v.c.height) continue;
+    try { v.draw(t); } catch (e) { try { v.g.setTransform(1, 0, 0, 1, 0, 0); v.g.globalAlpha = 1; v.g.setLineDash([]); } catch (_) {} } }
+}
+(async () => {
+  build(); if (FIRST) openPicker();
+  try { await loadNetwork(); } catch (e) { lastErr = "network file: " + e.message; setLive(); return; }
+  build(); await poll(); pollHist();
+  setInterval(poll, 60000); setInterval(pollHist, 600000);
+  if (RM) setInterval(() => views.forEach(v => { try { if (!v.hidden) v.draw(0); } catch (e) {} }), 1000); else requestAnimationFrame(frame);
+})();
+</script>
+</body></html>

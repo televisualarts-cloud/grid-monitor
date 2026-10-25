@@ -18,7 +18,7 @@
 #   NIE   — NIE Networks OpenDataSoft, needs free API key (Northern Ireland; CC-BY 4.0).
 #          Feed is postcode-only (NO coordinates), so incidents are geocoded to BT
 #          postcode-district centroids for plotting. Gated; dormant without a key.
-#   ESB   — ESB Networks PowerCheck API (Republic of Ireland; shared subscription key).
+#   ESB   — ESB Networks PowerCheck API (Ireland; shared subscription key).
 #          A lightweight list (id/type/coords) plus one per-outage detail call each
 #          (customers off, ETR, planner group). Detail responses are cached to keep the
 #          per-poll call count down. Restored outages are dropped (cleared, not off).
@@ -29,7 +29,7 @@
 #
 # Python 3, stdlib only. No import of the live server.
 #
-# Build 261015.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261025.5  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 CUSTOMERS_TRACKED = {
     "NGED": 7_000_000, "UKPN": 8_300_000, "NPg": 3_900_000,
     "ENWL": 2_400_000, "SPEN": 3_500_000, "SSEN": 3_800_000,
-    "NIE": 900_000, "ESB": 2_400_000,          # Northern Ireland / Republic of Ireland
+    "NIE": 900_000, "ESB": 2_400_000,          # Northern Ireland / Ireland
 }
 
 # NGED live "detailed" power-cuts CSV (all four NGED licence areas in one file)
@@ -89,7 +89,7 @@ FROZEN_MAX_STEP = 1800    # a gap longer than this between checks isn't counted 
 ODS_PAGE = 100            # OpenDataSoft records page size (max 100)
 ODS_MAX_PAGES = 60        # safety cap (6000 incidents) — GB rarely exceeds a few hundred
 
-# ESB Networks PowerCheck (Republic of Ireland). A public subscription key is embedded in
+# ESB Networks PowerCheck (Ireland). A public subscription key is embedded in
 # ESB's own web map; it is used here as the default and can be overridden from the settings
 # UI (stored under key "ESB"). Auth is the 'API-Subscription-Key' request header.
 ESB_BASE = "https://api.esb.ie/esbn/powercheck/v1.0/outages"
@@ -158,16 +158,34 @@ def _get(url, headers=None, timeout=FETCH_TIMEOUT):
         return body
 
 
-def _ods_records(host, dataset, apikey=None, timeout=FETCH_TIMEOUT):
-    """Fetch ALL records of an OpenDataSoft Explore v2.1 dataset (paginated). The API key,
-    when present, goes in the Authorization header (never the URL, so it can't leak to
-    logs). Returns a list of record dicts; raises on HTTP/network error."""
-    headers = {"Authorization": "Apikey " + apikey} if apikey else None
-    base = f"https://{host}/api/explore/v2.1/catalog/datasets/{dataset}/records"
+def _ods_records(host, dataset, apikey=None, timeout=FETCH_TIMEOUT, where=None):
+    """Fetch ALL records of an OpenDataSoft Explore v2.1 dataset. The API key, when present,
+    goes in the Authorization header (never the URL, so it can't leak to logs). Returns a
+    list of record dicts; raises on HTTP/network error.
+
+    Uses the dataset's EXPORT endpoint: every record in one request. Paging the records
+    endpoint (100 per call) cost one call per 100 rows, and anonymous ODS use is capped at
+    5,000 calls a day per IP: on 25 Oct 2026 Northern Powergrid's feed held ~9,000 rows (one
+    per postcode), 93 calls every 5-minute poll, so the quota ran out at 13:40 UTC and NPg
+    showed 'down' until midnight. `where` (ODSQL) filters on the server. Falls back to paging
+    if the export endpoint itself is refused (not on a quota error, which paging would hit too)."""
+    headers = {"Accept-Encoding": "gzip"}           # _get unpacks it; NPg is ~450 KB raw
+    if apikey:
+        headers["Authorization"] = "Apikey " + apikey
+    root = f"https://{host}/api/explore/v2.1/catalog/datasets/{dataset}"
+    qs = {"where": where} if where else {}
+    try:
+        url = root + "/exports/json" + ("?" + urllib.parse.urlencode(qs) if qs else "")
+        data = json.loads(_get(url, headers=headers, timeout=max(timeout, 60)))
+        if isinstance(data, list):
+            return data
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 429):
+            raise
     out = []
     offset = 0
     for _ in range(ODS_MAX_PAGES):
-        url = base + "?" + urllib.parse.urlencode({"limit": ODS_PAGE, "offset": offset})
+        url = root + "/records?" + urllib.parse.urlencode(dict(qs, limit=ODS_PAGE, offset=offset))
         blob = json.loads(_get(url, headers=headers, timeout=timeout))
         results = blob.get("results") or []
         out.extend(results)
@@ -259,7 +277,8 @@ def adapter_npg(apikey=None):
     internal numeric code, so the nature is used as the category. A live 0 in
     'totalconfirmedpowercut' means not yet confirmed: customers_off None + count_pending, the
     predicted figure kept. Times carry a UTC offset."""
-    recs = _ods_records(*ODS["NPg"][:2], apikey=apikey)
+    recs = _ods_records(*ODS["NPg"][:2], apikey=apikey,
+                        where="incidentstatus != 6 and isaffected != 0")   # live rows only
     out = []
     for r in recs:
         if r.get("incidentstatus") == 6 or r.get("isaffected") == 0:
@@ -429,8 +448,189 @@ def adapter_spen(apikey=None):
             last_updated=_s(r.get("upload_date")), psr=None,
         )
         inc["sectors"] = len(sectors)                    # magnitude proxy: postcode sectors affected
+        _check_position(inc, sectors)
         out.append(inc)
     return out
+
+
+# ───────────────────────── position check against the incident's postcodes ──────────
+# Some SPEN incidents (mostly HV) carry a location far from the postcodes they list, often
+# about 1.5° of latitude too far south: on 25 Oct 2026 a Helensburgh/Greenock fault (G84,
+# PA16) sat in the Irish Sea beside the Isle of Man, an Ayrshire one (KA26, DG8) off
+# Blackpool and a Haddington one (EH41) in the Solway. 12 of 145 live incidents were over
+# 40 km from every postcode district they named. Check each published point against the
+# centroids of its postcode DISTRICTS (outward codes, from postcodes.io, cached on disk);
+# if it is more than POS_MAX_KM from all of them, plot it at the centre of the main group of
+# districts instead and say so (pos_note). Districts are a few km to ~30 km across in rural
+# Scotland, hence the margin. A stray typo district in a list doesn't move the point.
+POS_MAX_KM = 35.0
+POS_CLUSTER_KM = 40.0
+POS_LOOKUPS_PER_CYCLE = 250          # new districts looked up per poll (the rest next time;
+#                                      40 took four 5-minute polls to fill a fresh cache)
+OUTCODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outcode_centroids.json")
+_OC_RE = re.compile(r"^\s*([A-Z]{1,2}\d[A-Z\d]?)(?:\s|$)")
+_oc_cache = None
+_oc_lock = threading.Lock()
+_oc_budget = {"n": 0, "ts": 0.0}
+
+
+def _km(a_lat, a_lon, b_lat, b_lon):
+    import math
+    p = math.radians
+    x = (math.sin(p(b_lat - a_lat) / 2) ** 2
+         + math.cos(p(a_lat)) * math.cos(p(b_lat)) * math.sin(p(b_lon - a_lon) / 2) ** 2)
+    return 2 * 6371.0 * math.asin(math.sqrt(min(1.0, x)))
+
+
+def _outcode_centroid(oc):
+    """(lat, lon) of a postcode district, from the disk cache or postcodes.io; None if
+    unknown (a 404 is remembered; a network failure is retried on a later poll)."""
+    global _oc_cache
+    with _oc_lock:
+        if _oc_cache is None:
+            try:
+                _oc_cache = json.loads(open(OUTCODE_FILE, encoding="utf-8").read())
+            except Exception:
+                _oc_cache = {}
+        if oc in _oc_cache:
+            v = _oc_cache[oc]
+            return tuple(v) if v else None
+        now = time.time()
+        if now - _oc_budget["ts"] > 120:
+            _oc_budget.update(n=0, ts=now)
+        if _oc_budget["n"] >= POS_LOOKUPS_PER_CYCLE:
+            return None
+        _oc_budget["n"] += 1
+    try:
+        d = _pcio("/outcodes/" + urllib.parse.quote(oc))
+    except Exception:
+        return None
+    res = (d or {}).get("result") or {}
+    v = ([round(res["latitude"], 5), round(res["longitude"], 5)]
+         if res.get("latitude") is not None and res.get("longitude") is not None else None)
+    with _oc_lock:
+        _oc_cache[oc] = v
+        try:
+            tmp = OUTCODE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(_oc_cache, fh, separators=(",", ":"), sort_keys=True)
+            os.replace(tmp, OUTCODE_FILE)
+        except Exception:
+            pass
+    return tuple(v) if v else None
+
+
+# ───────────────────────── licence-area check ────────────────────────────────
+# An operator only runs the network in its own licence area(s), so an incident plotted well
+# outside them has a wrong location — usually a mistyped postcode the operator geocoded. On
+# 25 Oct 2026 SSEN listed a 3-customer LV fault at "BD17 7AX" (Baildon, West Yorkshire, in
+# Northern Powergrid's area) with matching coordinates. The true place can't be known (RG17
+# 7AX Hungerford and BH17 7AX Poole are both SSEN postcodes), so the point is kept as
+# published, still counted, but flagged: drawn faded, explained in its hover card, and not
+# used for near-you alerts. Areas from region_polys.json (NESO licence areas, ~1 km
+# simplified), so AREA_TOL_KM of slack keeps coastal and border points in.
+AREA_TOL_KM = 5.0
+POLY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "region_polys.json")
+_areas = None
+
+
+def _load_areas():
+    global _areas
+    if _areas is None:
+        _areas = {}
+        try:
+            for a in json.loads(open(POLY_FILE, encoding="utf-8").read()).get("areas") or []:
+                _areas.setdefault(a.get("dno"), []).extend(a.get("rings") or [])
+        except Exception:
+            pass
+    return _areas
+
+
+def _in_ring(lon, lat, ring):
+    inside = False
+    j = len(ring) - 1
+    for k in range(len(ring)):
+        xi, yi = ring[k][0], ring[k][1]
+        xj, yj = ring[j][0], ring[j][1]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-12) + xi:
+            inside = not inside
+        j = k
+    return inside
+
+
+def _km_to_ring(lon, lat, ring):
+    """Shortest distance (km) from a point to a ring's edges (equirectangular, fine at this scale)."""
+    import math
+    kx = 111.32 * math.cos(math.radians(lat))
+    ky = 110.57
+    best = float("inf")
+    for k in range(len(ring) - 1):
+        ax, ay = (ring[k][0] - lon) * kx, (ring[k][1] - lat) * ky
+        bx, by = (ring[k + 1][0] - lon) * kx, (ring[k + 1][1] - lat) * ky
+        dx, dy = bx - ax, by - ay
+        t = max(0.0, min(1.0, -(ax * dx + ay * dy) / ((dx * dx + dy * dy) or 1e-12)))
+        best = min(best, math.hypot(ax + t * dx, ay + t * dy))
+    return best
+
+
+def _check_area(inc):
+    """Flag an incident that lies inside ANOTHER operator's licence area and more than
+    AREA_TOL_KM outside its own. A point outside every area (Shetland, Achill and other
+    islands the simplified outlines leave out) is not flagged."""
+    try:
+        lat, lon = inc.get("lat"), inc.get("lon")
+        areas = _load_areas()
+        own = areas.get(inc.get("dno"))
+        if lat is None or lon is None or not own:
+            return
+        if any(_in_ring(lon, lat, r) for r in own):
+            return
+        other = next((dno for dno, rings in areas.items()
+                      if dno != inc.get("dno") and any(_in_ring(lon, lat, r) for r in rings)), None)
+        if other is None:
+            return
+        d = min(_km_to_ring(lon, lat, r) for r in own)
+        if d <= AREA_TOL_KM:
+            return
+        inc["outside_area"] = True
+        inc["pos_note"] = (f"plotted in {other}'s area, {int(round(d))} km outside {inc.get('dno')}'s"
+                           f" — location as published, probably a wrong postcode; not used for "
+                           f"near-you alerts")
+    except Exception:
+        pass
+
+
+def _check_position(inc, sectors):
+    """Move an incident whose published point is far from every postcode district it lists
+    to the centre of the main group of those districts, noting why. Never raises."""
+    try:
+        if inc.get("lat") is None or inc.get("lon") is None or not sectors:
+            return
+        ocs = []
+        for sct in sectors:
+            m = _OC_RE.match(str(sct).upper())
+            if m and m.group(1) not in ocs:
+                ocs.append(m.group(1))
+        pts = [c for c in (_outcode_centroid(oc) for oc in ocs) if c]
+        if not pts:
+            return
+        lat, lon = inc["lat"], inc["lon"]
+        near = min(_km(lat, lon, a, b) for a, b in pts)
+        if near <= POS_MAX_KM:
+            return
+        # main group: the district with most others within POS_CLUSTER_KM, and those others
+        best = max(pts, key=lambda c: sum(1 for d in pts if _km(c[0], c[1], d[0], d[1]) <= POS_CLUSTER_KM))
+        grp = [d for d in pts if _km(best[0], best[1], d[0], d[1]) <= POS_CLUSTER_KM]
+        clat = sum(d[0] for d in grp) / len(grp)
+        clon = sum(d[1] for d in grp) / len(grp)
+        moved = _km(lat, lon, clat, clon)
+        inc["lat"], inc["lon"] = round(clat, 5), round(clon, 5)
+        inc["pos_src"] = "postcodes"
+        inc["pos_published"] = [lat, lon]
+        inc["pos_note"] = (f"{inc.get('dno')}'s location was {int(round(moved))} km from these "
+                           f"postcodes; shown at their centre")
+    except Exception:
+        pass
 
 
 # ───────────────────────── Northern Ireland (NIE Networks) ──────────────────
@@ -514,7 +714,7 @@ def adapter_nie(apikey=None):
     return out
 
 
-# ───────────────────────── Republic of Ireland (ESB Networks) ────────────────
+# ───────────────────────── Ireland (ESB Networks) ────────────────
 _esb_detail_cache = {}          # id -> {"d": detail_dict, "ts": ...}
 _esb_lock = threading.Lock()
 
@@ -641,7 +841,7 @@ def _esb_time(v):
 
 
 def adapter_esb(apikey=None):
-    """ESB Networks PowerCheck (Republic of Ireland). Two-step: a light list endpoint
+    """ESB Networks PowerCheck (Ireland). Two-step: a light list endpoint
     (id 'i', type 't' in Planned/Fault/Restored, coord 'p.c' as "lat,lon") then one detail
     call per non-restored outage for the customer count, planner group and times. Detail
     calls are pooled and cached. Restored outages are dropped (cleared, not off)."""
@@ -849,7 +1049,8 @@ def _clean_alias(v):
 
 def save_watch(entries):
     """Validate + store the user's list. `entries` is a list of postcode strings or
-    {'pc': ..., 'alias': ...} dicts (blank postcodes ignored, duplicates dropped, max
+    {'pc': ..., 'alias': ..., 'repeat': bool} dicts (repeat = re-sound the dashboard alarm
+    every 30 min while a cut there continues) (blank postcodes ignored, duplicates dropped, max
     WATCH_MAX). Entries already stored keep their looked-up place without a new lookup;
     the alias is always taken from this save. Returns {'ok', 'areas', 'rejected':[{input,
     alias, error}]}. An entry whose lookup FAILED for network reasons is kept (marked
@@ -859,8 +1060,9 @@ def save_watch(entries):
     for raw in (entries or []):
         if isinstance(raw, dict):
             s, alias = str(raw.get("pc") or "").strip(), _clean_alias(raw.get("alias"))
+            repeat = bool(raw.get("repeat"))
         else:
-            s, alias = str(raw or "").strip(), ""
+            s, alias, repeat = str(raw or "").strip(), "", False
         if not s:
             continue
         kind, pc = pc_parse(s)
@@ -876,9 +1078,11 @@ def save_watch(entries):
         seen.add(pc)
         o = old.get(pc)
         if o and o.get("place") and not o.get("unverified"):
-            a = {k: v for k, v in o.items() if k != "alias"}
+            a = {k: v for k, v in o.items() if k not in ("alias", "repeat")}
             if alias:
                 a["alias"] = alias
+            if repeat:
+                a["repeat"] = True
             areas.append(a); continue
         lk = pc_lookup(kind, pc)
         if lk.get("ok"):
@@ -890,6 +1094,8 @@ def save_watch(entries):
             continue
         if alias:
             a["alias"] = alias
+        if repeat:
+            a["repeat"] = True
         areas.append(a)
     with _watch_lock:
         try:
@@ -935,6 +1141,7 @@ def watch_matches(incidents, areas=None):
                         level = level or "may"; hit.append(pc)
             if level:
                 out.append({"pc": apc, "place": a.get("place"), "alias": a.get("alias") or None, "kind": akind,
+                            "repeat": bool(a.get("repeat")),
                             "dno": inc.get("dno"), "id": inc.get("id"),
                             "planned": inc.get("planned"), "off": inc.get("customers_off"),
                             "predicted": inc.get("customers_predicted"),
@@ -994,7 +1201,10 @@ def _fetch_operator(dno, keys, now):
         if c and not c.get("error") and now - c["ts"] < CACHE_TTL:
             return "ok", c["incidents"], None
     try:
-        incs = adapter(key) if needs_key else adapter()
+        # an optional key is used when one is stored (NPg, UKPN: their open OpenDataSoft feeds
+        # also take a free account key, which has its own daily allowance instead of the
+        # 5,000 calls a day shared by every anonymous user on the same IP)
+        incs = adapter(key) if (needs_key or key) else adapter()
         with _cache_lock:
             _cache[dno] = {"incidents": incs, "ts": now, "error": None}
         return "ok", incs, None
@@ -1059,6 +1269,8 @@ def collect(keys=None):
     for dno in OPERATOR_ORDER:
         status, incs, err = _fetch_operator(dno, keys, now)
         incs = _dedup(incs)          # collapse multi-stage rows -> one per incident
+        for i in incs:
+            _check_area(i)           # flag points outside the operator's own licence area
         # Overdue: estimated restoration more than OVERDUE_S past (a SPEN fault due back on
         # 24 Sep still listed on 14 Oct). Probably closed by the operator but never removed —
         # not confirmed either way, so it is neither counted as off NOR treated as restored:
@@ -1111,7 +1323,7 @@ def collect(keys=None):
         "overdue": all_overdue,          # past ETR by > OVERDUE_S: shown greyed, never counted
         "attribution": "Live power-cut data from the UK & Ireland distribution network operators: "
                        "NGED, UKPN, Northern Powergrid, ENWL, SPEN, SSEN, NIE Networks "
-                       "(Northern Ireland) and ESB Networks PowerCheck (Republic of Ireland).",
+                       "(Northern Ireland) and ESB Networks PowerCheck (Ireland).",
     }
 
 

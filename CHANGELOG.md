@@ -16,6 +16,63 @@ exact tag.
 
 ---
 
+## 2026-10-25
+
+- **Power cuts: optional keys for Northern Powergrid and UKPN.** Their OpenDataSoft feeds are open, so they ran without a key on the anonymous allowance (5,000 calls a day per IP, shared with anything else on the same connection). **⚙ feeds / keys** now takes an optional free OpenDataSoft account key for each; when one is stored it is sent with every request (Authorization header, never the URL), which uses that account's own allowance instead. (`powercuts.py` 261025.5, `powercuts_page.html` 261025.3, `grid_server.py` 261025.1, README)
+- **Power cuts: incidents plotted in another operator's area are flagged.** SSEN listed a 3-customer LV fault (UF3074) at "BD17 7AX", which is Baildon in West Yorkshire, Northern Powergrid's area; SSEN's own coordinates match that postcode, so the postcode itself is probably mistyped (RG17 7AX Hungerford and BH17 7AX Poole are both SSEN postcodes), and the true place can't be known. Each incident is now checked against the licence areas in `region_polys.json`: one inside another operator's area and more than 5 km outside its own is kept where published and still counted, but drawn faded with a dashed rim, explained in its hover card ("plotted in NPg's area, 205 km outside SSEN's — location as published, probably a wrong postcode"), and left out of the near-you box and the near-you alarm. Points outside every area (Shetland, Achill and other islands the simplified outlines leave out) are not flagged. On 25 Oct this flagged 1 of 1,156 incidents. (`powercuts.py` 261025.4, `powercuts_page.html` 261025.2, `grid_dashboard.html` 261025.1)
+- **Power cuts: Northern Powergrid no longer runs out of its daily API allowance.** NPg showed "down" from 15:38 UTC while its own map was live. OpenDataSoft allows 5,000 anonymous calls a day per IP, and the feeds were read 100 rows per call; with the storm NPg's dataset held about 9,000 rows (one per postcode), so each 5-minute poll cost 93 calls and the allowance ran out at about 13:40 UTC (NPg's reply: 429 "exceeded the requests limit for anonymous users", reset 00:00 UTC). All OpenDataSoft feeds (NPg, UKPN, ENWL, SPEN, NIE) now use the dataset's export endpoint, every row in one call, gzip-compressed, and NPg asks the server for live rows only (6,269 rows, 195 incidents in one call on 25 Oct). Paging remains as a fallback if an export is refused, but not on a quota error. (`powercuts.py` 261025.3)
+- **Power cuts: SP Energy Networks incidents placed by their postcodes when SPEN's location is wrong.** Some SPEN incidents, mostly high-voltage ones, carry a location far from the postcodes they list, often about 1.5° of latitude too far south. On 25 Oct a Helensburgh/Greenock fault (G84, PA16) was drawn in the Irish Sea beside the Isle of Man, an Ayrshire 33 kV fault (KA26, DG8) off Blackpool, and a Haddington fault (EH41) in the Solway; 8 of 144 live SPEN incidents were more than 35 km from every postcode district they named. Each SPEN point is now checked against the centres of its postcode districts (postcodes.io, cached in `outcode_centroids.json`, git-ignored); one more than 35 km from all of them is drawn at the centre of the main group of districts, and its hover card says so ("SPEN's location was 194 km from these postcodes; shown at their centre"). Distances from home and the near-you alarm use the corrected position. The published point is kept as `pos_published`. A fresh cache fills on the first poll (up to 250 district lookups; 40 per poll took about 20 minutes to place every incident). (`powercuts.py` 261025.1–.2, `powercuts_page.html` 261025.1, `.gitignore`)
+
+## 2026-10-24
+
+- **Rain voice: "heavier" message says when, and that rain is continuing.** "The rain is expected to become heavier shortly" gave no time and, after a long spell of rain, no reminder that it was still raining. The timing now comes from the one-minute nowcast: "in a few minutes" (within 5 min), "in about 10 minutes" (to the nearest 5) or "soon" when not known; no spoken message says "shortly". After 30 minutes or more of rain measured at home (dry gaps under 20 min ignored) it reads "Rain is continuing at your location and is expected to become heavier in about 10 minutes." Spoken once per episode: the countdown changing does not repeat it. (`rain_probe.py` 261024.1)
+- **Wall: circuit flows easier to read.** Each circuit is drawn wider the more modelled MW it carries (2 px per GW on a voltage base, the same scale as the interconnectors), and its moving dashes are brighter and faster with more flow (at half the speed first used). When a circuit's modelled flow changes at a model run (about once a minute) by at least 10 MW and 10 %, or reverses, its value gets a tinted background (up to 40 %) and the direction and amount ("164 ▲18", ⇄ for a reversal): blue to green rising, yellow to orange to red falling, stronger with a bigger change (full at 100 MW or 50 %). The tint stays until the next run. Values no longer overlap each other or substation names (changed ones are placed first, then the heaviest flows; one with no room is left out), and unchanged values fade as the regional map zooms out. The Western Link and Caithness–Moray HVDC lines also widen with their estimated MW, still dotted amber as estimates. Key and help updated. (`grid_wall.html` 261024.4, .5, .10, .11, .12)
+- **Wall: reported outages (REMIT).** The server fetches operators' REMIT unavailability reports from Elexon every 5 minutes and adds those reducing a GB unit or interconnector now or within 24 h to `/api/wall` (`outages`); closures and reports running over 6 months are left out. On the map a faint dashed red ring marks a substation with a reduced unit, with each report in its tooltip and the substation panel; interconnector labels and the Interconnectors panel show reduced capacity in the current direction ("cap 1,000/2,000"). A new **Outages** panel lists reductions in force (biggest first) and those starting within 24 h, on screen 2 of both dual layouts and in the ultrawide single layout. Labelled "reported · REMIT" throughout. (`wall.py` 261024.1, `grid_wall.html` 261024.4, .6)
+- **Wall: Scotland → England border label.** The border is now the plain land outline (the grey dashed line looked like a circuit) and the transfer is labelled once, near the middle of the border (on the regional map zoomed in, the middle of the part in view), at the position along it that crosses the fewest circuits, routes and names. (`grid_wall.html` 261024.2, .3)
+- **Wall: the dashboard's frequency panel.** The wall's frequency panel is now the dashboard's own System frequency card (value, 1-minute cycle, deviation dial, system risk, 2-hour trace), shown through a new embedded view `/grid_dashboard.html#embed=freq`, scaled to fit with its full border. It sits top left of the ultrawide single layout (in place of "System now") and top middle of screen 2 in both dual layouts, where "System now" no longer repeats the frequency. Embedded views no longer show the dashboard's start-up pop-ups. (`grid_wall.html` 261024.7–.9, .14; `grid_dashboard.html` 261024.2, .10)
+- **Wall: more regional panel views.** The switchable regional panel adds **Generators**, **7-day generation** and **My home**, the dashboard's own pages through new embedded views (`#embed=gen`, `#embed=gh`, `#embed=octo`, close buttons hidden). The source buttons wrap onto a second line where they don't fit. (`grid_wall.html` 261024.15, `grid_dashboard.html` 261024.11)
+- **Network pop-up: blank map on reopening fixed.** Two causes. Chrome gives a hidden frame a 0×0 window and the map rebuilt itself at that size; the map now ignores zero-size resizes and the dashboard asks it to lay out again on each reopen. Firefox throws NS_ERROR_FAILURE when a hidden canvas is drawn, which stopped the map's animation loop for good; the loop now survives a failed draw. As a safety net the dashboard reloads the map if it is not drawn within 0.7 s of reopening. (`grid_wall.html` 261023.14, 261024.1; `grid_dashboard.html` 261023.4, 261024.1)
+- **All pages: the dashboard's size rules, and phone layouts.** The power-cuts page and forecast view match the dashboard: content at most 1,320 px wide and centred (was 1,280 and 1,040), the same margins, a single column below 980 px, narrower margins on phones, and the dashboard's gentle zoom on very wide screens when opened on their own (inside a dashboard pop-up they inherit it). The dashboard's header buttons wrap on narrow screens instead of running off the side. The network pop-up is capped at 1,320 px and centred like the other pop-ups; below 900 px the substation panel moves under a near-full-height map and the page scrolls, with the key hidden at first and a compact title bar. The wall itself is unchanged. (`grid_dashboard.html` 261024.9, `powercuts_page.html` 261024.6, `forecast_view.html` 261024.1, `grid_wall.html` 261024.13)
+- **Fix: unit output ignored NESO instructions.** The generator treemap, battery charge/discharge and operating reserve read only Physical Notifications. On a constrained day most gas plant notifies 0 MW and runs on NESO's accepted offers: on 24 Oct only Fawley Cogen (80 MW notified) counted as gas, so the whole metered gas total (4.9 GW) was drawn as one Fawley tile, and the battery figure read 40 MW discharging / 846 MW charging instead of 546 / 356 MW. Each unit's level now (and 15 min ago, for ramps) is NESO's latest accepted level (BOALF) where one applies, else its notified level, the same rule as the wall; operating reserve counts what is actually running. `/api/units` units carry `instr`; `battery` gains `units_instructed`. (`grid_server.py` 261024.1, .3; `grid_dashboard.html` 261024.3, .4)
+- **Generator treemap: readable station names.** Tiles take the site name shared by a station's units in the Terravolt map ("Grain U1", "Grain U2" → Grain), else the Elexon registry name tidied of unit, module and company suffixes, else the code; curated names still win (Heysham is "Heysham 1 & 2", as both share one code stem). Parts of one site registered separately (Walney 1 and 2, Robin Rigg East and West) are one tile, and supplier/aggregator units (`2__…`, `C__…`) are one "Aggregated small sites" tile per fuel. (`grid_server.py` 261024.2)
+- **Weather panel: THI replaced by apparent temperature.** The Thom THI has no wind term, barely responds to humidity near 14.5 °C, runs backwards below it and labelled any cold reading "Comfortable". The row is now **Apparent**: the Bureau of Meteorology apparent temperature, AT = T + 0.33e − 0.70ws − 4.00 (e = water-vapour pressure in hPa; ws = the local 10 m wind in m/s from the wind dial), valid in cold and heat, with bands Very cold < 0, Cold < 8, Cool < 15, Comfortable < 22, Warm < 26, Hot < 30, Oppressive. "Feels like" stays as OpenWeather's own figure. (`grid_dashboard.html` 261024.5)
+- **Monitored areas: repeat alarms.** Each monitored area on the power-cuts page has a **Repeat** tick box. For ticked areas the dashboard sounds the alarm again (siren, then a spoken reminder with customers off and estimated restoration) every 30 minutes while a cut there continues; planned works repeat only once started. Stored with the area (`repeat` in `powercut_watch.json` and each match). (`powercuts.py` 261024.1, `powercuts_page.html` 261024.1, `grid_dashboard.html` 261024.6)
+- **"Republic of Ireland" renamed "Ireland" throughout.** Dashboard, power-cuts page (key, notes, map area, countries, wind-vs-cuts regions), server texts, README and the region files (`region_polys.json`, `grid_network.json`). The wind-vs-cuts history converts itself: the first time the updated `windcuts.py` runs it renames the region in `windcuts_state.json`, `windcuts_binstats.json` and every `windcuts-YYYY-MM.jsonl` (cells under both names added together; safe to repeat). Ireland and Northern Ireland now have one region button each (their country and licence-area entries were identical). (`grid_dashboard.html` 261024.8, `powercuts_page.html` 261024.2, .3, `powercuts.py` 261024.2, `windcuts.py` 261024.1, `reservoirs.py` 261024.1)
+- **Wind vs power cuts chart: readable axes.** The gust axis title sat on the last tick label; it is now "gust (kt)", centred under the ticks. Chart text is 1 pt larger, the y-axis values and title 2 pt larger and brighter. (`powercuts_page.html` 261024.4, .5)
+- **Gas alarms: a full alarm ladder, now voiced.** The **Gas supply & margin** alarm category (was "Gas margin (derived)", a silent blip on the 10 % chip) now plays the gas probe's alerts with the gas tones from the design (triangle wave: notice 440 Hz; warning 400→440; critical 400→440→660) and speech starting "Gas:". Levels, anchored on a peak day of over 400 mcm (417 in 2017):
+  - forecast demand 300 / 350 / 400 mcm → notice / warning / critical, once per forecast day and level; 400+ is critical only when supply is also tight (else a warning);
+  - demand against expected available supply 90 % (or under 50 mcm/d spare) / 95 % / 100 % → notice / warning / critical (100 % was a warning);
+  - live linepack more than 5 mcm below today's forecast minimum → warning; predicted closing linepack revised down more than 10 mcm in 3 hours → notice;
+  - storage stock under 5 days at full withdrawal → notice (11.4 days on 24 Oct); system average price at least twice its 30-day median → notice (×1.2 on 24 Oct);
+  - the linepack-rate warning now speaks only alongside another signal; official notices and the predicted-closing-linepack levels are unchanged.
+  
+  Derived states still need 2 hours before speaking and repeat every 3 hours. The server keeps the last 20 spoken events in `/api/gas-probe` (`events`); the dashboard voices each once (remembered per browser, never if over 2 h old) and adopts what's there silently the first time. The gas page gains an **Alarm levels** strip showing each measure against its levels. The 10 % "gas margin tight" chip and banner stay, visual only. Off by default; first-pass levels, labelled as calibrating. (`gas_probe.py` 261024.2, `grid_server.py` 261024.5, `grid_dashboard.html` 261024.14)
+- **Gas: forecast minimum linepack and the gas alert probe fixed.** Three faults found while reviewing the gas alerts.
+  - **Forecast minimum.** National Gas re-issues its forecast of the day's lowest linepack several times a day, each with its own time of minimum. The server took the one with the latest time of minimum, not the latest issued, so the chart drew 326 mcm on 24 Oct while the current forecast was 312 (matching the actual low of 311.8 at 21:00). It now uses the latest issued forecast for the current gas day (06:00–06:00 UK time), and the chart label adds when the minimum falls ("forecast min 312 at 20:00 UT"). `/api/gas` adds `linepack_min_forecast_at`.
+  - **Margins Notice signal (probe).** It compared the day's total entry and exit nominations, which always nearly match, so it sat at "notice" or "warn" every day and logged "forecast demand has reached available supply" most nights. It now compares National Gas's NTS demand forecast (the day-ahead one once published, as a real Margins Notice does) with an Expected Available Supply estimate: non-storage supply flowing now (UK shelf, Norway, interconnector imports) plus the published daily deliverability of the LNG terminals and storage sites. Tonight: 163 mcm/d forecast for 25 Oct against about 411 available (ratio 0.40), so quiet. The phrase names the day: "Gas: forecast demand for tomorrow is within five percent of expected available supply."
+  - **Gas-day alignment (probe).** Just after midnight the probe read the next gas day's predicted closing linepack against the current day's forecast minimum, which raised false "at or below the forecast minimum" states (22 Oct 00:00–04:00). Day-specific values now come only from the current gas day; the 0 placeholder printed for a day before its first real forecast is ignored. The linepack-rate guard now uses the live NTS linepack (the hourly publication it read is a day behind, so it saw one unchanging value).
+  
+  The probe still only logs; nothing new is spoken. (`grid_server.py` 261024.4, `gas_probe.py` 261024.1, `grid_dashboard.html` 261024.13)
+- **Gas page: 48-hour linepack chart labels on narrow screens.** A time tick could sit on top of the right-hand "22:58 UT" label (ticks only kept a fixed fraction of a step clear); each tick is now measured and left out if it would touch either end label. The two-line legend ran off the right edge on a phone; it now moves to the left edge, then shrinks to 9 px, then uses short wording ("— linepack mcm (solid live)", "— supply−demand mcm/d") until it fits. The footer's "HTML build" now matches the file. (`grid_dashboard.html` 261024.12)
+- **Dashboard: "▦ wall" button aligned.** It was a link styled as a button, so its text sat lower than its neighbours; it is now a button. (`grid_dashboard.html` 261024.7)
+
+## 2026-10-23
+
+- **Transmission wall (`/wall`).** A control-room style page: the GB transmission network at true geographic scale with modelled live flows, for one or two screens.
+  - **Layouts.** Six, each window choosing its own (`?screen=`, or press M): `hd` 1920×1080; `uw` 5120×1440; `d1`+`d2` ultrawide + HD; `h1`+`h2` two HD screens. Drawn at exact pixel size and scaled to the window; F = full screen. The two windows of a pair share selection and zoom (BroadcastChannel, same browser profile); "start screen 2" opens the other screen on the second display (Window Management API, Chrome/Edge). `start_wall.bat` launches both as Chrome app windows.
+  - **Network.** 593 nodes / 815 circuits (400, 275, Scottish 132 kV, offshore 150–220 kV) from the gb-dispatch-model prebuilt network (OpenStreetMap, Zenodo 18161054), names from OpenStreetMap, built once with `build_network.py` into `grid_network.json`, with interconnector cable routes (`icroute`) and the 1,021 DNO-run 132 kV circuits in England, Wales and NI (`dist`, drawn on request as thin olive lines, not in the flow model). The page always asks for a fresh copy of the network file.
+  - **Live inputs, every minute.** Each BM unit's level now, 15 min ago and at +30/+60 min, from the latest NESO acceptance (BOALF) where instructed, else its PN; units placed at the nearest node from the Terravolt locations; interconnectors from FUELINST at their landing nodes, with trader schedules shown only where they match the metered flow; demand spread by DNO-area customer share. The server keeps 20 minutes of interconnector flows in memory for their 15-minute change.
+  - **Flows.** DC load flow in the browser (Cholesky on the reduced susceptance matrix, ~584 nodes), labelled "modelled" throughout. Internal HVDC flows are not published: the Western Link is estimated as a share of the Scotland → England transfer (its 2,250 MW rating against NESO's SCOTEX limit, capped), Caithness–Moray as a capped parallel path. The transfer is measured across the real border (Scotland outline, offshore nodes by sea side); a first version split at 55.05°N, which counted Northumberland and the North Sea Link landing at Blyth as Scotland.
+  - **Reading it.** Circles = generation at a substation (area ∝ MW, colour = main fuel) with an arc travelling round it for a 15-min rise or fall (≥ 50 MW and 10 %); interconnectors along their cable routes, width ∝ MW (2 px per GW), blue importing / orange exporting, labelled at the far end, ⇄ for a reversal scheduled within the hour; corner brackets mark the selected substation; HVDC estimates read "≈". Each map has a key strip below it (hidden or shown together, remembered).
+  - **Panels.** Movers (last 15 min, next 30 min scheduled; NESO-instructed units marked), substation detail (units, circuits, 2-hour output chart with the scheduled path, "✕ clear selection"), NESO day-ahead constraint groups (flow vs limit), Elexon derated margin / LoLP, system figures from `/api/grid`. Esc steps back: layout picker, then selection.
+  - **Regional map.** Presets, wheel zoom about the cursor, drag, double-click zoom and +/− buttons; names and circuit MW appear once zoomed in (view under 4.5° of latitude). Its title buttons switch the panel to the power-cuts map, gas page, rivers & floods or rain radar instead, remembered per layout; the dashboard gains embedded views (`#embed=gas`, `#embed=ea`) for this.
+
+  (`wall.py` 261023.1–.2, `grid_wall.html` 261023.1–.13, `build_network.py` 261023.1–.3, `start_wall.bat` 261023.1, `grid_server.py` 261023.1–.2, `grid_dashboard.html` 261023.1–.2)
+
+- **Dashboard: "▦ wall" and "🗺 network" header buttons.** ▦ wall opens `/wall` in its own window. 🗺 network opens the wall's zoomable map full page like the power-cuts pop-up (`/wall?screen=map`: map, substation panel, "All GB" starting view, text 1.5 pt larger, no cross-talk with open wall screens; ✕ or Esc to close, Esc first clears a selection). (`grid_dashboard.html` 261023.1, .3; `grid_wall.html` 261023.13)
+
+---
+
 ## 2026-10-22
 
 - **Rain alerts: audit of every spoken message against measurements.** All rain-voice and nowcast messages in the rain recorder logs (30 Sep – 22 Oct) were checked against the radar at home, the gauge within 5 km and current area readings. Fixed:
@@ -74,15 +131,9 @@ exact tag.
   - **Cards** show the company total year by year (Jan–Dec, one line per year) and % full bars with a last-year tick. Click a reservoir for its full history (`/api/reservoirs?series=co|key`). Values older than 45 days are dimmed.
   - **Local row:** company totals for the region, the reservoir nearest home and the lowest large reservoir.
   - **England tab:** company totals and a **Data sources** table: newest data per source, its age in days, and the last check.
+  - **Wording:** badges and the region figure read "37% full · below average" (not "37% below average", which read as a gap rather than a level); England reads "54% full · normal ≈75%".
   
-  (`reservoirs.py` 261016.3, `grid_dashboard.html` 261016.3, `grid_server.py` 261016.2)
-- **Reservoirs: South West Water figures, clearer wording.**
-  - **SWW figures:** the server reads South West Water's reservoir-levels page: the company total and eight reservoirs (Roadford, Colliford, Wimbleball, Stithians, Burrator, Tottiford, Drift, Venford), each with SWW's own date (15 Oct at first read, updated a few times a week). Each value is logged once by its published date in `reservoir_company_log.jsonl`, so a history chart builds up.
-  - **Local row:** the company total, the company reservoir nearest home (within 40 km) and the lowest reservoir.
-  - **Region view:** bars for every company reservoir and the history chart.
-  - **Wording:** badges and the region figure now read "37% full · below average" (was "37% below average", which read as a gap rather than a level). England reads "54% full · normal ≈75%" (was "−21% vs normal").
-  
-  (`reservoirs.py` 261016.2, `grid_dashboard.html` 261016.2)
+  (`reservoirs.py` 261016.2–.3, `grid_dashboard.html` 261016.2–.3, `grid_server.py` 261016.2)
 - **Reservoirs on the EA page.** A Reservoirs section at the top of the Environment Agency page, with two rows of badges and a drop-down for any region.
   - **Local row:** drought status, region % full against normal, Lower Thames group near London, and the nearest sound live gauge within 60 km. A location in Wales shows "Reservoir data not available in Wales" (the same for Scotland and NI).
   - **UK row:** England weekly % full and its gap to the long-term average; Scotland, Wales and NI not available.
@@ -125,9 +176,12 @@ exact tag.
 
 ## 2026-10-01
 
-- **Power cuts near you: distance-coloured border.** The Near-you box on the power-cuts page takes a 2 px border coloured by the nearest listed cut (planned or unplanned) as a share of the set radius: under 100% yellow, under 50% amber, under 20% red, under 10% hot pink — so at 10 km: <10 / <5 / <2 / <1 km; at 5 and 20 km the bands scale. No cuts in range: the plain border as before. (`powercuts_page.html` 261001.1)
-- **Power cuts near you: totals line.** With two or more cuts in range, the Near-you box shows the number of cuts and total customers off under its heading, with the unplanned/planned split; cuts reporting no customer count are listed and the total gets a "+". (`powercuts_page.html` 261001.2)
-- **Power cuts near you: nearest three, then a summary.** The Near-you box lists the three nearest cuts individually, in order of distance (was up to six plus "and N more"). Any others inside the radius are totalled on one line: their distance band, count, customers off and unplanned/planned split. (`powercuts_page.html` 261001.3)
+- **Power cuts near you: border, totals and summary.** The Near-you box on the power-cuts page:
+  - takes a 2 px border coloured by the nearest listed cut (planned or unplanned) as a share of the set radius: under 100% yellow, under 50% amber, under 20% red, under 10% hot pink (at 10 km: <10 / <5 / <2 / <1 km); no cuts in range, the plain border;
+  - with two or more cuts in range, shows the number of cuts and total customers off under its heading, with the unplanned/planned split (a "+" where a cut reports no count);
+  - lists the three nearest cuts in order of distance (was up to six plus "and N more"), with any others in the radius totalled on one line: distance band, count, customers off and split.
+  
+  (`powercuts_page.html` 261001.1–.3)
 
 ## 2026-09-30
 
@@ -148,8 +202,7 @@ exact tag.
 - **README.** Power-cuts section gains *Map* (zoom, hover card) and *History plots* (hover readout, by-operator pop-up, grid-event strip) paragraphs.
 - **Rain engine: radar sea net.** The offshore net, home ring and land probes read measured radar (RainViewer, 10-min frames, zoom 7, Universal Blue decoded to dBZ, mm/h by Marshall-Palmer) and fall back to Open-Meteo when radar is unavailable. Radar readings are labelled measured and dated by frame time; net interval 10 min while radar serves. Prompted by a band on 29 Sep that radar showed at 1–9 mm/h on the south/south-west sentinels at 16:50 UT while the model net read dry. (`rain_probe.py` 260929.1, `grid_server.py` 260929.1)
 - **Rain engine runs without a page open.** A background sampler runs it every 5 min at the location pages last requested (`rain_home.json`, git-ignored). The wind read no longer sits inside the EA try, so an EA failure can't skip the engine; engine cycles are serialised with a lock. (`grid_server.py` 260929.1)
-- **Late EA gauges.** A gauge whose newest reading is over 45 min old is marked late: excluded from the situation field (not read as dry, not diluting coverage); if all are late the home ring stands in. (`rain_probe.py` 260929.1)
-- **Late EA gauges: threshold and flapping fix.** 45 min was inside normal EA lag (~60 min just before each batch), so gauges flipped to "all late" around every batch and the home ring showed "unavailable (OWM budget spent)". Late is now >75 min per gauge; once all are late, EA counts again only below 60 min. The home ring keeps its readings when switched off, samples at once when switched on with nothing cached (free sampler only), reports "OWM budget spent" only when true, is labelled by its real source (radar ring was named "OpenWeather backup"), and uses radar even while Open-Meteo is backing off. (`rain_probe.py` 260929.2)
+- **Late EA gauges.** A gauge whose newest reading is over 75 min old (normal EA lag reaches ~60 min just before each batch) is marked late: excluded from the situation field (not read as dry, not diluting coverage); if all are late the home ring stands in, and EA counts again only below 60 min. The home ring keeps its readings when switched off, samples at once when switched on with nothing cached (free sampler only), reports "OWM budget spent" only when true, is labelled by its real source (radar ring was named "OpenWeather backup"), and uses radar even while Open-Meteo is backing off. (`rain_probe.py` 260929.1–.2)
 - **Open-Meteo precipitation units.** Open-Meteo's `current` precipitation is the amount over the preceding `interval` seconds (900 = 15 min, confirmed on the self-hosted instance), but the engine used it as mm/h, so every model reading was 4× too low and the 0.3 mm/h wet threshold was effectively 1.2 mm/h. Amounts are now converted to mm/h from each response's interval (900 assumed if missing). (`rain_probe.py` 260929.3)
 - **Virtual rain points stay virtual.** 260929.1 flagged radar-fed net and ring points `modelled: false`, which the dashboard reads as "real EA gauge": their cards were drawn as gauge cards and one could anchor the rainfall map's centre. `modelled` again marks every virtual point; a new `measured` flag says whether the reading is radar/OpenWeather. Radar-fed net and ring cards show a RADAR chip. (`rain_probe.py` 260929.4, `grid_dashboard.html` 260929.1)
 - **README.** Rain sections describe the radar sea net, late EA gauges and the background engine; self-hosting check uses `127.0.0.1` and explains how to spot another program on the same port.
@@ -198,8 +251,8 @@ exact tag.
 
 ## 2026-09-23
 
-- **Steering-wind check on rain motion.** Track, land and sea speeds are now checked against the 850 hPa steering wind (one Open-Meteo read per hour, surface wind × 1.6 fallback). A speed outside 0.5–1.5× that wind, or heading more than 40° off it, is withheld as unverified, and the ETA uses the steering wind instead. Track motion now needs member gauges to hand over, not just a centroid shift; leftover (stale) tracks are never marked approaching. (`rain_probe.py` 260923.2 — not deployed: the file was never saved; rebuilt as 260926.1)
-- **Stationary/suspect gauge flag.** A gauge wet in ≥ 75 % of readings over 3 h is excluded from approach tracking. An hourly model spot-check labels it stationary (static drizzle) or suspect (possible fault). The engine view shows the flag, the steering wind, and "speed unverified" / "stale" on tracks. (`rain_probe.py` 260923.2 — not deployed; rebuilt as 260926.1. `engine_view_live.html`)
+- **Steering-wind check on rain motion.** Track, land and sea speeds are now checked against the 850 hPa steering wind (one Open-Meteo read per hour, surface wind × 1.6 fallback). A speed outside 0.5–1.5× that wind, or heading more than 40° off it, is withheld as unverified, and the ETA uses the steering wind instead. Track motion now needs member gauges to hand over, not just a centroid shift; leftover (stale) tracks are never marked approaching. (`rain_probe.py` 260926.1)
+- **Stationary/suspect gauge flag.** A gauge wet in ≥ 75 % of readings over 3 h is excluded from approach tracking. An hourly model spot-check labels it stationary (static drizzle) or suspect (possible fault). The engine view shows the flag, the steering wind, and "speed unverified" / "stale" on tracks. (`rain_probe.py` 260926.1, `engine_view_live.html`)
 - **One approach voice for rain.** The four overlapping "rain approaching" voices (land-front, sea-arc, cluster-track, and the bridge into the Rain channel) are replaced by a single approach episode: alert → optional single confirm → silent arrival or one "fizzled out" message. It considers every wet cell (≥ 0.3 mm/h) in the upwind cone from all sources. Organised bands (≥ 3 cells ≥ 15 km across the wind, ≥ 2 mm/h, or falling pressure) alert from 35 km; isolated showers only within 12 km with an ETA midpoint ≤ 40 min. Timing counts 15-min readings, not poll minutes (2 to alert, 2 empty to fizzle). A fizzled threat can't re-alert unless it upgrades or comes clearly closer. Area shower notes stay quiet while an approach is being weighed or run. (`rain_probe.py` 260923.1)
 - **Rain episode and shadow-threat logs.** `rain_episodes-YYYY-MM.jsonl` records each alert/confirm/arrival/fizzle. `rain_threats-YYYY-MM.jsonl` records every threat, alerted or not, with location-agnostic features and its outcome, as groundwork for a per-install learner. Both are git-ignored. (`rain_probe.py` 260923.1, `.gitignore`)
 - **Nowcast de-duplication.** The nowcast channel no longer repeats approach-episode lines when Rainfall is armed. (`grid_dashboard.html` 260923.3)
@@ -273,8 +326,7 @@ exact tag.
 - Local flood warnings surfaced. The national flood strip now highlights any warning/alert whose flood area falls within the EA page's chosen radius — resolved via the floods and floodAreas spatial queries — and floats it to the top of the list; the spoken flood alarm names the nearest local one and its distance ("four national flood warnings active, including one locally at Didworthy, less than five kilometres from you"). (server 260827.3, dashboard)
 - Flood strip wording and list. The main-page badge now uses the Environment Agency umbrella term — "N flood warnings & alerts" when the set is mixed, and the specific noun ("N flood alerts", "N severe flood warnings") when it is all one kind — rather than labelling every in-force item with the highest severity's noun, which had shown 41 alerts plus 1 warning as "42 flood warnings". The EA-page flood list no longer caps at 12: it holds every in-force warning and alert in a scroll box about twelve rows tall (and never taller than 70% of the viewport), with local floods still highlighted and floated to the top. (dashboard 260827.13)
 - Offshore rainfall nowcast rebuilt as a two-layer detector. The old scan/track arc is replaced by (a) a permanent NET — sentinels at 40 km, inner pickets at 20 km, and under-hood dithered fill points, all sampled from the free batched Open-Meteo, so the wide watch costs no OpenWeather budget — and (b) MOBILE tracker cards that spawn on a net detection (cap of four), chase the cell inward through the 5–35 km band, jump back periodically to sense whether heavier/lighter/no rain is following, then loiter → retreat to 35 km → vanish, re-locking if rain returns. OC4 radar reads are reserved for the mobile trackers (marked RADAR when confirmed), so paid calls are spent only on real detections. Front speed is measured from the stationary net's leading edge and passed through a shared "smells wrong" trust gate (physical band, consistency with 1.6× the wind, cross-cycle stability); when trusted the spoken approach carries the speed and ETA, otherwise the figure is withheld. Also fixes a latent bug where a feed dropout could freeze the offshore cards indefinitely. (server, dashboard, `rain_probe.py`, `owm_onecall.py`)
-- Reading freshness made honest across the rainfall panel. The section header shows a relative "updated …ago"; a land gauge whose reading is older than ~2 publications (minimum 30 min) times out to 0 mm/h and greys rather than presenting an hours-old value as current, with the true last-reported time in the tooltip; the history plot is time-based and runs to the current time, so it advances during a data gap instead of freezing on the last reading; river-level ages are colour-coded green (≤1 h) / amber (1–4 h) / red (>4 h); and a plot end-label collision was fixed. (dashboard 260827.11)
-- Rain alarm freshness aligned to the cards. The rain alarm now treats a gauge as "raining now" only while its reading is fresh by the SAME per-gauge timeout the cards use (~2 publications, minimum 30 min), not the 2 h river-level window — fixing a case where it fired "light rain nearby" on a reading the cards had already timed out to 0. (dashboard 260827.14)
+- Reading freshness made honest across the rainfall panel. The section header shows a relative "updated …ago"; a land gauge whose reading is older than ~2 publications (minimum 30 min) times out to 0 mm/h and greys rather than presenting an hours-old value as current, with the true last-reported time in the tooltip; the history plot is time-based and runs to the current time, so it advances during a data gap instead of freezing on the last reading; river-level ages are colour-coded green (≤1 h) / amber (1–4 h) / red (>4 h); the rain alarm treats a gauge as "raining now" only while fresh by the same per-gauge timeout (not the 2 h river window, which let it say "light rain nearby" on a reading the cards had timed out); and a plot end-label collision was fixed. (dashboard 260827.11, .14)
 - Rainfall card border holds a 2 h peak. A gauge card's BORDER now shows the highest intensity band the gauge has reported in the last two hours (tracked server-side from the readings it already fetches, so no extra API calls); the fill/background reflects the current reading and the number still times out to 0 and greys. So a gauge that has stopped keeps a coloured border while recent activity is relevant, then decays as those readings age past 2 h. (server 260827.4, dashboard 260827.18)
 - River level as a percentage of its typical range. Each station shows its level as a percentage of its own EA typical range (0 % at the typical low, 100 % at the typical high) next to the name in the list — coloured blue below 0 %, green to 80 %, amber to 100 %, red above — and on the selected station's plot, which now marks the range max (100 %) and min (0 %) as labelled lines with the current percentage read out at the top. (dashboard 260827.19)
 
@@ -294,17 +346,14 @@ exact tag.
 - Probe tracker guards: trend, pressure and visibility signals require a minimum span of history before they classify, and a series whose newest sample is stale is treated as unknown; the pressure rate is capped at a physical limit — removes a spurious "pressure rising" alert on server restart. The offshore arc holds state through a data dropout instead of falsely retracting. (`rain_probe.py`)
 - One Call API 4.0 support with auto-detect (`owm_onecall.py`, new). The EA weather panel uses OC4 when the key is subscribed — current conditions plus the one-minute precipitation nowcast — and falls back to the free 2.5 Current Weather call on 401/403, so the panel works without a subscription. Active tier is labelled on `wind.source` / `wind.api`. (server .2)
 - EA rainfall map: modelled offshore points from the probe's arc are shown as dashed MODEL cards, counted separately, and excluded from the physical gauge count/cap, the "nearest" outline, and alert confirmation. (dashboard .3)
-- EA rainfall map: directional grid widened to 5 columns so a same-distance offshore arc fans out by bearing instead of stacking. Collision spill keeps a gauge in its true direction (nudging apparent distance, not bearing); fully-empty rows and columns are packed out; cards keep a minimum width with horizontal scroll; virtual cards lead with their azimuth. (dashboard .5–.8)
-- EA rainfall map: gauges no longer placed in the wrong hemisphere — the collision-spill steps outward only in a gauge's true N/S direction. (dashboard .1)
+- EA rainfall map: directional grid widened to 5 columns so a same-distance offshore arc fans out by bearing instead of stacking. Collision spill keeps a gauge in its true direction (nudging apparent distance, not bearing, and stepping out only in its true N/S direction); fully-empty rows and columns are packed out; cards keep a minimum width with horizontal scroll; virtual cards lead with their azimuth. (dashboard .1, .5–.8)
 - EA river panel: on a total river-stations failure the section collapses to a single full-width column, so the error notice centres on the page instead of sitting in the empty left column. (dashboard .2)
 - Solar resource verdict now gated by sun elevation. `_rate_solar` uses computed solar elevation instead of a binary day/night flag: night (≤0°) reads "none", below 5° "minimal output", below 15° capped at "reduced" — so the Resource Conditions rollup can no longer read "solar strong" near dawn/dusk when a clear but low sun yields ~1% output. Each solar card exposes `sun_elev_deg`. Resolves the open Known Issue. (server .3)
 
 ## 2026-08-24
 
-- Local wind: calm and variable states now shown honestly. Direction below 0.5 m/s reads "CALM"; a missing bearing (or a wide 3h direction swing at low speed) reads "VAR". The dial replaces its arrow with a cyan CALM/VAR label and drops the degree readout when direction is undefined. (server .1, dashboard .1)
-- Local wind: a missing bearing alone no longer triggers the "unavailable this cycle" notice — a calm wind with no direction is a valid reading, not a fetch failure. (dashboard .1)
-- EA errors: upstream CDN error pages (e.g. a 503 HTML body) are reduced to a plain textual reason instead of leaking raw markup into `eaData.error`. (server .1)
-- EA errors: river-panel error and soft-error notices now HTML-escaped before injection, so an upstream response body can't render into the DOM. (dashboard .1)
+- Local wind: calm and variable states shown honestly. Direction below 0.5 m/s reads "CALM"; a missing bearing (or a wide 3h direction swing at low speed) reads "VAR". The dial replaces its arrow with a cyan CALM/VAR label and drops the degree readout when direction is undefined, and a missing bearing alone no longer triggers the "unavailable this cycle" notice. (server .1, dashboard .1)
+- EA errors: upstream CDN error pages (e.g. a 503 HTML body) are reduced to a plain textual reason instead of leaking raw markup into `eaData.error`, and river-panel error notices are HTML-escaped before injection. (server .1, dashboard .1)
 
 ## 2026-08-23
 
@@ -407,6 +456,25 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **261018.3** (2026-10-18) — Periodicity spectrum of frequency (30 s – 30 min) with the 1-minute line marked, mini plot and in-panel expanded view, averaging windows, vertical scale, average-minute profile and hover readout.
 - **261018.4** (2026-10-18) — Periodicity spectrum: period-range selector (5m / 15m / 30m, remembered) with finer ticks on the 5-minute view.
 - **261022.1** (2026-10-22) — Home pressure plot (logged history up to 72 h, last 3 h shaded, hover readout) under Pressure in the weather panel; sunrise/sunset moved to the temperature block.
+- **261023.1** (2026-10-23) — "▦ wall" header button opening the transmission wall (/wall).
+- **261023.2** (2026-10-23) — Embedded mode for the wall: `#embed=gas` / `#embed=ea` shows only that page.
+- **261023.3** (2026-10-23) — "🗺 network" header button and full-page network map pop-up.
+- **261023.4** (2026-10-23) — Network pop-up re-lays out the map each time it reopens.
+- **261024.1** (2026-10-24) — Network pop-up reloads the map if it is not drawn after reopening.
+- **261024.2** (2026-10-24) — `#embed=freq` view (System frequency card alone) for the wall; embedded views suppress pop-ups.
+- **261024.3** (2026-10-24) — Treemap note: stations split by NESO-instructed level where applicable, else notified.
+- **261024.4** (2026-10-24) — Treemap subtitle and tooltip: "unit levels (instructed or notified)".
+- **261024.5** (2026-10-24) — Weather panel: THI replaced by apparent temperature (temperature, humidity and wind).
+- **261024.6** (2026-10-24) — Monitored areas: 30-minute repeat alarms for areas ticked Repeat.
+- **261024.7** (2026-10-24) — "▦ wall" header button made a real button so its text lines up.
+- **261024.8** (2026-10-24) — "Republic of Ireland" shown as "Ireland".
+- **261024.9** (2026-10-24) — Header buttons wrap on narrow screens; narrower phone margins.
+- **261024.10** (2026-10-24) — `#embed=freq`: card fills the frame exactly (full border).
+- **261024.11** (2026-10-24) — Embedded views for the wall: `#embed=gen`, `#embed=gh`, `#embed=octo`.
+- **261024.12** (2026-10-24) — Gas linepack chart: measured tick/end-label clearance, legend fits narrow canvases; footer HTML build updated.
+- **261024.13** (2026-10-24) — Gas chart: forecast minimum labelled with its time (UT).
+- **261024.14** (2026-10-24) — Gas alarm category voices the gas probe's events with gas tones; Alarm levels strip on the gas page; 10 % chip no longer sounds.
+- **261025.1** (2026-10-25) — Near-you power-cut alarm skips incidents flagged outside their operator's area.
 
 ### `powercuts_page.html`
 
@@ -438,6 +506,15 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **261014.3** (2026-10-14) — Tooltip: pending counts show the predicted figure as "predicted" (or "planned"); "end time not given" for planned outages without one.
 - **261014.4** (2026-10-14) — Overdue incidents drawn as small grey dots with an explanatory tooltip.
 - **261015.1** (2026-10-15) — Monitored areas popup: optional name per slot, column headings.
+- **261024.1** (2026-10-24) — Monitored areas popup: Repeat tick box per area.
+- **261024.2** (2026-10-24) — "Republic of Ireland" / "Rep. of Ireland" shown as "Ireland" (key, notes, map area, countries).
+- **261024.3** (2026-10-24) — Wind vs power cuts: duplicate area buttons for Ireland and Northern Ireland removed.
+- **261024.4** (2026-10-24) — Wind vs power cuts chart: gust axis title centred below the ticks (no clash), chart text 1 pt larger.
+- **261024.5** (2026-10-24) — Wind vs power cuts chart: y-axis values and title 1 pt larger, brighter.
+- **261024.6** (2026-10-24) — Dashboard size rules: 1,320 px max width, margins, 980 px single column, phone margins, wide-screen zoom when standalone.
+- **261025.1** (2026-10-25) — Hover card notes when an incident is shown at its postcodes' centre instead of the operator's location.
+- **261025.2** (2026-10-25) — Incidents flagged outside their operator's area drawn faded with a dashed rim and left out of the near-you box.
+- **261025.3** (2026-10-25) — Key settings list Northern Powergrid and UKPN with optional keys.
 
 ### `powercuts.py`
 
@@ -457,6 +534,13 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **261014.4** (2026-10-14) — SPEN: planned works past their end time dropped, planned start date used. NIE: times converted to ISO local.
 - **261014.5** (2026-10-14) — Incidents > 7 days past their ETR moved to `overdue` (uncounted; ids kept in new/cleared diffing).
 - **261015.1** (2026-10-15) — Monitored areas: optional `alias` per area (stored, cleaned, passed in matches).
+- **261024.1** (2026-10-24) — Monitored areas: optional `repeat` per area (stored, passed in matches).
+- **261024.2** (2026-10-24) — "Republic of Ireland" renamed "Ireland" in source texts and comments.
+- **261025.1** (2026-10-25) — SPEN locations checked against their postcode districts; moved to the district group's centre when over 35 km from all of them (`pos_note`, `pos_src`, `pos_published`).
+- **261025.2** (2026-10-25) — Postcode-district lookups per poll raised from 40 to 250, so a fresh cache fills on the first poll.
+- **261025.3** (2026-10-25) — OpenDataSoft feeds read through the export endpoint in one call (gzip), NPg filtered to live rows on the server; paging only as a fallback.
+- **261025.4** (2026-10-25) — Incidents inside another operator's licence area and over 5 km outside their own flagged `outside_area` with a `pos_note`.
+- **261025.5** (2026-10-25) — A stored key is used for open feeds too (NPg, UKPN).
 
 ### `windcuts.py`
 
@@ -465,6 +549,7 @@ New module at 260917.1.
 - **260917.1** (2026-09-17) — New module.
 - **260917.2** (2026-09-17) — NIE/ESB incidents are placed by operator identity (single area + country each), so an unresolved NIE postcode still counts to Northern Ireland rather than falling through to ALL-only. See OP_REGION.
 - **260926.1** (2026-09-26) — Build history moved from the file header to CHANGELOG.md.
+- **261024.1** (2026-10-24) — ESB region renamed "Ireland"; one-time automatic rename of the old region keys in state, bin statistics and corpus files.
 
 ### `rain_probe.py`
 
@@ -484,6 +569,7 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **261014.1** (2026-10-14) — Rainfall prediction fine tuning: radar at home counts as arrival; "fizzled out" only when radar shows the upwind sector clear (`fizzle_held` otherwise).
 - **261022.1** (2026-10-22) — "At your location" intensity measured at home (radar box at home / nearest gauge < 5 km, two-reading smoothing) instead of the 40 km 90-min peak; at-home heartbeats 20/60 min; re-entry hold and upgrade window 30 min; hourly heavier-rain-nearby note.
 - **261022.2** (2026-10-22) — Alert audit fixes: rain at home also from radar (two frames); area words from current measured readings, "Continuous rain across the area", quiet after rain at home, 20-min re-announce floor; nowcast lines from measured home reading, gauge confirm within 5 km, visibility-only fog line, no wind/persistence claims; all-clear only when the area is clear.
+- **261024.1** (2026-10-24) — Forward nowcast "heavier" message: time from the minute series (`intensify_eta_min`), "soon" when unknown, "Rain is continuing at your location…" after 30 min of measured rain at home (`home_wet_since`); edge trigger keyed on a stable identity so the countdown doesn't re-speak.
 
 ### `forecast_view.html`
 
@@ -494,6 +580,7 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 - **260930.1** (2026-09-30) — Mobile tracker tooltip names the reading's source (radar / OpenWeather / Open-Meteo) instead of "OC4 confirmed".
 - **261022.1** (2026-10-22) — "at-home voice" row: the measured at-home reading and its source.
 - **261022.2** (2026-10-22) — State line shows the current area intensity; 90-min peak in brackets only when higher.
+- **261024.1** (2026-10-24) — Dashboard size rules: 1,320 px max width, margins, 980 px single column, phone margins, wide-screen zoom when standalone.
 
 ### `metar.py`
 
@@ -509,6 +596,8 @@ New module at 260917.1. File unchanged by the 260926.1 tidy (no history to move)
 Unversioned until 260929.1; earlier changes are in the dated entries above.
 
 - **260929.1** (2026-09-29) — Header build line added. No code changes.
+- **261024.1** (2026-10-24) — Margins Notice signal: NTS demand forecast vs Expected Available Supply estimate (non-storage supply now + LNG/storage deliverability); day-specific values from the current gas day only; PCLP 0 placeholders ignored; live linepack for the rate guard.
+- **261024.2** (2026-10-24) — Alarm ladder: demand-level alerts, 90/95/100 % margin tiers, live linepack below forecast minimum, PCLP revision, storage cover, price stress; rate guard as corroborator; event list for the dashboard.
 
 ### `owm_onecall.py`
 
@@ -523,9 +612,66 @@ New module at 261016.1.
 - **261016.1** (2026-10-16) — Reservoir storage for the EA page. Sources: EA national monthly regional table (PDF, via optional `pypdf`), weekly drought summaries, area summaries, flood-monitoring reservoir gauges (sanity-checked) and the London Datastore. Drought status is replayed from the report text. Background build every 6 h (gauges hourly), with a cache and a daily gauge log.
 - **261016.2** (2026-10-16) — South West Water reservoir-levels page (total and eight reservoirs with SWW's dates), logged by published date to `reservoir_company_log.jsonl` for history.
 - **261016.3** (2026-10-16) — Water companies from Stream open data (ArcGIS feature services, read incrementally when a layer changes, with new layers found by catalogue search) plus company websites (Severn Trent weekly pages, South West Water, Northumbrian, Essex & Suffolk, United Utilities, Bristol Water), merged into `reservoir_store.json` with a daily backup. Per-region capacity-weighted totals; per-source status for monitoring; `series=` for one reservoir's full history.
+- **261024.1** (2026-10-24) — "Republic of Ireland" renamed "Ireland" in the module notes.
 
 ### `balancing.py`
 
 New module at 261017.1.
 
 - **261017.1** (2026-10-17) — Balancing costs: NESO confirmed daily costs (BSUoS cost data, constraint breakdown, thermal constraint costs by boundary, day-ahead Scottish flows over limits) and Elexon indicative cashflows and accepted bid volumes (by BM unit fuel), calibrated estimate with likely range, daily wind and frequency events from the local logs, event detection, summary figures and correlations. Background refresh, store `balancing_store.json` with daily backup.
+
+### `wall.py`
+
+New module at 261023.1.
+
+- **261023.1** (2026-10-23) — New module: /api/wall, /api/wall-network, /api/wall-history, /api/wall-replay for the transmission wall.
+- **261023.2** (2026-10-23) — Replay history and /api/wall-replay removed; 20-minute in-memory interconnector history for the 15-min change.
+- **261024.1** (2026-10-24) — REMIT unavailability reports (units and interconnectors, now and next 24 h) in /api/wall as `outages`.
+
+### `grid_wall.html`
+
+New page at 261023.1.
+
+- **261023.1** (2026-10-23) — New page: transmission wall with six screen layouts, in-browser DC load flow, change cues, movers, replay.
+- **261023.2** (2026-10-23) — Regional map: wheel zoom about the cursor, drag to pan, double-click zoom, +/− buttons. Western HVDC share against NESO's SCOTEX limit.
+- **261023.3** (2026-10-23) — Regional panel source buttons: Network, Power cuts, Gas, Rivers & floods, Rain radar.
+- **261023.4** (2026-10-23) — Sweep-arc trend marker (nodes and interconnectors), corner-bracket selection, key in every map; dashed ring and change flashes removed.
+- **261023.5** (2026-10-23) — Interconnectors along their cable routes, MW-scaled width, flow dashes, labelled end boxes, totals box.
+- **261023.6** (2026-10-23) — Interconnector width proportional to MW (2 px per GW), no halo; single-line labels and totals.
+- **261023.7** (2026-10-23) — Network file fetched without the browser cache; stub route for a link with no route in the file.
+- **261023.8** (2026-10-23) — Key as a strip under each map instead of over it; "≈" for HVDC estimates.
+- **261023.9** (2026-10-23) — 132 kV distribution layer with a per-map toggle.
+- **261023.10** (2026-10-23) — Clear-selection button, Esc and empty-map click; replay indicator with back-to-live on every screen; picker backdrop and full-screen prompt fixes; voltages de-duplicated.
+- **261023.11** (2026-10-23) — Scotland → England badge in a fixed corner position instead of pinned to the map.
+- **261023.12** (2026-10-23) — Border drawn and labelled with the transfer; transfer measured across the real border (was latitude 55.05°N).
+- **261023.13** (2026-10-23) — Map-only pop-up view (`?screen=map`) with larger text and an All GB preset; names and MW labels only when zoomed in; replay removed.
+- **261023.14** (2026-10-23) — Ignore zero-size resizes; re-lay out the pop-up map when shown again (fixes blank map on second open).
+- **261024.1** (2026-10-24) — Animation loop survives a failed draw (Firefox, hidden pop-up); fixes blank map on reopening.
+- **261024.2** (2026-10-24) — One Scotland → England label at the middle of the border; dashed border line removed (plain land outline).
+- **261024.3** (2026-10-24) — Border label position chosen to avoid circuits, routes and names (left of the arrow preferred).
+- **261024.4** (2026-10-24) — Circuit width by modelled flow; changed values highlighted for a minute; REMIT outages on map, tooltips, substation and interconnector panels, new Outages panel.
+- **261024.5** (2026-10-24) — Circuit change highlight from 10 MW (was 50 MW), still 10 %.
+- **261024.6** (2026-10-24) — Outage rings at half strength.
+- **261024.7** (2026-10-24) — Frequency panel is the dashboard's card via `#embed=freq` (d2, h2, uw; replaces Demand & wind on uw).
+- **261024.8** (2026-10-24) — Ultrawide single: frequency panel replaces System now at the top; Demand & wind restored.
+- **261024.9** (2026-10-24) — System now without frequency on dual screen 2 (d2, h2).
+- **261024.10** (2026-10-24) — Circuit changes as tinted values with ▲/▼ amount until the next run; values placed without overlaps and faded on wider views.
+- **261024.11** (2026-10-24) — Flow dashes (circuits, interconnectors, HVDC) at half speed.
+- **261024.12** (2026-10-24) — Internal HVDC links drawn with width by estimated flow.
+- **261024.13** (2026-10-24) — Network pop-up: max 1,320 px wide, centred; stacked scrolling layout below 900 px with key hidden by default.
+- **261024.14** (2026-10-24) — Frequency panel: no wall frame around the embedded card.
+- **261024.15** (2026-10-24) — Regional panel sources: Generators, 7-day generation, My home; source buttons wrap.
+
+### `build_network.py`
+
+New script at 261023.1.
+
+- **261023.1** (2026-10-23) — New script: builds grid_network.json from the gb-dispatch-model network and OpenStreetMap names.
+- **261023.2** (2026-10-23) — Adds interconnector cable routes (`icroute`) from links.csv.
+- **261023.3** (2026-10-23) — Adds 132 kV distribution lines outside Scotland (`dist`), display only.
+
+### `start_wall.bat`
+
+New launcher at 261023.1.
+
+- **261023.1** (2026-10-23) — New launcher: opens the wall on two monitors as Chrome/Edge app windows.

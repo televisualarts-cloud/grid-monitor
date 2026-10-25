@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 261022.2  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -25,7 +25,7 @@
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 -->
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>if(window.top===window)document.documentElement.classList.add("top");</script>
 <title>Forecast view</title>
 <style>
   :root{--bg:#0b1016;--panel:#131b24;--panel2:#0f1620;--line:#22303f;--line2:#2c3d4f;
@@ -34,8 +34,16 @@
     --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);padding:18px}
-  .wrap{max-width:1040px;margin:0 auto}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans)}
+  .wrap{max-width:1320px;margin:0 auto;padding:22px 20px 60px}
+  /* Same size rules as the dashboard: content at most 1,320 px wide and centred, single column
+     below 980 px, and the dashboard's gentle zoom on very wide screens. The zoom applies only when
+     this page is opened on its own: inside a dashboard pop-up it already inherits the dashboard's. */
+  @media(min-width:1600px){ html.top body{ zoom:0.94; } }
+  @media(min-width:1900px){ html.top body{ zoom:0.90; } }
+  @media(min-width:2200px){ html.top body{ zoom:0.86; } }
+  @media(min-width:2560px){ html.top body{ zoom:0.82; } }
+
   .titlebar{display:flex;align-items:center;gap:10px;margin-bottom:4px}
   .titlebar .dot{width:9px;height:9px;border-radius:50%;background:var(--ink-faint)}
   .titlebar .dot.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}
@@ -52,7 +60,8 @@
   .status{margin-left:auto;color:var(--ink-faint)}
   .status.err{color:var(--crit)}
   .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
-  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  @media(max-width:520px){ .wrap{padding:16px 12px 40px} }   /* phones: narrower side margins (all pages alike) */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
   canvas{width:100%;height:auto;display:block}
   .hud h3{margin:0 0 8px;font-family:var(--mono);font-size:13px;letter-spacing:.1em;color:#9aa8ba;text-transform:uppercase}
@@ -82,7 +91,7 @@
   .foot b{color:var(--ink-dim)}
   /* radar-only mode (?view=radar): just the plot, for embedding in the EA page */
   html.embed body{padding:0;background:transparent;overflow:hidden}
-  html.embed .wrap{max-width:none}
+  html.embed .wrap{max-width:none;padding:0}
   html.embed .titlebar,html.embed .bar,html.embed .hud,html.embed .foot{display:none}
   html.embed .grid{display:block}
   html.embed .card{background:transparent;border:0;border-radius:0;padding:0}

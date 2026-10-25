@@ -23,7 +23,7 @@
 #   windcuts_state.json     per-region last incident-ids, last ts, recent-gust rings, start
 #   windcuts-YYYY-MM.jsonl   append-only corpus (audit / re-binning)
 #
-# Build 260926.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Python 3, stdlib only. Uses metar.py for wind.
@@ -51,10 +51,74 @@ MIN_N_GOOD = 8             #                    at/above this = "good" confidenc
 # region_polys.json exactly.  {dno: (area, country)}
 OP_REGION = {
     "NIE": ("Northern Ireland", "Northern Ireland"),
-    "ESB": ("Republic of Ireland", "Republic of Ireland"),
+    "ESB": ("Ireland", "Ireland"),
 }
 
 _lock = threading.Lock()
+
+
+# ───────────────────────── one-time rename: "Republic of Ireland" -> "Ireland" ─────────
+# The region was renamed in region_polys.json (24 Oct 2026). Files written before then key it
+# "country:Republic of Ireland" / "area:Republic of Ireland"; the first time this module runs
+# it renames those keys in the state, the bin statistics and every monthly corpus file, so the
+# history carries on under one name. Safe to run repeatedly (a file without the old name is
+# left untouched). Bin cells that exist under both names are added together.
+_OLD_IE, _NEW_IE = "Republic of Ireland", "Ireland"
+_migrated = False
+
+
+def _ie_key(k):
+    return k.replace(":" + _OLD_IE, ":" + _NEW_IE) if isinstance(k, str) else k
+
+
+def _merge_bins(a, b):          # binstats[region] dicts: {metric: {bin: [n, sum, sumsq]}}
+    for metric, bins in b.items():
+        da = a.setdefault(metric, {})
+        for bk, cell in bins.items():
+            c = da.get(bk)
+            da[bk] = list(cell) if c is None else [c[0] + cell[0], c[1] + cell[1], c[2] + cell[2]]
+    return a
+
+
+def _migrate_ireland():
+    global _migrated
+    if _migrated:
+        return
+    _migrated = True
+    try:
+        b = _load(BINSTATS_FILE, None)
+        if isinstance(b, dict) and any(_OLD_IE in k for k in b):
+            nb = {}
+            for k, v in b.items():
+                nk = _ie_key(k)
+                nb[nk] = _merge_bins(nb[nk], v) if nk in nb else v
+            _save(BINSTATS_FILE, nb)
+        st = _load(STATE_FILE, None)
+        if isinstance(st, dict):
+            changed = False
+            for f in ("last_ids", "gust_rings"):
+                d = st.get(f)
+                if isinstance(d, dict) and any(_OLD_IE in k for k in d):
+                    st[f] = {_ie_key(k): v for k, v in d.items() if not (_ie_key(k) != k and _ie_key(k) in d)}
+                    changed = True
+            if changed:
+                _save(STATE_FILE, st)
+        d = os.path.dirname(HIST_PREFIX) or "."
+        for fn in sorted(os.listdir(d)):
+            path = os.path.join(d, fn)
+            if not (path.startswith(HIST_PREFIX) and fn.endswith(".jsonl")):
+                continue
+            txt = open(path, encoding="utf-8").read()
+            if '"area:' + _OLD_IE not in txt and '"country:' + _OLD_IE not in txt:
+                continue
+            txt = txt.replace('"area:' + _OLD_IE + '"', '"area:' + _NEW_IE + '"') \
+                     .replace('"country:' + _OLD_IE + '"', '"country:' + _NEW_IE + '"')
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(txt)
+            os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 # ───────────────────────── small json helpers ───────────────────────────────
@@ -113,6 +177,7 @@ def observe(pc_snapshot, now=None):
     Called once per powercuts sample. Never raises."""
     try:
         with _lock:
+            _migrate_ireland()
             now = now or pc_snapshot.get("generated") or time.time()
             st = metar.stations()
             wind = metar.live(st)                       # region key -> {gust_kt,...}
@@ -240,6 +305,8 @@ def predict(region, gust, metric="faults", binstats=None):
 def snapshot(regions=None):
     """Everything the dashboard's wind-vs-cuts panel needs: live wind per region, the learned
     curves + baselines, a live prediction per region, and a maturity summary."""
+    with _lock:
+        _migrate_ireland()
     binstats = _load(BINSTATS_FILE, {})
     state = _load(STATE_FILE, {})
     st = metar.stations()

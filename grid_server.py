@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261025.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -97,6 +97,13 @@ try:
 except Exception:
     _reservoirs = None
 
+# GB transmission wall (/wall): network mimic with modelled line flows (optional
+# companion; needs grid_network.json from build_network.py). Never blocks the server.
+try:
+    import wall as _wall
+except Exception:
+    _wall = None
+
 # Balancing costs (NESO confirmed + Elexon provisional) for the dashboard's
 # balancing card; refreshes in its own background thread, never blocks a request.
 try:
@@ -132,9 +139,10 @@ if _powercuts is not None:
     import threading as _pc_th
     _pc_th.Thread(target=_powercuts_sampler, daemon=True).start()
 
-# Gas supply/margin alarm probe (read-only diagnostic; logs what the alarm WOULD say —
-# no tone, no voice). Optional: if gas_probe.py isn't beside this file the server runs
-# unchanged. Design + verified National Gas publication IDs: GAS_ALARM_DESIGN.md.
+# Gas supply/margin alarm probe: evaluates the gas alarm ladder hourly, logs every cycle
+# for calibration, and keeps a short list of spoken events that /api/gas-probe serves to the
+# dashboard (which voices them under the "Gas supply & margin" alarm category). Optional: if
+# gas_probe.py isn't beside this file the server runs unchanged. Design: GAS_ALARM_DESIGN.md.
 try:
     import gas_probe as _gas_probe
     _GAS_PROBE_STATE = _gas_probe.GasState()
@@ -187,7 +195,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261022.1"
+SERVER_BUILD = "261024.3"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -1092,6 +1100,85 @@ def _get_pn_mel(now):
     return pns, mels
 
 
+# ---- Unit output now: NESO-instructed level (BOALF) where there is one, else PN ----
+# A unit NESO has instructed (a Bid-Offer Acceptance) runs to the accepted level,
+# not its Physical Notification: on a constrained day a gas station can notify 0 MW
+# and run at 400 MW on NESO's instruction. The live level is therefore the highest-
+# numbered acceptance already issued whose profile covers the moment, else the PN.
+_boalf_cache = {"rows": None, "ts": 0}
+
+
+def _get_boalf(now):
+    """BOALF acceptances covering the last 90 min to +5 min (cached with the PN rows).
+    Returns [] if Elexon can't be reached (then PN alone is used, as before)."""
+    c = _boalf_cache
+    if c["rows"] is not None and time.time() - c["ts"] < PNMEL_TTL:
+        return c["rows"]
+    try:
+        f = (now - timedelta(minutes=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        t = (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = fetch_json(f"{BMRS}/datasets/BOALF/stream?format=json&from={f}&to={t}", timeout=40)
+        rows = r if isinstance(r, list) else _rows(r)
+    except Exception:
+        rows = c["rows"] or []
+    c["rows"], c["ts"] = rows, time.time()
+    return rows
+
+
+def _unit_segments(rows):
+    """{bmUnit: [(t0, t1, level0, level1, acceptance_no, acceptance_ts)]}"""
+    out = {}
+    for r in rows:
+        u = r.get("bmUnit")
+        if not u:
+            continue
+        try:
+            t0 = datetime.fromisoformat(r["timeFrom"].replace("Z", "+00:00")).timestamp()
+            t1 = datetime.fromisoformat(r["timeTo"].replace("Z", "+00:00")).timestamp()
+            at = r.get("acceptanceTime")
+            ats = datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp() if at else 0.0
+        except Exception:
+            continue
+        out.setdefault(u, []).append((t0, t1, float(r.get("levelFrom") or 0), float(r.get("levelTo") or 0),
+                                      int(r.get("acceptanceNumber") or 0), ats))
+    return out
+
+
+def _seg_level(segs, t, now_ts=None):
+    """Level at time t. PN: the last-listed covering segment. BOALF (now_ts given): the
+    highest acceptance number already issued by now_ts whose profile covers t."""
+    best = None
+    for sg in segs or ():
+        if sg[0] <= t <= sg[1]:
+            if now_ts is not None:
+                if sg[5] > now_ts or (best is not None and sg[4] < best[4]):
+                    continue
+            best = sg
+    if best is None:
+        return None
+    f = max(0.0, min(1.0, (t - best[0]) / ((best[1] - best[0]) or 1.0)))
+    return best[2] + (best[3] - best[2]) * f
+
+
+def _levels_now(now, pns, ago_s=0):
+    """{bmUnit: (level MW, instructed)} at now - ago_s: NESO's accepted level (BOALF)
+    where one covers that moment, else the notified level (PN)."""
+    nts = now.timestamp()
+    t = nts - ago_s
+    pn_seg = _unit_segments(pns)
+    bo_seg = _unit_segments(_get_boalf(now))
+    out = {}
+    for u in set(pn_seg) | set(bo_seg):
+        v = _seg_level(bo_seg.get(u), t, now_ts=nts)
+        if v is not None:
+            out[u] = (v, True)
+            continue
+        v = _seg_level(pn_seg.get(u), t)
+        if v is not None:
+            out[u] = (v, False)
+    return out
+
+
 # ---- BM Unit -> station name & fuel reference (Elexon registry) ------------
 # Rather than hand-maintain a partial table, we fetch Elexon's full BM Unit
 # registration list (~3000 units) once and cache it to disk, refreshing daily.
@@ -1119,7 +1206,7 @@ _FUELTYPE_MAP = {
 # registry's bmUnitName where that name is ugly or just the raw code. Keyed by
 # station stem (code minus leading X_ and trailing unit number).
 _NAME_OVERRIDE = {
-    "TORN": "Torness", "HEYM": "Heysham 2", "HYSM": "Heysham 1", "HRTL": "Hartlepool",
+    "TORN": "Torness", "HEYM": "Heysham 1 & 2", "HYSM": "Heysham 1", "HRTL": "Hartlepool",
     "SIZB": "Sizewell B", "DRAXX": "Drax", "LNMTH": "Lynemouth",
     "MOWEO": "Moray East", "MOWWO": "Moray West", "SGRWO": "Seagreen",
     "BEATO": "Beatrice", "NNGAO": "Neart na Gaoithe", "HOWAO": "Hornsea 1",
@@ -1136,6 +1223,47 @@ _IC_NAMES = {
     "IB": "Nemo (BE)", "IV": "Viking (DK)", "IE": "EWIC (IE)", "IG": "Greenlink (IE)",
     "IM": "Moyle (IE)", "IW": "NSL (NO)", "IES": "EWIC (IE)",
 }
+
+
+def _clean_reg_name(name, stem):
+    """Tidy an Elexon registry unit name into a station name, or None if it is only a
+    code ('GRAI', 'T-DOUGW-1', 'C__PSTAT011-AAA-NAN-184')."""
+    n = (name or "").strip()
+    n = re.sub(r"^BMUid for\s+", "", n, flags=re.I).replace("_", " ")
+    if not n or n.upper().replace(" ", "") == stem.upper().lstrip("_") or not re.search(r"[A-Za-z]{3,}\s", n + " ") \
+            or re.fullmatch(r"[A-Z0-9 \-]+", n) and " " not in n:
+        return None
+    for _ in range(3):        # trailing unit / module / BMU / export / company suffixes
+        n = re.sub(r"\s+(BMU\s*\d*|Unit\s*\d+|Module\s*\d+|OSP.*|Generator\s*\d*|Main|Export|main unit\s*\d+|"
+                   r"Power Module|Power Ltd|Ltd|Limited|Energy Limited|wind energy limited|Offshore\d*|Z\d+|\d+)$",
+                   "", n, flags=re.I).strip(" -")
+    if n.isupper():
+        n = n.title()
+    return n or None
+
+
+def _station_display_name(stem, codes, fallback):
+    """Name for a treemap station tile: curated override, else the site name from the
+    Terravolt map shared by its units ('Grain U1', 'Grain U2' -> 'Grain'), else the
+    tidied registry name, else the code."""
+    if stem in _NAME_OVERRIDE:
+        return _NAME_OVERRIDE[stem]
+    loc = _load_bmu_locations() or {}
+    names = [re.sub(r"\s+U\d+$", "", ((loc.get(c) or {}).get("name") or "")).strip() for c in codes]
+    names = [n for n in names if n and n.lower() != "site name"]
+    if names:
+        if len(set(names)) == 1:
+            return names[0]
+        common = []
+        for ws in zip(*[n.split() for n in names]):
+            if all(w == ws[0] for w in ws):
+                common.append(ws[0])
+            else:
+                break
+        if common:
+            return " ".join(common)
+        return max(set(names), key=names.count)
+    return _clean_reg_name(fallback, stem) or stem
 
 
 def _station_stem(code):
@@ -1451,7 +1579,9 @@ def get_operating_reserve():
         return c["data"] or {"error": f"{type(e).__name__}: {e}"}
 
     mel_now = _level_at(mels, now)
-    pn_now = _level_at(pns, now)
+    # running level: NESO's instructed level where it applies, else PN (a unit can
+    # notify 0 MW and run on an accepted offer, or notify full output and be bid down)
+    pn_now = {u: v for u, (v, _i) in _levels_now(now, pns).items()}
     spinning = 0.0
     running = 0
     matched = 0
@@ -1544,6 +1674,8 @@ def get_units():
         return c["data"] or {"error": f"{type(e).__name__}: {e}", "stations": []}
 
     # Per BM Unit: earliest levelFrom and latest levelTo across the window.
+    # (Replaced below by the level now and 15 min ago, using NESO's instructed
+    # level where one applies; these raw values are only the fallback.)
     per = {}
     for r in pns:
         bmu = r.get("bmUnit")
@@ -1558,6 +1690,19 @@ def get_units():
         if rec["last_t"] is None or tt > rec["last_t"]:
             rec["last_t"] = tt
             rec["last"] = r.get("levelTo") or 0
+    nts = now.timestamp()
+    pn_seg = _unit_segments(pns)
+    bo_seg = _unit_segments(_get_boalf(now))
+    for bmu in set(per) | set(bo_seg):
+        rec = per.setdefault(bmu, {"first_t": None, "first": None, "last_t": None, "last": None})
+        for key, t in (("last", nts), ("first", nts - 900)):
+            v = _seg_level(bo_seg.get(bmu), t, now_ts=nts)
+            if v is not None:
+                rec["instr"] = True
+            else:
+                v = _seg_level(pn_seg.get(bmu), t)
+            if v is not None:
+                rec[key] = v
 
     # Aggregate units into stations. Battery units are pulled out FIRST and
     # grouped by Terravolt site name (one tile per site), since they aren't in
@@ -1585,7 +1730,33 @@ def get_units():
                                         "mw": 0.0, "first": 0.0, "units": []})
         s["mw"] += cur
         s["first"] += rec["first"] or 0
-        s["units"].append({"code": bmu, "mw": round(cur)})
+        s["units"].append({"code": bmu, "mw": round(cur), **({"instr": 1} if rec.get("instr") else {})})
+
+    # Friendly names; supplier / aggregator units (codes like 2__NRWED, C__PSTAT…, whose
+    # stem starts "_") are not power stations, so they are merged into one tile per fuel.
+    agg = {}
+    for stem in list(stations):
+        s = stations[stem]
+        s["name"] = _station_display_name(stem, [u["code"] for u in s["units"]], s["name"])
+        if stem.startswith("_"):
+            a = agg.setdefault(s["fuel"], {"station": "AGG_" + s["fuel"], "name": "Aggregated small sites",
+                                            "fuel": s["fuel"], "mw": 0.0, "first": 0.0, "units": [], "aggregate": True})
+            a["mw"] += s["mw"]; a["first"] += s["first"]; a["units"] += s["units"]
+            del stations[stem]
+    for a in agg.values():
+        stations[a["station"]] = a
+    # Separately registered parts of one site (Walney 1 and 2, Robin Rigg East and West)
+    # end up with the same name: show them as one tile.
+    byname = {}
+    for stem in list(stations):
+        s = stations[stem]
+        k = (s["fuel"], s["name"])
+        if k in byname and not s.get("aggregate"):
+            t = byname[k]
+            t["mw"] += s["mw"]; t["first"] += s["first"]; t["units"] += s["units"]
+            del stations[stem]
+        else:
+            byname[k] = s
 
     # Per-station ramp flag + tidy. Ramp is computed on RAW PN (change of
     # notified level), which is the honest rate-of-change signal; scaling to
@@ -1754,7 +1925,8 @@ def get_units():
         "n_stations": len(out_stations),
         "ramp_pct": RAMP_PCT,
         "ramp_mw": RAMP_MW,
-        "basis": "group sizes metered (FUELINST/PVLive); station split notified (PN)",
+        "basis": "group sizes metered (FUELINST/PVLive); station split by unit level now "
+                 "(NESO-instructed level where one applies, else notified PN)",
     }
     c["data"] = result
     c["ts"] = time.time()
@@ -1782,19 +1954,16 @@ def get_battery():
         pns, _mels = _get_pn_mel(now)
     except Exception:
         return c["data"]
-    # latest levelTo per battery unit
+    # each battery unit's level now: NESO's accepted level (BOALF) where one applies,
+    # else its notified level (PN), interpolated to this moment
     per = {}
-    for r in pns:
-        bmu = r.get("bmUnit")
-        if not bmu:
-            continue
+    n_instr = 0
+    for bmu, (lvl, instr) in _levels_now(now, pns).items():
         site, stype = _battery_site(bmu)
         if stype != "Battery":
             continue
-        tt = r.get("timeTo") or ""
-        cur = per.get(bmu)
-        if cur is None or tt > cur[0]:
-            per[bmu] = (tt, r.get("levelTo") or 0, site)
+        per[bmu] = (None, lvl, site)
+        n_instr += 1 if instr else 0
     discharge = charge = 0.0
     disc_units = chg_units = 0
     for bmu, (_t, lvl, site) in per.items():
@@ -1810,7 +1979,9 @@ def get_battery():
         "units_discharging": disc_units,
         "units_charging": chg_units,
         "sites_classified": sum(1 for v in loc.values() if v.get("type") == "Battery"),
-        "basis": "Elexon PN per-unit; battery units classified via Terravolt site map",
+        "units_instructed": n_instr,
+        "basis": "Elexon per-unit level now (NESO-accepted BOALF where one applies, else PN); "
+                 "battery units classified via Terravolt site map",
     }
     c["data"] = result; c["ts"] = time.time()
     return result
@@ -1921,6 +2092,14 @@ def _uk_offset_h(dt):
         d = datetime(y, mo, 31, 1, tzinfo=timezone.utc)
         return d - timedelta(days=(d.weekday() + 1) % 7)
     return 1 if last_sun(dt.year, 3) <= dt < last_sun(dt.year, 10) else 0
+
+
+def _gas_day_now(now=None):
+    """Current gas day (ISO date): runs 06:00 to 06:00 UK clock time, so a UK time
+    before 06:00 belongs to the previous date's gas day."""
+    t = now or datetime.now(timezone.utc)
+    loc = t + timedelta(hours=_uk_offset_h(t))
+    return (loc - timedelta(hours=6)).date().isoformat()
 
 
 def _uk_local_to_utc(y, mo, d, hh, mm):
@@ -4293,7 +4472,7 @@ def get_gas_linepack_history(hours=48):
             "fromDate": frm, "toDate": to,
             "publicationIds": [GAS_LP_ACTUAL_ID, GAS_LP_MINFC_ID],
             "latestValue": "N"}, timeout=30)
-        actual, minfc = [], None
+        actual, minfc, minfc_at = [], None, None
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         for pub in d:
             pid = pub.get("publicationId")
@@ -4308,22 +4487,32 @@ def get_gas_linepack_history(hours=48):
                     if t >= cutoff:
                         actual.append({"t": r["applicableAt"], "v": round(v, 1)})
             elif pid == GAS_LP_MINFC_ID:
-                # take the most recent forecast-minimum value
+                # National Gas re-issues the forecast minimum several times a day
+                # (~05:00, 12:00, 18:00), each with its own time-of-minimum in
+                # applicableAt. Use the most recently ISSUED forecast for the current
+                # gas day (latest generatedTimeStamp) — not the latest applicableAt,
+                # which picked an older forecast whenever a newer one put the minimum
+                # earlier in the evening (24 Oct: drew 326 instead of 312).
+                gd = _gas_day_now()
                 best = None
                 for r in rows:
+                    af = str(r.get("applicableFor") or "")[:10]
+                    if not af or af > gd:
+                        continue
                     try:
-                        t = datetime.fromisoformat(r["applicableAt"])
                         v = float(r["value"])
                     except Exception:
                         continue
-                    if best is None or t > best[0]:
-                        best = (t, v)
+                    k = (af, str(r.get("generatedTimeStamp") or ""))
+                    if best is None or k > best[0]:
+                        best = (k, v, r.get("applicableAt"))
                 if best:
                     minfc = round(best[1], 1)
+                    minfc_at = best[2]
         actual.sort(key=lambda p: p["t"])
         if not actual:
             return None
-        out = {"actual": actual, "min_forecast": minfc,
+        out = {"actual": actual, "min_forecast": minfc, "min_forecast_at": minfc_at,
                "source": "National Gas Published Data (hourly actual)"}
         c["data"] = out
         c["ts"] = time.time()
@@ -4555,6 +4744,7 @@ def get_gas():
             hist.sort(key=lambda r: r["t"])
             out["history"] = hist
             out["linepack_min_forecast"] = api_lp.get("min_forecast")
+            out["linepack_min_forecast_at"] = api_lp.get("min_forecast_at")
             src = api_lp.get("source")
             n_live = len(live_pts)
             n_arch = len(arch_pts)
@@ -7422,7 +7612,8 @@ def build_snapshot():
         gen["generation_total_mw"] = round(gen["generation_total_mw"] + solar["mw"])
         gen["solar_estimated"] = True
 
-    # Battery isn't in FUELINST either; splice net battery output (from PN, via
+    # Battery isn't in FUELINST either; splice net battery output (unit levels: NESO-accepted
+    # where instructed, else PN; via
     # the Terravolt classification) as a two-way 'storage' source like pumped
     # storage. Positive = discharging (supply), negative = charging (demand).
     battery = snap.get("battery")
@@ -7588,6 +7779,7 @@ def build_snapshot():
 # ---- HTTP server ------------------------------------------------------------
 HTML_PATH = Path(__file__).with_name("grid_dashboard.html")
 FORECAST_PATH = Path(__file__).with_name("forecast_view.html")   # rain-engine plan view (/forecast)
+WALL_PATH = Path(__file__).with_name("grid_wall.html")           # control-room wall (/wall)
 _cache = {"snap": None, "ts": 0}
 CACHE_TTL = 55  # seconds
 
@@ -7616,6 +7808,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _wall_api(self):
+        """/api/wall, /api/wall-network, /api/wall-history?node=N."""
+        if _wall is None:
+            self._send_json({"error": "wall.py not installed next to grid_server.py"}, 503)
+            return
+        if not _wall._S:
+            _wall.attach(globals())
+        p = self.path.split("?", 1)[0]
+        try:
+            if p == "/api/wall-network":
+                body = _wall.network_bytes()
+                if body is None:
+                    self._send_json({"error": "grid_network.json not found (run build_network.py)"}, 503)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.end_headers()
+                self.wfile.write(body)
+            elif p == "/api/wall-history":
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send_json(_wall.get_history(int((qs.get("node") or ["-1"])[0])))
+            elif p == "/api/wall":
+                self._send_json(_wall.get_wall())
+            else:
+                self.send_error(404)
+        except Exception as e:
+            self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
         try:
@@ -7663,7 +7885,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     payload = {}
                 keys = _powercuts.load_keys()
-                for op in ("ENWL", "SPEN", "SSEN", "NIE", "ESB"):
+                for op in ("NPg", "UKPN", "ENWL", "SPEN", "SSEN", "NIE", "ESB"):
                     if op in payload:
                         v = (payload.get(op) or "").strip()
                         if v:
@@ -7805,7 +8027,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "stations": []}, 500)
         elif self.path.startswith("/api/gas-probe"):
-            # Read-only gas alarm diagnostic (what the alarm WOULD say — no tone).
+            # Gas alarm ladder: latest signals + recent spoken events (voiced by the dashboard).
             # Served from the background sampler's cache, so the endpoint is instant.
             # NB: must precede "/api/gas" — "/api/gas-probe".startswith("/api/gas") is True.
             self._send_json(_gas_probe_snap["data"] or
@@ -7997,6 +8219,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_windcuts.snapshot())
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/wall"):
+            self._wall_api()
+        elif self.path.split("?", 1)[0] in ("/wall", "/grid_wall.html"):
+            if WALL_PATH.exists():
+                body = WALL_PATH.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(404, "grid_wall.html not found next to server")
         elif self.path.startswith("/api/grid"):
             now = time.time()
             if not _cache["snap"] or now - _cache["ts"] > CACHE_TTL:

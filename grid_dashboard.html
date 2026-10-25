@@ -3,7 +3,7 @@
 <head>
 <!--
   GB Energy Monitor
-  Build 261022.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261025.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -113,6 +113,10 @@
   /* Right-side badges stay pinned to the top line on a single row (no wrap). */
   .hdr-btns{display:flex;flex-wrap:nowrap;gap:6px;justify-content:flex-end}
   .hdr-btns .keybtn,.hdr-btns .alert-hist-btn{margin:0}
+  /* narrow screens: the header buttons drop to their own row and wrap instead of running off the side */
+  @media(max-width:980px){ .hdr-right{flex:1 1 100%;margin-left:0;flex-wrap:wrap} .hdr-btns{flex-wrap:wrap;justify-content:flex-start} }
+  @media(max-width:520px){ .wrap{padding:16px 12px 40px} }   /* phones: narrower side margins (all pages alike) */
+
   /* alarm button: dim when muted, accented when armed */
   #alarmBtn.armed{color:var(--ok);border-color:rgba(57,217,138,.5);background:rgba(57,217,138,.08)}
   #alarmBtn.firing{color:var(--crit);border-color:rgba(255,92,108,.6);background:rgba(255,92,108,.12);
@@ -965,6 +969,15 @@
   .gas-imb-pos{color:var(--ok)} .gas-imb-neg{color:var(--warn)}
   .gas-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}
   .gas-flow-wrap{margin-bottom:24px}
+  .gas-ladder{margin:-8px 0 22px}
+  .gas-ladder .gl-row{display:flex;flex-wrap:wrap;gap:8px}
+  .gas-ladder .gl{font-family:var(--mono);font-size:12px;padding:5px 9px;border-radius:7px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--ink-dim);white-space:nowrap}
+  .gas-ladder .gl b{color:var(--ink);font-weight:600}
+  .gas-ladder .gl.notice{border-color:rgba(120,170,255,.55)}
+  .gas-ladder .gl.warn{border-color:var(--warn);background:rgba(255,190,80,.10)}
+  .gas-ladder .gl.crit{border-color:var(--crit);background:rgba(255,90,90,.14)}
+  .gas-ladder .gl-note{font-size:11px;color:var(--ink-faint);margin-top:6px}
   .gas-flow-wrap #gasFlow{background:var(--panel2);border:1px solid var(--line);
     border-radius:13px;padding:10px}
   .gas-flow-wrap #gasFlow svg{width:100%;height:auto;display:block}
@@ -1435,6 +1448,16 @@
     .freq-top{flex-wrap:wrap}
     .freq-risk{margin-left:0}
   }
+  /* Embedded single view for the transmission wall (#embed=gas, ea, gen, gh, octo): only that page shows. */
+  html.embed .wrap{visibility:hidden}
+  html.embed #gasClose, html.embed #eaClose, html.embed #genClose, html.embed #ghClose, html.embed #octoClose{display:none}
+  html.embed .modal-back{display:none!important}
+  /* #embed=freq: the System frequency card alone, filling the frame (the wall's frequency panel) */
+  html.embedfreq, html.embedfreq body{background:var(--bg);overflow:hidden}
+  html.embedfreq .wrap{position:absolute;left:0;top:0;width:100%;pointer-events:none}   /* already hidden by html.embed; kept laid out so its charts don't draw at zero size */
+  /* the card exactly fills the frame, so its border shows on all four sides (it was cut off at the right and bottom) */
+  html.embedfreq #freqCard{position:fixed;inset:0;z-index:1;margin:0;width:auto;height:auto;min-height:0;box-sizing:border-box;border-radius:12px;overflow:hidden}
+  html.embedfreq #freqHistBtn, html.embedfreq #mcExpand{display:none}
 </style>
 </head>
 <body>
@@ -1461,6 +1484,8 @@
           <button class="keybtn" id="gasOpenBtn" title="GB gas system · National Gas">🔥 gas</button>
           <button class="keybtn" id="eaOpenBtn" title="Rivers, rainfall &amp; flood warnings (Environment Agency)">💧 ea</button>
           <button class="keybtn" id="octoOpenBtn" title="Your home energy usage &amp; cost">⚡ my home</button>
+          <button class="keybtn" id="netMapBtn" title="GB transmission network map with modelled live flows (zoom and drag)">🗺 network</button>
+          <button class="keybtn" id="wallBtn" onclick="window.open('/wall','gbwall')" title="Transmission wall: GB network map with modelled live flows (opens in its own window)">▦ wall</button>
           <button class="alert-hist-btn" id="alertStatsBtn" title="Alert history &amp; statistics">▤ history</button>
         </div>
       </div>
@@ -1712,7 +1737,7 @@
   <footer>
     <span class="src">Sources: Elexon Insights (BMRS) · Carbon Intensity API · NESO · Sheffield PVLive (solar) · OpenWeather (weather) · National Gas · Environment Agency</span>
     <span id="dataAge"></span>
-    <span style="margin-left:auto">HTML build 261022.1 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
+    <span style="margin-left:auto">HTML build 261025.1 · Server build <span id="serverBuild">…</span> · port <span id="serverPort">…</span> · auto-refresh 60s · <span id="countdown">60</span>s</span>
     <div class="srcstatus" id="srcStatus"></div>
     <div class="copyright" id="copyright"></div>
   </footer>
@@ -1776,14 +1801,15 @@
 <div class="gen-overlay" id="genOverlay">
   <div class="gen-bar">
     <h1>GB Generators</h1>
-    <span class="gen-sub">metered fuel totals · station split from notifications</span>
+    <span class="gen-sub">metered fuel totals · station split from unit levels (NESO-instructed or notified)</span>
     <span class="gen-legend" id="genLegend"></span>
     <span class="gen-tot">on-grid <b id="genTot">—</b> · <span id="genN">—</span> stations</span>
     <button class="gen-close" id="genClose" title="Close (Esc)">✕</button>
   </div>
   <div class="gen-tm" id="genTm"><canvas id="genCv"></canvas></div>
   <div class="gen-note" id="genNote">Fuel-group sizes are <b>metered</b> (Elexon FUELINST; solar is the Sheffield PVLive
-    embedded estimate). Within each group, stations are split by their <b>notified</b> share (PN) and scaled to the
+    embedded estimate). Within each group, stations are split by each unit's level now — NESO's <b>instructed</b> level where
+    NESO has accepted a bid or offer (BOALF), otherwise its <b>notified</b> level (PN) — and scaled to the
     metered group total — so a station's MW is its share of real output, not an independent meter reading. Embedded
     solar has no per-station data, so it's one estimated tile. Pumped storage shows only when generating.</div>
   <div class="gen-tip" id="genTip"></div>
@@ -1998,6 +2024,12 @@
 <div class="pc-overlay" id="pcOverlay">
   <iframe id="pcFrame" title="UK &amp; Ireland power cuts" src="about:blank" loading="lazy"></iframe>
   <button class="pc-close" id="pcClose" title="Close (Esc)">✕</button>
+</div>
+
+<!-- GB transmission network pop-out: the wall's zoomable map (/wall?screen=map) in an iframe -->
+<div class="pc-overlay" id="netOverlay">
+  <iframe id="netFrame" title="GB transmission network" src="about:blank" loading="lazy"></iframe>
+  <button class="pc-close" id="netClose" title="Close (Esc)">✕</button>
 </div>
 
 <!-- Environment Agency pop-out: rivers, rainfall & flood warnings -->
@@ -2374,7 +2406,7 @@ function pcLevel(v){
 const PC_OP_REGION={NGED:"the Midlands, South West and South Wales",
   UKPN:"London, the South East and East of England", NPg:"North East England and Yorkshire",
   ENWL:"North West England", SPEN:"southern Scotland and North Wales",
-  SSEN:"northern Scotland and southern England", NIE:"Northern Ireland", ESB:"the Republic of Ireland"};
+  SSEN:"northern Scotland and southern England", NIE:"Northern Ireland", ESB:"Ireland"};
 function pcTopRegions(map, n){
   return Object.keys(map||{}).filter(k=>map[k]>0).sort((a,b)=>map[b]-map[a]).slice(0,n).map(k=>PC_OP_REGION[k]||k);
 }
@@ -2455,6 +2487,7 @@ function pcNearby(p, home, km, muted){
   const district=pcHomeDistrict(home), out=[];
   (p.incidents||[]).forEach(i=>{
     if(muted.has(i.dno) || PC_DONE_RE.test(i.status||"")) return;
+    if(i.outside_area) return;            // plotted outside its operator's own area: location unreliable
     let d=null, b=null, how="coords";
     if(i.lat!=null && i.lon!=null){
       d=pcKm(home.lat, home.lon, i.lat, i.lon); if(d>km) return;
@@ -2480,8 +2513,9 @@ async function refreshUtilData(){
       if(pct>=10) gasSummary={level:"warning",
         text:"Gas margin tight ("+pct.toFixed(0)+"%)", derived:true};
     }
-    Alarm.evaluateGas(!!gasSummary);
   }catch(e){ /* leave gasSummary as-is */ }
+  // gas alarm ladder: voiced from the server's gas probe events (the 10% chip stays visual)
+  try{ Alarm.evaluateGasProbe(await fetch("/api/gas-probe").then(r=>r.json())); }catch(e){}
   try{
     const f=await fetch("/api/ea-floods").then(r=>r.json());
     // An EA failure with nothing held is "unknown", not "no floods": leave the chip and the
@@ -4365,7 +4399,7 @@ async function fhSaveFn(){
         (s.ramp_pct>0?"+":"")+s.ramp_pct+"% over ~15 min</div>";}
       let basis="";
       if(s.estimated) basis='<div class="r" style="color:var(--warn)">estimated (PVLive)</div>';
-      else if(s.scaled) basis='<div class="r">metered-share · notified '+(s.mw_pn!=null?s.mw_pn+" MW":"")+'</div>';
+      else if(s.scaled) basis='<div class="r">metered-share · unit levels '+(s.mw_pn!=null?s.mw_pn+" MW":"")+' (instructed or notified)</div>';
       tip.innerHTML='<b>'+s.name+'</b><div class="r">'+hit.fuel+' · '+s.mw+' MW · '+
         (100*s.mw/(genData.total_mw||1)).toFixed(1)+'% of total · '+
         (s.units?s.units.length:0)+' unit(s)</div>'+basis+rmp+
@@ -5388,6 +5422,28 @@ function pcOpenFn(){
   $("#pcOverlay").classList.add("open"); pcOpen=true;
 }
 function pcCloseFn(){ $("#pcOverlay").classList.remove("open"); pcOpen=false; }
+
+// GB transmission network: the wall's zoomable map, full page, lazy-loaded on first open (its own
+// one-minute refresh keeps it current). Esc in the map clears a selection first, then asks us to close.
+let netOpen=false;
+function netOpenFn(){
+  const fr=$("#netFrame");
+  const first = fr && (!fr.src || /about:blank$/.test(fr.src));
+  if(first) fr.src="/wall?screen=map";
+  $("#netOverlay").classList.add("open"); netOpen=true;
+  // While closed the frame has no size, so the map can't lay itself out; tell it once it's visible again.
+  if(!first){
+    requestAnimationFrame(()=>{ try{ fr.contentWindow.postMessage({gbWall:"shown"}, location.origin); }catch(_){} });
+    // Safety net: if the map still isn't drawn at a usable size, reload it (loses the zoom, never shows blank).
+    setTimeout(()=>{ if(!netOpen) return; let ok=false;
+      try{ const d=fr.contentDocument; ok=[...d.querySelectorAll(".slot canvas")].some(c=>{const r=c.getBoundingClientRect(); return r.width>100 && r.height>100 && c.width>100;}); }catch(_){}
+      if(!ok){ try{ fr.contentWindow.location.reload(); }catch(_){ fr.src="/wall?screen=map"; } }
+    }, 700);
+  }
+  try{ fr.contentWindow && fr.contentWindow.focus(); }catch(_){}
+}
+function netCloseFn(){ $("#netOverlay").classList.remove("open"); netOpen=false; }
+{ const nb=$("#netMapBtn"); if(nb) nb.onclick=netOpenFn; }
 { const pb=$("#pcMapBtn"); if(pb) pb.onclick=pcOpenFn; }   // header "live powercuts map" = the badge
 
 // Animated system flow diagram: sources -> NTS spine -> demand & exports.
@@ -5671,7 +5727,11 @@ function gasDrawTrend(g){
     ctx.beginPath();ctx.moveTo(padL,yf);ctx.lineTo(W-padR,yf);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle=cssv("--crit");ctx.textAlign="left";ctx.textBaseline="bottom";
     ctx.font="11px "+mono;
-    ctx.fillText("forecast min "+floor.toFixed(0),padL+3,yf-1);
+    // National Gas's latest forecast of today's lowest linepack, and when it falls (UT)
+    let fAt="";
+    if(g.linepack_min_forecast_at){ const d=new Date(g.linepack_min_forecast_at);
+      if(!isNaN(d)) fAt=" at "+String(d.getUTCHours()).padStart(2,"0")+":"+String(d.getUTCMinutes()).padStart(2,"0")+" UT"; }
+    ctx.fillText("forecast min "+floor.toFixed(0)+fAt,padL+3,yf-1);
     ctx.textBaseline="middle";
   }
   // zero line for balance (right axis)
@@ -5738,10 +5798,15 @@ function gasDrawTrend(g){
   // first tick strictly after t0, on a UTC hour divisible by the step
   let first=Math.ceil(t0/3600000)*3600000;
   while(new Date(first).getUTCHours()%stepH!==0) first+=3600000;
-  // keep the first tick clear of the left-end date/time label
-  while(X(first) < padL+52) first+=stepMs;
-  for(let t=first; t<=t1-stepMs*0.4; t+=stepMs){
+  // keep ticks clear of the end labels: measured, so it holds at any width
+  // (a fixed 0.4-step margin let "12:00" sit on "22:58 UT" on a phone)
+  const leftEndR = padL + Math.max(ctx.measureText(utcHH(t0)).width, ctx.measureText(utcDate(t0)).width) + 8;
+  const rightEndL = (W-padR) - ctx.measureText(utcHH(t1)+" UT").width - 8;
+  for(let t=first; t<=t1; t+=stepMs){
     const x=X(t), dt=new Date(t);
+    const half=Math.max(ctx.measureText(utcHH(t)).width,
+                        dt.getUTCHours()===0 ? ctx.measureText(utcDate(t)).width : 0)/2;
+    if(x-half < leftEndR || x+half > rightEndL) continue;
     ctx.beginPath();ctx.moveTo(x,axisY);ctx.lineTo(x,axisY+4);ctx.stroke();
     ctx.textAlign="center";ctx.fillStyle=cssv("--ink-faint");
     ctx.fillText(utcHH(t),x,axisY+6);
@@ -5757,11 +5822,19 @@ function gasDrawTrend(g){
   // right end: the latest actual plot time (UT), not the word 'now'
   ctx.textAlign="right";ctx.fillStyle=cssv("--ink-dim");
   ctx.fillText(utcHH(t1)+" UT",W-padR,axisY+6);
-  // legend — the two descriptions are too long to sit side by side on this
-  // canvas, so stack them on two short lines at the top-left instead.
-  ctx.textBaseline="top";ctx.font="11px "+mono;ctx.textAlign="left";
-  ctx.fillStyle=cssv("--accent");ctx.fillText("— linepack mcm (solid live · dashed archive fill)",padL,3);
-  ctx.fillStyle=cssv("--warn");ctx.fillText("— supply−demand mcm/d (solid meas · dashed calc)",padL,15);
+  // legend — two stacked lines at the top-left. On a narrow canvas: move to the
+  // left edge, then shrink to 9px, then drop to the short wording, so it never
+  // runs off the right edge.
+  ctx.textBaseline="top";ctx.textAlign="left";
+  const LEG=[["— linepack mcm (solid live · dashed archive fill)","— linepack mcm (solid live)","--accent"],
+             ["— supply−demand mcm/d (solid meas · dashed calc)","— supply−demand mcm/d","--warn"]];
+  let lx=padL, lf=11, li=0;
+  const legW=()=>{ctx.font=lf+"px "+mono;return Math.max(...LEG.map(l=>ctx.measureText(l[li]).width));};
+  if(lx+legW()>W-4) lx=4;
+  while(lx+legW()>W-4 && lf>9) lf--;
+  if(lx+legW()>W-4){ li=1; lf=11; while(lx+legW()>W-4 && lf>9) lf--; }
+  ctx.font=lf+"px "+mono;
+  LEG.forEach((l,k)=>{ctx.fillStyle=cssv(l[2]);ctx.fillText(l[li],lx,3+k*(lf+2));});
 }
 
 // Wholesale gas price trend: SAP + SMP buy/sell (p/kWh on the left axis, with a
@@ -5868,10 +5941,45 @@ function gasDrawPrice(g){
   }
 }
 
+// Alarm ladder strip on the gas page: each measure against its first-pass levels
+// (gas_probe.py 261024.2). Derived signals, still being calibrated — labelled so.
+function gasLadderRender(gp){
+  const el=$("#gasLadder"); if(!el) return;
+  const s=gp&&gp.signals; if(!s){ el.innerHTML=""; return; }
+  const lv=(v,n,w,c,up=true)=>v==null?"":(up?(v>=c?"crit":v>=w?"warn":v>=n?"notice":""):(v<=c?"crit":v<w?"warn":v<n?"notice":""));
+  const day=(s.demand_fc_for&&s.gas_day&&s.demand_fc_for>s.gas_day)?"tomorrow":"today";
+  const chips=[];
+  const chip=(cls,lab,val,tip)=>chips.push('<span class="gl '+cls+'" title="'+tip+'">'+lab+' <b>'+val+'</b></span>');
+  let dLv=lv(s.demand_fc,300,350,400);
+  if(dLv==="crit" && !(s.mn_ratio!=null && s.mn_ratio>=0.9)) dLv="warn";   // critical only if supply is tight too
+  if(s.demand_fc!=null) chip(dLv,"demand fc "+day,Math.round(s.demand_fc)+" mcm",
+    "National Gas NTS demand forecast. Levels: 300 notice · 350 warning · 400 critical (critical only if supply ≥90% used)");
+  if(s.mn_ratio!=null) chip(s.mn_ratio>=1?"crit":s.mn_ratio>=0.95?"warn":(s.mn_ratio>=0.9||(s.spare_mcm!=null&&s.spare_mcm<50))?"notice":"",
+    "demand / avail. supply",Math.round(100*s.mn_ratio)+"%"+(s.spare_mcm!=null?" ("+Math.round(s.spare_mcm)+" spare)":""),
+    "Forecast demand ÷ expected available supply (non-storage supply now + LNG and storage deliverability"+
+    (s.eac_parts?": "+s.eac_parts.nss+" + "+s.eac_parts.lng+" + "+s.eac_parts.storage+" mcm/d":"")+"). 90% notice · 95% warning · 100% critical (the Margins Notice trigger)");
+  if(s.pclp_margin_mcm!=null) chip(s.pclp_margin_mcm<=0?"crit":s.pclp_margin_mcm<5?"warn":"","closing LP − fc min",(s.pclp_margin_mcm>=0?"+":"")+s.pclp_margin_mcm.toFixed(1)+" mcm",
+    "Predicted closing linepack above National Gas's forecast minimum. Under 5 warning · at or below 0 critical");
+  if(s.actual_lp!=null&&s.forecast_min!=null){ const d=s.actual_lp-s.forecast_min;
+    chip(d<-5?"warn":"","linepack − fc min",(d>=0?"+":"")+d.toFixed(1)+" mcm","Live linepack against today's forecast minimum. More than 5 below: warning"); }
+  if(s.pclp_drop_3h!=null) chip(s.pclp_drop_3h>10?"notice":"","closing LP 3h",(s.pclp_drop_3h>0?"−":"+")+Math.abs(s.pclp_drop_3h).toFixed(1)+" mcm",
+    "Change in predicted closing linepack from its 3-hour high. Down more than 10: notice");
+  if(s.storage_cover_days!=null) chip(s.storage_cover_days<5?"notice":"","storage cover",s.storage_cover_days.toFixed(1)+" days",
+    "Storage stock at full withdrawal (all sites). Under 5 days: notice");
+  if(s.price_x_median!=null) chip(s.price_x_median>=2?"notice":"","SAP vs 30-day median","×"+s.price_x_median.toFixed(2),
+    "System average price against its 30-day median. Twice or more: notice");
+  const off=[["gdw_today","GDW today"],["gdw_tomorrow","GDW tomorrow"],["gbn_today","GBN today"],["gbn_tomorrow","GBN tomorrow"]]
+    .filter(([k])=>{const v=s[k]; return v!=null && !/^(none|null|false|0|no|)$/i.test(String(v).trim());}).map(x=>x[1]);
+  chip(off.length?"crit":"","official notices",off.length?off.join(", "):"none","National Gas Gas Deficit Warning (GDW) and Gas Balancing Notification (GBN)");
+  el.innerHTML='<div class="gas-sec-title">Alarm levels <span class="note">derived · first-pass levels, calibrating · official notices as published</span></div>'+
+    '<div class="gl-row">'+chips.join("")+'</div>';
+}
+
 async function gasFetch(){
   try{
     const g=await fetch("/api/gas").then(r=>r.json());
     gasRender(g);
+    fetch("/api/gas-probe").then(r=>r.json()).then(gasLadderRender).catch(()=>{});
   }catch(e){
     $("#gasBody").innerHTML='<div class="octo-loading">Could not load gas data: '+e.message+'</div>';
   }
@@ -5931,6 +6039,8 @@ function gasRender(g){
       '<div class="sub">gas stored in the pipes</div></div>';
   }
   html+='</div>';
+  // ---- alarm ladder status (from the server's gas probe; filled asynchronously) ----
+  html+='<div class="gas-ladder" id="gasLadder"></div>';
 
   // ---- animated system flow diagram ----
   html+='<div class="gas-flow-wrap"><div class="gas-sec-title">System flow '+
@@ -6094,6 +6204,9 @@ function gasRender(g){
   addEventListener("keydown",e=>{ if(e.key==="Escape"&&gasOpen) gasCloseFn(); });
   const pcb=$("#pcClose"); if(pcb) pcb.onclick=pcCloseFn;
   addEventListener("keydown",e=>{ if(e.key==="Escape"&&pcOpen) pcCloseFn(); });
+  const ncb=$("#netClose"); if(ncb) ncb.onclick=netCloseFn;
+  addEventListener("keydown",e=>{ if(e.key==="Escape"&&netOpen) netCloseFn(); });
+  addEventListener("message",e=>{ if(e.origin===location.origin && e.data && e.data.gbWall==="close" && netOpen) netCloseFn(); });
 })();
 
 /* ---------- Environment Agency pop-out ---------- */
@@ -6821,23 +6934,32 @@ function eaRenderWindDials(){
     if(rh<=80) return 'hsl(200,85%,62%)';   // humid — light blue
     return 'hsl(220,85%,64%)';              // very humid — blue
   };
-  // THI (temperature-humidity index), Celsius human-comfort form:
-  //   THI = T - (0.55 - 0.0055*RH)(T - 14.5)   [T in C, RH in %]
-  // Reported in its accepted index units (°C-equivalent), NOT a percentage.
-  const thiVal = (T, RH) => (T==null||RH==null) ? null
-    : T - (0.55 - 0.0055*RH)*(T - 14.5);
-  const thiBand = x => {
+  // Apparent temperature (Australian Bureau of Meteorology, Steadman's shade form): what the
+  // air feels like allowing for humidity AND wind, valid in cold as well as heat:
+  //   AT = T + 0.33*e - 0.70*ws - 4.00
+  //   e  = RH/100 * 6.105 * exp(17.27*T / (237.7 + T))   water-vapour pressure, hPa
+  //   ws = wind speed at 10 m, m/s (the local wind used by the wind dial)
+  // Replaces the Thom THI, which has no wind term, is only meaningful above ~20 C and
+  // runs backwards below 14.5 C (drier air scored warmer).
+  const atVal = (T, RH, ws) => (T==null||RH==null) ? null
+    : T + 0.33*(RH/100*6.105*Math.exp(17.27*T/(237.7+T))) - 0.70*(ws==null?0:ws) - 4.00;
+  const atBand = x => {
     if(x==null) return {word:'—', colour:'var(--ink)'};
-    if(x<20)   return {word:'Comfortable', colour:'hsl(140,70%,58%)'};
-    if(x<24)   return {word:'Warm',        colour:'hsl(48,88%,60%)'};
-    if(x<27)   return {word:'Uncomfortable',colour:'hsl(28,88%,60%)'};
+    if(x<0)  return {word:'Very cold',  colour:'hsl(220,85%,66%)'};
+    if(x<8)  return {word:'Cold',       colour:'hsl(205,85%,64%)'};
+    if(x<15) return {word:'Cool',       colour:'hsl(185,75%,58%)'};
+    if(x<22) return {word:'Comfortable',colour:'hsl(140,70%,58%)'};
+    if(x<26) return {word:'Warm',       colour:'hsl(48,88%,60%)'};
+    if(x<30) return {word:'Hot',        colour:'hsl(28,88%,60%)'};
     return {word:'Oppressive', colour:'hsl(5,85%,62%)'};
   };
-  const thi = thiVal(c.temp, c.humidity);
-  const tb = thiBand(thi);
-  const thiRow = thi==null ? '—'
-    : cVal(Math.round(thi)+'<span style="opacity:0">°</span>', tb.colour)+
-      ' <span style="color:'+tb.colour+';font-weight:400;font-size:11px">'+tb.word+'</span>';
+  const at = atVal(c.temp, c.humidity, spdMs);
+  const ab = atBand(at);
+  const atTip = 'Apparent temperature (Bureau of Meteorology formula): air temperature adjusted for humidity and wind'+
+    (spdMs==null ? ' (wind unavailable — humidity only)' : ' ('+spdMs.toFixed(1)+' m/s)')+'. Calculated here; "Feels like" is OpenWeather\'s own figure.';
+  const atRow = at==null ? '—'
+    : '<span title="'+atTip+'">'+cVal(Math.round(at)+'°', tempColour(at))+
+      ' <span style="color:'+ab.colour+';font-weight:400;font-size:11px">'+ab.word+'</span></span>';
   const row = (label, val) => '<div class="wd-drow"><span class="wd-dl">'+label+'</span>'+
                               '<span class="wd-dv">'+val+'</span></div>';
   // today's low/high: an Open-Meteo MODEL forecast for the whole day, tagged so it
@@ -6855,14 +6977,14 @@ function eaRenderWindDials(){
   const sunT = u => { if(u==null) return '—';
     const d=new Date((u + tzOff)*1000);
     return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0'); };
-  // block 3: temperature, humidity, THI, low/high & sun times. "Dew point" on one line, cyan.
+  // block 3: temperature, humidity, apparent temperature, low/high & sun times. "Dew point" on one line, cyan.
   const dewVal = c.dew_point==null ? '—' : cVal(Math.round(c.dew_point)+'°', '#5bd6e0');
   const block3 =
     '<div class="wd-data">'+
       row('Temp', tVal(c.temp))+
       row('<span style="white-space:nowrap">Dew point</span>', dewVal)+
       row('Humidity', c.humidity==null?'—':cVal(Math.round(c.humidity), humColour(c.humidity), '%'))+
-      row('THI', thiRow)+
+      row('<span title="Apparent temperature: allows for humidity and wind">Apparent</span>', atRow)+
       row('Feels like', tVal(c.feels_like))+
       row('Low today'+rangeTag, tVal(c.day_min))+
       row('High today'+rangeTag, tVal(c.day_max))+
@@ -8135,7 +8257,7 @@ const Alarm = (function(){
     pcnear:{name:"Power cut near you", tier:"warn", on:false,
             desc:"Speaks when a power cut starts within your chosen radius of your location (set on the EA page) — an unplanned fault as a warning, planned works as a quieter notice — naming how far away, which direction, customers off and the estimated restoration, and again when it's back on. Muted providers are skipped. Set the radius below."},
     pcwatch:{name:"Monitored postcode areas", tier:"warn", on:true,
-            desc:"Siren, then speech, when a power cut (unplanned or planned) starts in one of your monitored postcode areas — set with the <b>Monitored areas</b> button on the power-cuts page (up to 10 sectors such as EX23 4, or full postcodes such as EX23 4AA). Names the area — its alias and place if you gave it one (“Les in Plymouth”), otherwise the postcode and place — and customers without power (not for SP Energy Networks, which publishes no count). A full postcode whose operator only publishes sectors is announced as “may be affected”. Several areas at once become one message. Speaks again, with a soft tone, when power is restored. Muted providers are skipped."},
+            desc:"Siren, then speech, when a power cut (unplanned or planned) starts in one of your monitored postcode areas, repeated every 30 minutes while it continues for areas ticked <b>Repeat</b> — set with the <b>Monitored areas</b> button on the power-cuts page (up to 10 sectors such as EX23 4, or full postcodes such as EX23 4AA). Names the area — its alias and place if you gave it one (“Les in Plymouth”), otherwise the postcode and place — and customers without power (not for SP Energy Networks, which publishes no count). A full postcode whose operator only publishes sectors is announced as “may be affected”. Several areas at once become one message. Speaks again, with a soft tone, when power is restored. Muted providers are skipped."},
     margin:{name:"Capacity margin / reserve", tier:"crit", on:false,
             desc:"Critical when spinning reserve drops below the largest single infeed."},
     sys:   {name:"Official system warnings", tier:"warn", on:false,
@@ -8146,8 +8268,8 @@ const Alarm = (function(){
             desc:"Nearby EA stations above their normal range. Needs the EA panel open. Nearest (<5mi) treated as critical."},
     rain:  {name:"Rainfall nearby", tier:"warn", on:false,
             desc:"Spoken rain/snow situation from the unified engine — isolated or widespread showers, continuous rain, or arrival at your location — on a low, state-driven cadence (not per-gauge). Needs the EA panel data."},
-    gas:   {name:"Gas margin (derived)", tier:"notice", on:false,
-            desc:"Soft blip only, no speech — this is a derived early-warning signal."},
+    gas:   {name:"Gas supply & margin", tier:"warn", on:false,
+            desc:"Gas tones (lower, softer than the electricity alarms) and speech starting “Gas:”. Official National Gas notices (Gas Deficit Warning, Gas Balancing Notification) as published. Derived, first-pass levels being calibrated: forecast demand 300 / 350 / 400 mcm (once a day; critical only if supply is also tight); demand at 90 / 95 / 100% of expected available supply; predicted closing linepack near or below the forecast minimum; live linepack below it; closing linepack revised down; storage cover under 5 days; price twice its 30-day median. A derived state must last 2 hours before it speaks, then repeats every 3 hours. Levels shown on the gas page."},
     nowcast:{name:"Weather nowcast (One Call 4.0)", tier:"warn", on:false,
             desc:"Speaks the local rainfall nowcast — onset, intensity, approach and clearing — from the One Call 4.0 minute forecast, your gauges and pressure. Needs the EA panel data and an OC4 key."},
   };
@@ -8820,7 +8942,15 @@ const Alarm = (function(){
   // is announced once — siren, then speech — and remembered across reloads for 48 h; when an
   // announced incident has left the feed (and its operator's feed is live, so an outage can't
   // pass for a restoration) its area is announced as restored with a soft tone.
-  const PC_WATCH_SEEN_KEY="pcWatchSeen";
+  // Areas ticked "Repeat" on the power-cuts page are announced again every PC_WATCH_REPEAT_MS
+  // while a cut there continues (planned works only once their start time has passed).
+  const PC_WATCH_SEEN_KEY="pcWatchSeen", PC_WATCH_REPEAT_MS=30*60*1000;
+  function pcMs(iso){                // same reading as pcWhen: Z/offset honoured, bare time = UK local
+    const str=String(iso||"").trim(), m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(str);
+    if(!m) return null;
+    const dt=/(Z|[+-]\d{2}:?\d{2})$/.test(str) ? new Date(str) : new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]);
+    return isNaN(dt) ? null : dt.getTime();
+  }
   function pcWatchSeenLoad(){ try{ return JSON.parse(localStorage.getItem(PC_WATCH_SEEN_KEY)||"{}")||{}; }catch(e){ return {}; } }
   function pcWatchSeenSave(o){ try{ localStorage.setItem(PC_WATCH_SEEN_KEY, JSON.stringify(o)); }catch(e){} }
   // "PL3 5AA" -> "P L 3, 5 A A" so the speech engine reads it as a postcode
@@ -8883,7 +9013,29 @@ const Alarm = (function(){
       }
       const ms=siren(); flashBtn();
       setTimeout(()=>say(msg), ms);
-      fresh.forEach(m=>{ seen[key(m)]={t:now, pc:m.pc, place:m.place, alias:m.alias||null, dno:m.dno, id:m.id, planned:!!m.planned}; });
+      fresh.forEach(m=>{ seen[key(m)]={t:now, ta:now, pc:m.pc, place:m.place, alias:m.alias||null, dno:m.dno, id:m.id, planned:!!m.planned}; });
+    }
+    // repeats: cuts already announced, still in the feed, in an area ticked "Repeat", last
+    // announced 30 min or more ago (planned works only once started)
+    const due=fresh.length ? [] : (w.matches||[]).filter(m=>{
+      const sn=seen[key(m)]; if(!sn || !m.repeat) return false;
+      if(m.planned){ const st=pcMs(m.start); if(st==null || st>now) return false; }
+      return now-(sn.ta||sn.t||0) >= PC_WATCH_REPEAT_MS; });
+    if(due.length){
+      const byArea=new Map();
+      due.forEach(m=>{ if(!byArea.has(m.pc)) byArea.set(m.pc,[]); byArea.get(m.pc).push(m); });
+      const S=[...byArea.values()].map(pcWatchArea);
+      let msg;
+      if(S.length===1){
+        const s=S[0], et=pcWhen(s.etr);
+        msg="Reminder. "+(s.planned?"Planned power works are continuing ":"The power cut is continuing ")+
+          (s.alias?"for ":"in monitored area ")+s.name+"."+
+          (s.n?" "+nf(s.n)+" customer"+(s.n===1?" is":"s are")+(s.planned?" affected.":" without power."):"")+
+          (et?" "+(s.planned?"Due to finish ":"Estimated back on ")+(/^\d/.test(et)?"at ":"")+et+".":"");
+      } else msg="Reminder. Power cuts are continuing in "+S.length+" monitored postcode areas: "+S.map(s=>s.name).join("; ")+".";
+      const ms=siren(); flashBtn();
+      setTimeout(()=>say(msg), ms);
+      due.forEach(m=>{ seen[key(m)].ta=now; });
     }
     if(gone.length){
       const byArea=new Map();
@@ -9249,8 +9401,33 @@ const Alarm = (function(){
   }
 
   // ---- gas margin (derived) — soft notice blip only ----
-  function evaluateGas(present){
-    set("gas","gas-tight", !!present, "notice", null);
+  function evaluateGas(present){ /* retired: the 10% chip is visual only (see evaluateGasProbe) */ }
+  // Gas alarm ladder (gas_probe.py): voice each new event once, by its timestamp. The last
+  // voiced time is kept per browser so a reload doesn't repeat or lose one; the first time
+  // (nothing stored) adopts what's there silently; events over 2 h old are never voiced.
+  function gasTone(tier){
+    if(!ensureCtx()) return;
+    const tb=(f,w,d,gn)=>{ const o=ac.createOscillator(), g=ac.createGain(); o.type="triangle"; o.frequency.value=f;
+      o.connect(g); g.connect(ac.destination); const t=ac.currentTime+w;
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(gn,t+0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001,t+d); o.start(t); o.stop(t+d+0.02); };
+    if(tier==="crit"){ tb(400,0,0.2,0.4); tb(440,0.26,0.2,0.4); tb(660,0.52,0.3,0.42); }
+    else if(tier==="warn"){ tb(400,0,0.2,0.34); tb(440,0.26,0.24,0.34); }
+    else tb(440,0,0.14,0.22);
+  }
+  function evaluateGasProbe(gp){
+    const ev=(gp && gp.events) || [];
+    let last=null; try{ last=parseFloat(localStorage.getItem("gasEvtTs")); }catch(e){}
+    const newest=ev.reduce((m,e)=>Math.max(m,e.ts||0),0);
+    if(last==null || isNaN(last)){ try{ localStorage.setItem("gasEvtTs", String(newest)); }catch(e){} return; }
+    const fresh=ev.filter(e=>(e.ts||0)>last && Date.now()/1000-(e.ts||0)<7200).sort((a,b)=>a.ts-b.ts);
+    if(newest>last){ try{ localStorage.setItem("gasEvtTs", String(newest)); }catch(e){} }
+    if(!armed || !(CATS.gas && CATS.gas.on)) return;
+    if(!fresh.length) return;
+    const top=fresh.reduce((m,e)=>(({crit:3,warn:2,notice:1})[e.tier]||1)>(({crit:3,warn:2,notice:1})[m]||0)?e.tier:m,"notice");
+    gasTone(top);
+    setTimeout(()=>fresh.forEach(e=>say(e.phrase)), top==="crit"?950:top==="warn"?700:400);
+    flashBtn();
   }
 
   // ---- arm / disarm ----
@@ -9311,6 +9488,7 @@ const Alarm = (function(){
         '<button class="ac-toggle'+(c.on?' on':'')+'" aria-label="toggle"></button>';
       const [testBtn, tog]=[row.querySelector(".ac-test"), row.querySelector(".ac-toggle")];
       testBtn.onclick=()=>{ ensureCtx();
+        if(cat==="gas"){ gasTone("warn"); setTimeout(()=>say("Gas: forecast demand for tomorrow is within five percent of expected available supply. Test."),700); return; }
         if(cat==="pcwatch"){ const ms=siren(); setTimeout(()=>say("A monitored postcode area has suffered a power cut. The area is "+pcSpoken("PL3 5")+", Plymouth. 53 customers are without power. Test."), ms); return; }
         tone(c.tier);
         if(cat==="rain") say("Isolated heavy showers to the north-west, which may be with you soon. Test.");
@@ -9386,7 +9564,7 @@ const Alarm = (function(){
     addEventListener("keydown",e=>{ if(e.key==="Escape") $("#alarmModal").classList.remove("open"); });
   }
 
-  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, evaluatePowerCuts, evaluatePowerCutsNear, evaluatePowerCutsWatch, rebaselinePowerCuts, clearEA,
+  return { wire, evaluate, evaluateFloods, evaluateRivers, evaluateRainfall, evaluateNowcast, evaluateSituational, evaluateSystemRisk, evaluateGas, evaluateGasProbe, evaluatePowerCuts, evaluatePowerCutsNear, evaluatePowerCutsWatch, rebaselinePowerCuts, clearEA,
            rainWatchWanted, riverWatchWanted, nowcastWatchWanted, eaWatchWanted, onWatchChange,
            get armed(){return armed;} };
 })();
@@ -9895,6 +10073,22 @@ addEventListener("resize",()=>{if(eaOpen&&eaSelRef){if(eaSelKind==="rain")eaLoad
     spTimer=setInterval(spTail, SP_POLL_MS);
   }
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",spInit); else spInit();
+})();
+</script>
+<script>
+/* Transmission wall embedding: /grid_dashboard.html#embed=gas | ea | gen (generators) | gh (7-day
+   generation) | octo (my home energy) opens that page on its own
+   (the wall's regional panel shows it in an iframe); #embed=freq shows only the System frequency card
+   (the wall's frequency panel), without its history and expand buttons. Esc is swallowed so it can't close the only view.
+   Audible alarms stay off here: they need a click on the alarms button, which is hidden in this mode. */
+(function(){
+  const m=/(?:^|[#&])embed=(gas|ea|freq|gen|gh|octo)\b/.exec(location.hash||""); if(!m) return;
+  document.documentElement.classList.add("embed");
+  addEventListener("keydown",e=>{ if(e.key==="Escape") e.stopImmediatePropagation(); },true);
+  const go=()=>{
+    if(m[1]==="freq"){ const c=document.getElementById("freqCard"); if(c){ document.documentElement.classList.add("embedfreq"); document.body.prepend(c); dispatchEvent(new Event("resize")); } return; }
+    ({gas:gasOpenFn, ea:eaOpenFn, gen:genOpenFn, gh:ghOpenFn, octo:octoOpenFn})[m[1]](); };
+  if(document.readyState==="loading") addEventListener("DOMContentLoaded",go); else setTimeout(go,0);
 })();
 </script>
 </body>
