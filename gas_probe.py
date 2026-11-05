@@ -1,6 +1,6 @@
 # gas_probe.py — read-only gas supply/margin DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261024.2  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261028.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Mirrors rain_probe.py: each cycle it evaluates the gas signals we have and LOGS the
@@ -51,10 +51,13 @@ PUB = {
 }
 # Daily deliverability (kWh/d) of each LNG terminal and storage site — the LNG and storage
 # parts of Expected Available Supply (EAC), the quantity a real Margins Notice compares
-# forecast demand against. Verified against the live API 2026-10-25 (storage total matches
-# PUBOBJ335 "Storage, Daily Available Deliverability").
+# forecast demand against. Verified against the live API 2026-10-25 (storage total matched
+# PUBOBJ335 "Storage, Daily Available Deliverability"). Rough is left out (261028.1):
+# Centrica paused storage there in 2025 and National Gas excludes it from the storage
+# stock; its live flow is production and is counted in non-storage supply instead, so
+# this total is PUBOBJ335 less Rough's declared deliverability (~88 GWh/d).
 DELIV_LNG = {"PUBOBJ2451": "Isle of Grain", "PUBOBJ2459": "South Hook", "PUBOBJ2460": "Dragon"}
-DELIV_STORAGE = {"PUBOBJ2449": "Humbly Grove", "PUBOBJ2450": "Hornsea", "PUBOBJ2452": "Rough",
+DELIV_STORAGE = {"PUBOBJ2449": "Humbly Grove", "PUBOBJ2450": "Hornsea",
                  "PUBOBJ2453": "Hatfield Moor", "PUBOBJ2454": "Hole House Farm",
                  "PUBOBJ2455": "Aldbrough", "PUBOBJ2456": "Holford", "PUBOBJ2457": "Hill Top",
                  "PUBOBJ2458": "Stublach"}
@@ -66,8 +69,9 @@ KWH_PER_M3 = 10.97      # ~39.5 MJ/m3 typical NTS calorific value (kWh -> m3)
 DAY_STRICT = {"pclp1", "pclp2", "forecast_min", "opening", "entry_total", "exit_total"}
 INSTFLOW_URL = GAS_API_BASE + "/instantaneousflow/sites"
 # Entry points that are NOT non-storage supply (storage and LNG are counted by deliverability)
+# Rough (EASINGTON ROUGH ST) is not here: storage paused, its flow is production (non-storage supply)
 _STORAGE_SITES = ("ALDBROUGH", "HILLTOP", "HOLE HOUSE", "HOLFORD", "HORNSEA", "STUBLACH",
-                  "ROUGH", "HATFIELD", "HUMBLY")
+                  "HATFIELD", "HUMBLY")
 _LNG_SITES = ("GRAIN", "DRAGON", "SOUTH HOOK")
 
 # ───────────────────────── tunables (GAS_ALARM_DESIGN.md §6, first-pass) ─────

@@ -21,14 +21,33 @@ bmu_locations.json
 bmu_registry.json
 gauge_mutes.json
 rain_home.json
+rain_max_hist.json
+home_temp_history.json
 server_port.json
 powercut_watch.json
 outcode_centroids.json
+node_names.json
+node_names.tmp
+osm_sites.json
+osm_sites.tmp
+repd_sites.json
+repd_sites.tmp
+dno_ecr.json
+dno_ecr.tmp
+dno_lines.json
+dno_lines.tmp
+dno_lines/
+b6_log.json
+gsp_log.json
+etys_ratings.json
+etys_boundaries.json
 
 # ── Logs / accumulating history ──
 margin_history.json
 gas_history.json
 alert_history.json
+alert_dismissed.json
+alert_dismissed.json.tmp
 alert_history/
 octopus_history/
 rain_episodes-*.jsonl
@@ -56,6 +75,8 @@ reservoir_store.json
 reservoir_store.bak.json
 balancing_store.json
 balancing_store.bak.json
+gas_storage_store.json
+gas_storage_store.tmp
 balancing_store.tmp
 
 # ── Local working files (not part of the app) ──

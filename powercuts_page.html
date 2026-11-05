@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 261025.3  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 261105.4  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -26,8 +26,8 @@
   @media(min-width:2200px){ html.top body{ zoom:0.86; } }
   @media(min-width:2560px){ html.top body{ zoom:0.82; } }
 
-  .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
-  .top h1{font-size:16px;letter-spacing:.5px}
+  div.top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}   /* div: html.top (opened on its own) must not become a flex box */
+  div.top h1{font-size:16px;letter-spacing:.5px}
   .muted{color:var(--dim)}
   .pill{display:inline-block;padding:1px 7px;border:1px solid var(--line);border-radius:10px;font-size:11px}
   .grid{display:grid;gap:14px;grid-template-columns:1.4fr 1fr;margin-top:12px}
@@ -48,6 +48,13 @@
   .ops th,.ops td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
   .ops th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase}
   .ops td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .ops th.num{text-align:right}
+  /* fixed columns, so the operator and country views line up the same */
+  .ops{table-layout:fixed}
+  .ops th:nth-child(1){width:24%} .ops th:nth-child(2){width:14%} .ops th:nth-child(3){width:8%}
+  .ops th:nth-child(4){width:19%} .ops th:nth-child(5){width:22%} .ops th:nth-child(6){width:13%}
+  .ops td:first-child{white-space:nowrap;overflow:visible}
+  .ops td{white-space:nowrap}
   /* near you: incidents within the radius of the location set on the dashboard's EA page */
   .nearyou{font-size:12px;margin:2px 0 10px;padding:7px 9px;border:1px solid var(--line);border-radius:7px}
   .nearyou .nh{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
@@ -66,6 +73,7 @@
   .btn{background:#1a2430;border:1px solid var(--line);color:var(--ink);border-radius:7px;
        padding:5px 10px;cursor:pointer;font:inherit}
   .btn:hover{border-color:var(--accent)}
+  .pcx{font-size:15px;line-height:1;padding:5px 9px;color:var(--dim)} .pcx:hover{color:var(--ink);border-color:var(--bad)}
   /* selected/lit state for any .btn (region buttons, window selector) — solid accent
      fill with dark ink, so a chosen region stays lit, not just highlighted on hover */
   .btn.on{background:var(--accent);border-color:var(--accent);color:#08111c;font-weight:600}
@@ -120,6 +128,8 @@
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:520px;width:92%}
   .card h2{font-size:13px;margin-bottom:10px}
   .keyrow{display:grid;grid-template-columns:70px 1fr auto;gap:8px;align-items:center;margin:8px 0}
+  .keyst{grid-column:2 / -1;margin-top:-4px;font-family:var(--mono,monospace);font-size:11px}
+  .keyst.ok{color:#39d98a} .keyst.wait{color:#f5b942} .keyst.bad{color:#ff5c6c}
   .keyrow input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
                 border-radius:6px;padding:6px 8px;font:inherit;width:100%}
   .note{color:var(--dim);font-size:11px}
@@ -160,6 +170,83 @@
   #wcRegions button, .wc-seg button{font-size:11px;padding:3px 7px}
   .wc-note{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.45}
 </style>
+<script>
+/* ---- Light / dark theme (Andy, 5 Nov 2026) — the same block in every page; keep them identical ----
+   Dark is the design. Light is made from it: every colour the page uses (stylesheets, inline styles, SVG fill /
+   stroke, canvas drawing) has its lightness re-mapped (dark backgrounds -> light, light text -> dark, data colours a
+   slightly deeper shade of the same hue); hue, saturation and transparency are kept. Choice in localStorage
+   "gbTheme" ("light" | "dark", default dark), shared by every page and frame on this server; a change reloads the
+   other open pages. Elements (and their contents) marked data-keep-colours are left as they are. */
+(function(){
+  let T="dark"; try{ T=localStorage.getItem("gbTheme")==="light"?"light":"dark"; }catch(e){}
+  const D=document.documentElement; D.dataset.theme=T;
+  window.gbTheme={ get:()=>T, set:t=>{ try{ localStorage.setItem("gbTheme",t); }catch(e){} location.reload(); },
+    toggle:()=>window.gbTheme.set(T==="light"?"dark":"light"), map:c=>c };
+  addEventListener("storage",e=>{ if(e.key==="gbTheme"&&(e.newValue==="light"?"light":"dark")!==T) location.reload(); });
+  if(T!=="light") return;
+  D.style.colorScheme="light";
+  // lightness map, dark design -> light (L in 0..1): monotonic, steep for the darkest (backgrounds), flatter for
+  // text and data so faint text stays readable on white
+  const LP=[[0,.985],[.066,.962],[.08,.84],[.1,.81],[.13,.76],[.17,.66],[.22,.58],[.3,.48],[.4,.36],[.5,.30],[.6,.26],[.75,.19],[.9,.11],[1,.05]];   // page background near white; panels ~15 % darker grey; text and lines dark (Andy, 5 Nov)
+  const lmap=l=>{ for(let i=1;i<LP.length;i++) if(l<=LP[i][0]){ const a=LP[i-1],b=LP[i]; return a[1]+(b[1]-a[1])*(l-a[0])/(b[0]-a[0]); } return .08; };
+  const C=new Map(), OUT=new Set();
+  const NAMED={white:[255,255,255],black:[0,0,0]};
+  function parse(s){
+    let m;
+    if((m=/^#([0-9a-f]{3,8})$/i.exec(s))){ let h=m[1]; if(h.length===3||h.length===4) h=[...h].map(x=>x+x).join("");
+      if(h.length!==6&&h.length!==8) return null; return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16),h.length===8?parseInt(h.slice(6,8),16)/255:1]; }
+    if((m=/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/i.exec(s))){
+      const a=m[4]==null?1:m[4].endsWith("%")?parseFloat(m[4])/100:+m[4]; return [+m[1],+m[2],+m[3],a]; }
+    const k=s.toLowerCase(); if(NAMED[k]) return NAMED[k].concat(1);
+    return null;
+  }
+  function one(s){
+    if(C.has(s)) return C.get(s);
+    if(OUT.has(s.replace(/\s+/g,""))) return s;          // already mapped (a style re-serialised by the browser)
+    const p=parse(s); let out=s;
+    if(p){ let [r,g,b,a]=p; r/=255; g/=255; b/=255;
+      const mx=Math.max(r,g,b), mn=Math.min(r,g,b); let h=0, sat=0; const l=(mx+mn)/2, d=mx-mn;
+      if(d){ sat=l>.5?d/(2-mx-mn):d/(mx+mn); h=mx===r?((g-b)/d+(g<b?6:0)):mx===g?((b-r)/d+2):((r-g)/d+4); h/=6; }
+      if(l<.2) sat*=.35;                                   // backgrounds and borders: near-neutral greys (the dark design's navy tint reads as blue when light)
+      const L=sat>.35&&l>.3?Math.max(lmap(l),.38):lmap(l), q=L<.5?L*(1+sat):L+sat-L*sat, P=2*L-q;   // pale data colours: no darker than a mid tone
+      const hue=t=>{ t<0&&(t+=1); t>1&&(t-=1); return t<1/6?P+(q-P)*6*t:t<1/2?q:t<2/3?P+(q-P)*(2/3-t)*6:P; };
+      const R=Math.round(255*(sat?hue(h+1/3):L)), G=Math.round(255*(sat?hue(h):L)), B=Math.round(255*(sat?hue(h-1/3):L));
+      out=a<1?`rgba(${R},${G},${B},${+a.toFixed(3)})`:`rgb(${R},${G},${B})`; }
+    C.set(s,out); OUT.add(out); return out;
+  }
+  const RX=/#[0-9a-fA-F]{3,8}\b|rgba?\([^()]*\)|\b(?:white|black)\b/g;
+  const map=v=>typeof v==="string"&&v?v.replace(RX,one):v;
+  window.gbTheme.map=map;
+  // stylesheets (custom properties included); each sheet once
+  const done=new WeakSet();
+  function rules(list){ for(const r of list){ if(r.style){ const st=r.style; for(let i=0;i<st.length;i++){ const n=st[i], v=st.getPropertyValue(n), nv=map(v); if(nv!==v) st.setProperty(n,nv,st.getPropertyPriority(n)); } }
+    if(r.cssRules) rules(r.cssRules); } }
+  function sheets(){ for(const sh of document.styleSheets){ if(done.has(sh)) continue; try{ rules(sh.cssRules); done.add(sh); }catch(e){ done.add(sh); } } }
+  // inline styles and SVG paint attributes, each value once (what we wrote is remembered, so a rewrite isn't re-mapped)
+  const W=new WeakMap(), ATTR=["fill","stroke","stop-color","flood-color","lighting-color","color"];
+  function el(e){
+    if(e.nodeType!==1||e.closest&&e.closest("[data-keep-colours]")) return;
+    let w=W.get(e); if(!w){ w={}; W.set(e,w); }
+    const s=e.getAttribute("style"); if(s&&s!==w.style){ const ns=map(s); if(ns!==s) e.setAttribute("style",ns); w.style=ns; }
+    for(const a of ATTR){ const v=e.getAttribute(a); if(v&&v!==w[a]){ const nv=map(v); if(nv!==v) e.setAttribute(a,nv); w[a]=nv; } }
+  }
+  function tree(n){ if(n.nodeType!==1) return; el(n); if(n.tagName==="STYLE"||n.tagName==="LINK") setTimeout(sheets,0);
+    for(const e of n.querySelectorAll("[style],[fill],[stroke],[stop-color],[color],style")) e.tagName==="STYLE"?setTimeout(sheets,0):el(e); }
+  new MutationObserver(ms=>{ for(const m of ms){ if(m.type==="attributes") el(m.target); else m.addedNodes.forEach(tree); } })
+    .observe(D,{subtree:true,childList:true,attributes:true,attributeFilter:["style"].concat(ATTR)});
+  // canvas: colours set in code (a colour already mapped, e.g. a CSS custom property read back, isn't mapped twice)
+  const cmap=map;
+  for(const P of [window.CanvasRenderingContext2D&&CanvasRenderingContext2D.prototype, window.OffscreenCanvasRenderingContext2D&&OffscreenCanvasRenderingContext2D.prototype]){
+    if(!P) continue;
+    for(const k of ["fillStyle","strokeStyle","shadowColor"]){ const d=Object.getOwnPropertyDescriptor(P,k); if(!d||!d.set) continue;
+      Object.defineProperty(P,k,{configurable:true,enumerable:d.enumerable,get:d.get,set(v){ d.set.call(this,cmap(v)); }}); }
+  }
+  if(window.CanvasGradient){ const ac=CanvasGradient.prototype.addColorStop; CanvasGradient.prototype.addColorStop=function(o,c){ return ac.call(this,o,cmap(c)); }; }
+  sheets();
+  document.addEventListener("DOMContentLoaded",()=>{ sheets(); tree(document.body); });
+  addEventListener("load",sheets);
+})();
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -169,6 +256,9 @@
     <span style="flex:1"></span>
     <button class="btn" id="waOpen" title="Postcode areas to alert on, in addition to your local area">📍 Monitored areas</button>
     <button class="btn" id="cog">⚙ feeds / keys</button>
+    <button class="btn" id="themeBtn" onclick="gbTheme.toggle()" title="Light or dark theme (all pages)" hidden></button>
+    <button class="btn pcx" id="popClose" title="Close (Esc)" hidden>✕</button>
+    <script>(function(){ const b=document.getElementById("themeBtn"); b.textContent=gbTheme.get()==="light"?"☾ dark":"☀ light"; b.hidden=window.top!==window; })();</script>
   </div>
   <div class="feedstrip" id="feedstrip"></div>
 
@@ -1057,6 +1147,12 @@ function styleNatOff(v){
   else if(v>=25000 && v<50000) col="rgb(255,214,0)";      // yellow 25k–50k
   el.style.color=col;                                      // "" -> inherits default ink
 }
+// Severity bars (By operator / Countries): linear, out of 10,000 customers off until someone passes
+// that, then out of the largest; coloured by the dashboard's power-cuts alert bands for that total.
+function sevScale(vals){ return Math.max(10000, Math.max.apply(null, vals.concat([0]))); }
+function sevBar(v, mx){ v=v||0;
+  var c = v>=500000 ? "rgb(255,62,165)" : v>=100000 ? "var(--bad)" : v>=25000 ? "rgb(255,214,0)" : "var(--ok)";
+  return '<div class="bar" style="width:'+Math.round(100*Math.min(v,mx)/mx)+'%;background:'+c+'"></div>'; }
 function renderSplit(incs){
   var plOff=0,plInc=0,unOff=0,unInc=0;
   (incs||[]).forEach(function(i){ var off=i.customers_off||0;
@@ -1150,16 +1246,15 @@ function renderOps(ops){
   if(countryMode){ renderOpsByCountry(); return; }
   $("opshead").innerHTML='<th>DNO</th><th class="num">off</th><th class="num">inc</th><th>severity</th><th>feed</th><th></th>';
   var muted = pcMutedGet();
-  var max = Math.max(1, Math.max.apply(null, ops.map(function(o){return o.customers_off||0;})));
+  var max = sevScale(ops.map(function(o){return o.customers_off||0;}));
   var rows = ops.slice().sort(function(a,b){return (b.customers_off||0)-(a.customers_off||0);});
   $("opsbody").innerHTML = rows.map(function(o){
-    var w = Math.round(100*(o.customers_off||0)/max);
     var pct = o.customers_tracked ? ((100*(o.customers_off||0)/o.customers_tracked).toFixed(3)+"%") : "";
     var m = muted.indexOf(o.dno)>=0;
     return '<tr class="oprow'+(m?" muted":"")+'"><td>'+o.dno+"</td>"+
       '<td class="num" title="'+pct+' of tracked">'+fmt(o.customers_off)+"</td>"+
       '<td class="num">'+fmt(o.incidents)+"</td>"+
-      '<td><div class="bar" style="width:'+w+'%"></div></td>'+
+      '<td>'+sevBar(o.customers_off, max)+'</td>'+
       '<td><span class="st '+o.status+'">'+
         ({ok:"live","stale":"stale","no-key":"key needed","no-feed":"no feed",error:"down"}[o.status]||o.status)+
         "</span></td>"+
@@ -1172,7 +1267,7 @@ function renderOps(ops){
 // or no-customer-count rows (e.g. SPEN) add 0 to 'off' but still count as an incident — the
 // same basis as the national figure. Reporting operators only (as the incident list already is).
 function renderOpsByCountry(){
-  $("opshead").innerHTML='<th>Country</th><th class="num">off</th><th class="num">inc</th><th>severity</th>';
+  $("opshead").innerHTML='<th>Country</th><th class="num">off</th><th class="num">inc</th><th>severity</th><th></th><th></th>';
   var agg={};
   ((last&&last.incidents)||[]).forEach(function(i){
     var cn=countryOf(i.lat,i.lon)||"Unknown";
@@ -1181,13 +1276,12 @@ function renderOpsByCountry(){
   });
   var rows=Object.keys(agg).map(function(k){return {name:k,off:agg[k].off,inc:agg[k].inc};})
              .sort(function(a,b){return (b.off-a.off)||(b.inc-a.inc);});
-  var max=Math.max.apply(null,rows.map(function(r){return r.off;}).concat([1]));
+  var max=sevScale(rows.map(function(r){return r.off;}));
   $("opsbody").innerHTML=rows.map(function(r){
-    var w=Math.round(100*r.off/max);
     return "<tr><td>"+r.name+"</td>"+
       '<td class="num">'+fmt(r.off)+"</td>"+
       '<td class="num">'+fmt(r.inc)+"</td>"+
-      '<td><div class="bar" style="width:'+w+'%"></div></td></tr>';
+      '<td>'+sevBar(r.off, max)+'</td><td></td><td></td></tr>';
   }).join("");
 }
 
@@ -1960,7 +2054,23 @@ function drawRate(cv,hist){
 })();
 
 // ---- settings modal ---------------------------------------------------------
+// Which operators have a key saved (names only) -> "✓ key entered" under each row once its feed is live.
+var keysSaved = [];
+function keyState(dno, st){
+  if(keysSaved.indexOf(dno) < 0) return "";
+  if(st === "ok" || st === "stale") return '<div class="keyst ok">✓ key entered</div>';
+  if(st === "no-key") return '<div class="keyst wait">key saved · checking the feed…</div>';
+  return '<div class="keyst bad">key saved · feed down</div>';
+}
 function openModal(){
+  fetch("/api/powercut-keys",{cache:"no-store"}).then(function(r){return r.json();})
+    .then(function(j){ keysSaved = (j && j.configured) || []; }).catch(function(){})
+    .then(renderKeyRows);
+  renderKeyRows();
+  $("savemsg").textContent="";
+  $("modal").classList.add("show");
+}
+function renderKeyRows(){
   var ops = (last&&last.operators)||GATED.map(function(o){return {dno:o,status:"no-key"};});
   var byDno={}; ops.forEach(function(o){byDno[o.dno]=o;});
   $("keyrows").innerHTML = GATED.map(function(dno){
@@ -1971,10 +2081,9 @@ function openModal(){
                          : "paste OpenDataSoft API key";
     return '<div class="keyrow"><label>'+dno+'</label>'+
       '<input type="password" data-dno="'+dno+'" placeholder="'+ph+' ('+lbl+')">'+
-      '<a href="'+KEY_LINKS[dno]+'" target="_blank" rel="noopener">'+(dno==="ESB"?"Feed ↗":"Get a key ↗")+'</a></div>';
+      '<a href="'+KEY_LINKS[dno]+'" target="_blank" rel="noopener">'+(dno==="ESB"?"Feed ↗":"Get a key ↗")+'</a>'+
+      keyState(dno, st)+'</div>';
   }).join("");
-  $("savemsg").textContent="";
-  $("modal").classList.add("show");
 }
 function closeModal(){ $("modal").classList.remove("show"); }
 $("cog").addEventListener("click",openModal);
@@ -1988,7 +2097,7 @@ $("save").addEventListener("click",function(){
   fetch("/api/powercut-keys",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
     .then(function(r){return r.json();})
     .then(function(j){ $("savemsg").textContent = j.ok? "saved — refetching…":"error: "+(j.error||"?");
-      if(j.ok){ setTimeout(function(){ closeModal(); load(); }, 800); } })
+      if(j.ok){ keysSaved = j.configured || keysSaved; renderKeyRows(); setTimeout(function(){ closeModal(); load(); }, 1400); } })
     .catch(function(e){ $("savemsg").textContent="error: "+e.message; });
 });
 
@@ -2078,6 +2187,13 @@ $("waSave").addEventListener("click",function(){
     })
     .catch(function(e){ $("waMsg").innerHTML='<span class="err">error: '+waEsc(e.message)+'</span>'; });
 });
+// Opened inside the dashboard's pop-up: a close button at the right end of the header, in line with the
+// panels (the dashboard no longer floats one at the window's corner); Esc here closes the pop-up too.
+(function(){ if(window.parent===window) return; var x=$("popClose"); if(!x) return; x.hidden=false;
+  function closeMe(){ try{ window.parent.postMessage({gbPc:"close"}, location.origin); }catch(e){} }
+  x.onclick=closeMe;
+  window.addEventListener("keydown",function(e){ if(e.key==="Escape") closeMe(); });   // modals stop their own Esc before it gets here
+})();
 document.addEventListener("keydown",function(e){ if(e.key==="Escape" && $("waModal").classList.contains("show")){ $("waModal").classList.remove("show"); e.stopPropagation(); } });
 waLoad();
 

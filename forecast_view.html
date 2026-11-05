@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261105.15  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -57,6 +57,7 @@
   .bar button{font-family:var(--mono);font-size:11px;color:#04222b;background:var(--accent);
     border:0;border-radius:6px;padding:5px 12px;cursor:pointer}
   .bar button.ghost{color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line)}
+  .titlebar #themeBtn{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
   .status{margin-left:auto;color:var(--ink-faint)}
   .status.err{color:var(--crit)}
   .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start}
@@ -95,10 +96,89 @@
   html.embed .titlebar,html.embed .bar,html.embed .hud,html.embed .foot{display:none}
   html.embed .grid{display:block}
   html.embed .card{background:transparent;border:0;border-radius:0;padding:0}
-  html.embed canvas{width:auto;height:100vh;max-width:100%;margin:0 auto}
-</style></head>
+  html.embed canvas{display:block;width:100vw;height:100vh;margin:0}   /* drawn at the frame's shape: see fitEmbed() */
+</style><script>
+/* ---- Light / dark theme (Andy, 5 Nov 2026) — the same block in every page; keep them identical ----
+   Dark is the design. Light is made from it: every colour the page uses (stylesheets, inline styles, SVG fill /
+   stroke, canvas drawing) has its lightness re-mapped (dark backgrounds -> light, light text -> dark, data colours a
+   slightly deeper shade of the same hue); hue, saturation and transparency are kept. Choice in localStorage
+   "gbTheme" ("light" | "dark", default dark), shared by every page and frame on this server; a change reloads the
+   other open pages. Elements (and their contents) marked data-keep-colours are left as they are. */
+(function(){
+  let T="dark"; try{ T=localStorage.getItem("gbTheme")==="light"?"light":"dark"; }catch(e){}
+  const D=document.documentElement; D.dataset.theme=T;
+  window.gbTheme={ get:()=>T, set:t=>{ try{ localStorage.setItem("gbTheme",t); }catch(e){} location.reload(); },
+    toggle:()=>window.gbTheme.set(T==="light"?"dark":"light"), map:c=>c };
+  addEventListener("storage",e=>{ if(e.key==="gbTheme"&&(e.newValue==="light"?"light":"dark")!==T) location.reload(); });
+  if(T!=="light") return;
+  D.style.colorScheme="light";
+  // lightness map, dark design -> light (L in 0..1): monotonic, steep for the darkest (backgrounds), flatter for
+  // text and data so faint text stays readable on white
+  const LP=[[0,.985],[.066,.962],[.08,.84],[.1,.81],[.13,.76],[.17,.66],[.22,.58],[.3,.48],[.4,.36],[.5,.30],[.6,.26],[.75,.19],[.9,.11],[1,.05]];   // page background near white; panels ~15 % darker grey; text and lines dark (Andy, 5 Nov)
+  const lmap=l=>{ for(let i=1;i<LP.length;i++) if(l<=LP[i][0]){ const a=LP[i-1],b=LP[i]; return a[1]+(b[1]-a[1])*(l-a[0])/(b[0]-a[0]); } return .08; };
+  const C=new Map(), OUT=new Set();
+  const NAMED={white:[255,255,255],black:[0,0,0]};
+  function parse(s){
+    let m;
+    if((m=/^#([0-9a-f]{3,8})$/i.exec(s))){ let h=m[1]; if(h.length===3||h.length===4) h=[...h].map(x=>x+x).join("");
+      if(h.length!==6&&h.length!==8) return null; return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16),h.length===8?parseInt(h.slice(6,8),16)/255:1]; }
+    if((m=/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/i.exec(s))){
+      const a=m[4]==null?1:m[4].endsWith("%")?parseFloat(m[4])/100:+m[4]; return [+m[1],+m[2],+m[3],a]; }
+    const k=s.toLowerCase(); if(NAMED[k]) return NAMED[k].concat(1);
+    return null;
+  }
+  function one(s){
+    if(C.has(s)) return C.get(s);
+    if(OUT.has(s.replace(/\s+/g,""))) return s;          // already mapped (a style re-serialised by the browser)
+    const p=parse(s); let out=s;
+    if(p){ let [r,g,b,a]=p; r/=255; g/=255; b/=255;
+      const mx=Math.max(r,g,b), mn=Math.min(r,g,b); let h=0, sat=0; const l=(mx+mn)/2, d=mx-mn;
+      if(d){ sat=l>.5?d/(2-mx-mn):d/(mx+mn); h=mx===r?((g-b)/d+(g<b?6:0)):mx===g?((b-r)/d+2):((r-g)/d+4); h/=6; }
+      if(l<.2) sat*=.35;                                   // backgrounds and borders: near-neutral greys (the dark design's navy tint reads as blue when light)
+      const L=sat>.35&&l>.3?Math.max(lmap(l),.38):lmap(l), q=L<.5?L*(1+sat):L+sat-L*sat, P=2*L-q;   // pale data colours: no darker than a mid tone
+      const hue=t=>{ t<0&&(t+=1); t>1&&(t-=1); return t<1/6?P+(q-P)*6*t:t<1/2?q:t<2/3?P+(q-P)*(2/3-t)*6:P; };
+      const R=Math.round(255*(sat?hue(h+1/3):L)), G=Math.round(255*(sat?hue(h):L)), B=Math.round(255*(sat?hue(h-1/3):L));
+      out=a<1?`rgba(${R},${G},${B},${+a.toFixed(3)})`:`rgb(${R},${G},${B})`; }
+    C.set(s,out); OUT.add(out); return out;
+  }
+  const RX=/#[0-9a-fA-F]{3,8}\b|rgba?\([^()]*\)|\b(?:white|black)\b/g;
+  const map=v=>typeof v==="string"&&v?v.replace(RX,one):v;
+  window.gbTheme.map=map;
+  // stylesheets (custom properties included); each sheet once
+  const done=new WeakSet();
+  function rules(list){ for(const r of list){ if(r.style){ const st=r.style; for(let i=0;i<st.length;i++){ const n=st[i], v=st.getPropertyValue(n), nv=map(v); if(nv!==v) st.setProperty(n,nv,st.getPropertyPriority(n)); } }
+    if(r.cssRules) rules(r.cssRules); } }
+  function sheets(){ for(const sh of document.styleSheets){ if(done.has(sh)) continue; try{ rules(sh.cssRules); done.add(sh); }catch(e){ done.add(sh); } } }
+  // inline styles and SVG paint attributes, each value once (what we wrote is remembered, so a rewrite isn't re-mapped)
+  const W=new WeakMap(), ATTR=["fill","stroke","stop-color","flood-color","lighting-color","color"];
+  function el(e){
+    if(e.nodeType!==1||e.closest&&e.closest("[data-keep-colours]")) return;
+    let w=W.get(e); if(!w){ w={}; W.set(e,w); }
+    const s=e.getAttribute("style"); if(s&&s!==w.style){ const ns=map(s); if(ns!==s) e.setAttribute("style",ns); w.style=ns; }
+    for(const a of ATTR){ const v=e.getAttribute(a); if(v&&v!==w[a]){ const nv=map(v); if(nv!==v) e.setAttribute(a,nv); w[a]=nv; } }
+  }
+  function tree(n){ if(n.nodeType!==1) return; el(n); if(n.tagName==="STYLE"||n.tagName==="LINK") setTimeout(sheets,0);
+    for(const e of n.querySelectorAll("[style],[fill],[stroke],[stop-color],[color],style")) e.tagName==="STYLE"?setTimeout(sheets,0):el(e); }
+  new MutationObserver(ms=>{ for(const m of ms){ if(m.type==="attributes") el(m.target); else m.addedNodes.forEach(tree); } })
+    .observe(D,{subtree:true,childList:true,attributes:true,attributeFilter:["style"].concat(ATTR)});
+  // canvas: colours set in code (a colour already mapped, e.g. a CSS custom property read back, isn't mapped twice)
+  const cmap=map;
+  for(const P of [window.CanvasRenderingContext2D&&CanvasRenderingContext2D.prototype, window.OffscreenCanvasRenderingContext2D&&OffscreenCanvasRenderingContext2D.prototype]){
+    if(!P) continue;
+    for(const k of ["fillStyle","strokeStyle","shadowColor"]){ const d=Object.getOwnPropertyDescriptor(P,k); if(!d||!d.set) continue;
+      Object.defineProperty(P,k,{configurable:true,enumerable:d.enumerable,get:d.get,set(v){ d.set.call(this,cmap(v)); }}); }
+  }
+  if(window.CanvasGradient){ const ac=CanvasGradient.prototype.addColorStop; CanvasGradient.prototype.addColorStop=function(o,c){ return ac.call(this,o,cmap(c)); }; }
+  sheets();
+  document.addEventListener("DOMContentLoaded",()=>{ sheets(); tree(document.body); });
+  addEventListener("load",sheets);
+})();
+</script>
+</head>
 <body><div class="wrap">
-  <div class="titlebar"><span class="dot" id="live"></span><h1>Forecast view</h1></div>
+  <div class="titlebar"><span class="dot" id="live"></span><h1>Forecast view</h1>
+    <button id="themeBtn" onclick="gbTheme.toggle()" title="Light or dark theme (all pages)"></button></div>
+  <script>document.getElementById("themeBtn").textContent=gbTheme.get()==="light"?"☾ dark":"☀ light";</script>
 
   <div class="bar">
     <label>server</label><input class="url" id="base" value="" placeholder="blank = same origin">
@@ -171,31 +251,258 @@ async function pull(){
   try{
     const r=await fetch(url,{cache:'no-store'}); const ov=await r.json();
     if(!ov.rain_probe || !ov.rain_probe.situational){ setStatus('no rain_probe.situational in response (is the probe running? needs wind)',true); return; }
-    last=Date.now(); APIU=ov.api_usage||null; render(ov.rain_probe.situational, ov.rain_probe.situational_speak||[], ov.rain_probe.would_speak||[]);
+    last=Date.now(); APIU=ov.api_usage||null; COND=(ov.wind&&ov.wind.conditions)||null; render(ov.rain_probe.situational, ov.rain_probe.situational_speak||[], ov.rain_probe.would_speak||[]);
     $('live').classList.add('live'); setStatus('updated just now');
   }catch(e){ $('live').classList.remove('live'); setStatus('cannot reach '+base+' — '+e.message,true); }
 }
+// The radar grid on its own, each minute: a new RainViewer frame then shows within about a minute of its
+// publication (the full /api/ea it otherwise comes with is cached for 5 minutes on the server).
+let rtimer=null;
+async function pullRadar(){
+  if(!SIT||!hasLoc()) return;
+  const base=$('base').value.replace(/\/$/,'');
+  try{ const j=await (await fetch(`${base}/api/radar-grid?lat=${$('lat').value}&lon=${$('lon').value}`,{cache:'no-store'})).json();
+    if(j&&j.b64&&j.ts&&(!SIT.radar_grid||!SIT.radar_grid.ts||j.ts>=SIT.radar_grid.ts)){ SIT.radar_grid=j; draw(); } }catch(e){}
+}
 function setStatus(t,err){ const s=$('status'); s.textContent=t; s.classList.toggle('err',!!err); }
-function start(){ saveCfg(); if(timer) clearInterval(timer); pull();
-  timer=setInterval(pull, Math.max(10,+$('every').value||30)*1000); }
+function start(){ saveCfg(); if(timer) clearInterval(timer); if(rtimer) clearInterval(rtimer); pull();
+  timer=setInterval(pull, Math.max(10,+$('every').value||30)*1000); rtimer=setInterval(pullRadar, 60000); }
 
 // ---- canvas ----
 const c=$('rad'), g=c.getContext('2d');
 let SIT=null, SPK=[], WS=[];
 let HIT=[];   // hover targets in canvas coords: {x,y,r,html}
 let APIU=null; // per-day API-call tally {date,counts,total}
+let COND=null; // home conditions (OpenWeather: temp, humidity) for the snow / rain call
+
+/* ---- radar overlay (SIT.radar_grid, from rain_probe.radar_grid) ----
+   The newest RainViewer frame as rain-rate cells (0.5 km), drawn under the rings and gauges at up to 75 % opacity,
+   coloured by rain rate (key bottom-left). The frame is 10-20 min old, so it is moved on to now by its motion vector
+   (measured from the radar's last ~30 min: at least two of three frame pairs must agree). Where there is rain but the
+   pairs disagree, the motion is uncertain and the frame is shown as measured, not moved on a guess; the 850 hPa wind
+   moves it only when there is too little rain to measure. The key gives the radar motion and the 850 hPa wind side
+   by side. Translation only, no growth or decay.
+   Clicking the key switches between "moved to now" and the frame as measured. Snow: radar can't tell snow from
+   rain, so the colours follow the wet-bulb temperature at home (OpenWeather temperature and humidity): at or below
+   1 C snow colours (blues), 1-2 C sleet (pinks), above that rain (green to red). */
+// weather-app convention (Andy, 31 Oct): rain green -> yellow -> red -> magenta, sleet pinks, snow blues to white
+const RR_STEPS=[[0.1,'#1f7a3a'],[0.5,'#2fa84f'],[1,'#5fd35b'],[2,'#c6e23a'],[4,'#f5d33a'],[8,'#f59a2a'],[16,'#e5322d'],[32,'#b3127a']];
+const SL_STEPS=[[0.1,'#7a2f5f'],[0.5,'#a8407f'],[1,'#cf5a9f'],[2,'#e57ab7'],[4,'#f29acb'],[8,'#f8bcdc'],[16,'#fcdcec'],[32,'#ffffff']];
+const SN_STEPS=[[0.1,'#1b3f8f'],[0.5,'#2557c4'],[1,'#3b7be8'],[2,'#5f9cf5'],[4,'#88bbfa'],[8,'#b3d4fd'],[16,'#d9eaff'],[32,'#ffffff']];
+let RG=null, RGK=null, RG_PROJ=true; try{ RG_PROJ=localStorage.getItem('fvRadarProj')!=='0'; }catch(e){}
+let RG_KEYBOX=null;
+function wetBulb(t,rh){ if(t==null||rh==null) return null;   // Stull (2011), degrees C
+  return t*Math.atan(0.151977*Math.sqrt(rh+8.313659))+Math.atan(t+rh)-Math.atan(rh-1.676331)+0.00391838*Math.pow(rh,1.5)*Math.atan(0.023101*rh)-4.686035; }
+function precipKind(){ const tw=COND?wetBulb(COND.temp,COND.humidity):null;
+  return {tw, kind: tw==null?'rain':tw<=1?'snow':tw<=2?'sleet':'rain'}; }
+function rgBuild(rg, steps){   // the grid as an image, one pixel per cell
+  const n=rg.n, raw=atob(rg.b64), cv=document.createElement('canvas'); cv.width=n; cv.height=n;
+  const x=cv.getContext('2d'), im=x.createImageData(n,n);
+  const rgb=steps.map(s=>{ const c=window.gbTheme?gbTheme.map(s[1]):s[1], m=/rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c);   // the theme's colours, as the key
+    return m?[+m[1],+m[2],+m[3]]:[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)]; });
+  const hc=[255,255,255];                                             // hail stays white in both themes (Andy)
+  for(let k=0;k<n*n;k++){ const byte=raw.charCodeAt(k), mm=byte/10; if(mm<0.1) continue;
+    if(byte===255){ im.data[4*k]=hc[0]; im.data[4*k+1]=hc[1]; im.data[4*k+2]=hc[2]; im.data[4*k+3]=235; continue; }   // >= 55 dBZ: possible hail, white (Andy, 5 Nov)
+    let i=0; while(i+1<steps.length && mm>=steps[i+1][0]) i++;
+    const a=Math.min(.75, .45+.30*Math.min(1, Math.log2(mm/0.1)/8));          // light rain fainter; at most 75 % (Andy)
+    im.data[4*k]=rgb[i][0]; im.data[4*k+1]=rgb[i][1]; im.data[4*k+2]=rgb[i][2]; im.data[4*k+3]=Math.round(a*255); }
+  x.putImageData(im,0,0); return cv; }
+function drawRadarGrid(cx,cy,R,KM){
+  RG_KEYBOX=null;
+  const rg=SIT&&SIT.radar_grid; if(!rg||!rg.b64||!rg.n) return null;
+  const pk=precipKind(), steps=pk.kind==='snow'?SN_STEPS:pk.kind==='sleet'?SL_STEPS:RR_STEPS, key=rg.ts+'|'+pk.kind+'|'+rg.b64.length;
+  if(RGK!==key){ RG=rgBuild(rg, steps); RGK=key; }
+  const mo=rg.motion, age_h=Math.max(0,(Date.now()/1000-rg.ts)/3600);
+  const mv=RG_PROJ&&mo&&(mo.src==='radar'||mo.src==='steering')&&mo.vx!=null;   // uncertain motion: shown as measured
+  const ex=mv?mo.vx*age_h:0, ny=mv?mo.vy*age_h:0;     // km moved east / north since the frame
+  const half=rg.km+rg.cell_km/2, s=R/KM;
+  g.save(); g.beginPath(); g.arc(cx,cy,R,0,7); g.clip();
+  g.imageSmoothingEnabled=true; g.drawImage(RG, cx+(ex-half)*s, cy-(ny+half)*s, 2*half*s, 2*half*s);
+  g.restore();
+  return {rg, pk, steps, ex, ny, age_h, mv};
+}
+/* ---- home nowcast line, top left (Andy, 5 Nov): what is happening AT HOME now, or when rain is due to start ----
+   In order: rain measured at home now (radar box / nearest gauge, as the at-home voice) with, when OpenWeather's
+   minute nowcast shows it stopping within the hour, "stopping around hh:mm"; else the approach engine's arrival
+   window for rain heading this way (radar / gauges / steering wind, ETA already corrected for the data's age);
+   else the minute nowcast's onset within the hour; else Open-Meteo's 15-minute forecast within 3 h ("possible",
+   it's a model); else dry. The small second line names the source. Snow / sleet follow the wet-bulb at home. */
+function homeNow(){
+  if(!SIT) return null;
+  const hm=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
+  const r5=t=>Math.round(t/300)*300, now=Date.now()/1000, pk=precipKind();
+  const noun=pk.kind==='snow'?'snow':pk.kind==='sleet'?'sleet':'rain';
+  const band=mm=>mm==null||mm<0.3?0:mm<2?1:mm<5?2:mm<10?3:4;
+  const adj=b=>b===4?'Very heavy ':b===3?'Heavy ':b===2?'Moderate ':'';
+  const cap=x=>x.charAt(0).toUpperCase()+x.slice(1);
+  const cd=t=>{ const m=Math.round((t-now)/60); return m>0&&m<=60?' · in '+m+' min':''; };   // live countdown (redrawn every 15 s)
+  const ab=d=>String(d||'').replace(/north/g,'N').replace(/south/g,'S').replace(/east/g,'E').replace(/west/g,'W').replace(/-/g,'');
+  const mn=(COND&&COND.minute||[]).filter(m=>m[0]>now-60).sort((a,b)=>a[0]-b[0]);
+  const hi=SIT.home_int||{};
+  // a few words only (Andy, 5 Nov): what / when on the main line, the source on the small one
+  if(SIT.here||(hi.src&&hi.band>0)){
+    const b=Math.max(1,hi.band||1); let t=cap((adj(b).toLowerCase()||'light ')+noun)+' now', sub=hi.src||'measured';
+    if(mn.length>=20){ let run=0, stop=null; for(const m of mn){ if((m[1]||0)<0.1){ if(!run) stop=m[0]; run++; if(run>=10) break; } else { run=0; stop=null; } }
+      if(run>=10&&stop){ t+=' · stops '+hm(r5(stop)); sub+=' · nowcast'; } }
+    return {t, sub, lvl:b};
+  }
+  const ep=SIT.approach_episode||{}, th=ep.threat;
+  if(th&&th.eta_lo!=null&&th.eta_hi!=null&&!th.too_far){
+    const t0=(SIT.ts||now), a=r5(t0+th.eta_lo*60), z=r5(t0+th.eta_hi*60), b=band(th.peak_mm);
+    const when=a<=now?'any minute':(z-a<=900?'~'+hm(r5((a+z)/2)):hm(a)+'–'+hm(z))+cd(a);
+    return {t:cap(adj(b).toLowerCase()+noun)+' '+when, sub:'from '+ab(th.dir)+(th.edge_km!=null?' · '+Math.round(th.edge_km)+' km':'')+' · '+(th.measured?'measured':'wind est.'), lvl:Math.max(1,b)};
+  }
+  const on=mn.find(m=>(m[1]||0)>=0.1);
+  if(on) return {t:cap(noun)+' ~'+hm(r5(on[0]))+cd(on[0]), sub:'nowcast', lvl:1};
+  const f15=((COND&&COND.home_fc&&COND.home_fc.m15)||[]).find(m=>m[0]>now&&m[0]<=now+3*3600&&(m[1]||0)>=0.3);
+  if(f15) return {t:cap(noun)+' possible '+hm(r5(f15[0]-900)), sub:'model', lvl:0};
+  return {t:'Dry next 3 h', sub:'radar · gauges · model', lvl:-1};
+}
+function drawHomeNow(W, maxW){
+  const h=homeNow(); if(!h) return;
+  const hl=SIT&&SIT.radar_grid&&SIT.radar_grid.hail;
+  if(hl&&hl.n){ h.t+=' · hail nearby'; h.sub+=' · hail '+Math.round(hl.near_km)+' km '+abbr(hl.bearing); h.lvl=Math.max(h.lvl,3); }
+  const x0=14, y0=12, col=h.lvl>=3?'#ff6b6b':h.lvl===2?'#f5b942':h.lvl>=0?'#5bd6e0':'#8fa0b5';
+  g.save(); g.textAlign='left'; g.textBaseline='top';
+  // wrap the main line at its natural breaks to the room beside the radar circle
+  g.font='bold 17px monospace';
+  const words=h.t.split(/(?<= ·| —| here now| from the [a-z-]+)(?= )/), L=[]; let cur='';
+  words.forEach(wd=>{ const c=(cur+wd); if(cur&&g.measureText(c.trim()).width>maxW){ L.push(cur.trim()); cur=wd; } else cur=c; }); if(cur.trim()) L.push(cur.trim()); for(let i=0;i<L.length;i++) L[i]=L[i].replace(/ [·—]$/,'');
+  const w1=Math.max(...L.map(l=>g.measureText(l).width)); g.font='12px monospace'; const w2=g.measureText(h.sub).width;
+  g.fillStyle='rgba(8,12,18,.78)'; g.fillRect(x0-6, y0-6, Math.min(W-x0, Math.max(w1,w2)+14), 22*L.length+24);
+  g.font='bold 17px monospace'; g.fillStyle=col; L.forEach((l,i)=>g.fillText(l, x0, y0+22*i));
+  g.font='12px monospace'; g.fillStyle='#8fa0b5'; g.fillText(h.sub, x0, y0+22*L.length+1);
+  g.restore();
+}
+function drawRadarKey(info, W, H){
+  if(!info) return;
+  const {rg, pk, steps, ex, ny, age_h, mv}=info, x0=14, y0=H-40, mo=rg.motion, sw=rg.steer;
+  g.font='13.3px monospace'; g.textAlign='left'; g.fillStyle='#8fa0b5';     // 1 pt larger (Andy, 5 Nov)
+  const kind=pk.kind==='snow'?'snow':pk.kind==='sleet'?'sleet / mixed':'rain';
+  const t=new Date(rg.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
+  const d=Math.hypot(ex,ny), dir=Math.round((Math.atan2(ex,ny)*180/Math.PI+360)%360);
+  const hm=s=>new Date(s*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
+  const pub=rg.pub?` (pub ${hm(rg.pub)})`:'', ageM=Math.round(age_h*60);
+  const l1h=`radar ${t}${pub}`, l1=l1h+' · '+(mv?`moved to now: ${d.toFixed(1)} km → ${dir}° (${mo.src==='radar'?'radar':'850 hPa'})`
+    :mo&&!RG_PROJ?`as measured (click to move)`
+    :mo&&mo.src==='uncertain'?`as measured: motion uncertain`
+    :`motion unknown`);
+  // the radar's own motion and the 850 hPa wind side by side
+  const vec=(vx,vy)=>`${Math.hypot(vx,vy).toFixed(0)} km/h → ${Math.round((Math.atan2(vx,vy)*180/Math.PI+360)%360)}°`;
+  const p2=[mo&&mo.src!=='steering'&&mo.vx!=null?`radar ${vec(mo.vx,mo.vy)}`:'',
+    sw?`850 hPa ${sw.kmh.toFixed(0)} km/h → ${sw.to_deg}°`:''].filter(Boolean), l2=p2.join(' · ');
+  // wrap at the " · " breaks to the room left of the rain-rate box when it sits beside the key (narrow panels)
+  const mb=(!MH_HIDDEN&&MH_BOX&&MH_BOX.y<y0+32&&MH_BOX.x>x0+120)?MH_BOX.x:W, maxW=mb-x0-14;
+  const wrap=parts=>{ const out=[]; let cur='';
+    parts=parts.flatMap(q=>g.measureText(q).width>maxW&&q.includes(': ')?[q.slice(0,q.indexOf(': ')+1), q.slice(q.indexOf(': ')+2)]:[q]);   // a part too long on its own: break after its colon
+    parts.forEach(q=>{ const c=cur?cur+' · '+q:q; if(cur&&g.measureText(c).width>maxW){ out.push(cur); cur=q; } else cur=c; }); if(cur) out.push(cur); return out; };
+  // the colour scale: narrower swatches if needed; its units label on its own line when it won't fit beside it
+  const HL=rg.hail&&rg.hail.n?1:0, NS=steps.length+HL;               // possible hail in the frame: one more swatch
+  const bw=Math.max(22,Math.min(36,Math.floor(maxW/NS))), unit=`mm/h · ${kind}`+(pk.tw!=null?` (wet-bulb ${pk.tw.toFixed(1)} °C)`:'');
+  const unitRow=NS*bw+6+g.measureText(unit).width<=maxW;
+  const lines=wrap(p2).concat(wrap([l1h, l1.slice(l1h.length+3)]), unitRow?[]:[unit]), LH=18, top=y0-8-LH*(lines.length-1)-16;
+  { const bwid=Math.min(maxW+12, Math.max(...lines.map(l=>g.measureText(l).width), NS*bw+150)+12);
+    g.fillStyle='rgba(8,12,18,.78)'; g.fillRect(x0-6, top, bwid, y0+32-top); g.fillStyle='#8fa0b5'; }   // dark backing: the text crosses the rings
+  lines.forEach((l,i)=>g.fillText(l, x0, y0-8-LH*(lines.length-1-i)));
+  steps.forEach((st,i)=>{ g.globalAlpha=.75; g.fillStyle=st[1]; g.fillRect(x0+i*bw, y0, bw-2, 10); g.globalAlpha=1;
+    if(bw>=30||i%2===0||i===steps.length-1){ g.fillStyle='#8fa0b5'; g.fillText(i===steps.length-1?st[0]+'+':String(st[0]), x0+i*bw, y0+26); } });   // narrow swatches: every other number
+  if(HL){ const hx=x0+steps.length*bw, wp=document.createElement('canvas'); wp.width=wp.height=1;   // white swatch drawn as an image:
+    wp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([255,255,255,255]),1,1),0,0);   // the theme leaves it white
+    g.drawImage(wp, hx, y0, bw-2, 10); g.strokeStyle='#8fa0b5'; g.lineWidth=1; g.strokeRect(hx+.5, y0+.5, bw-3, 9);
+    g.fillStyle='#8fa0b5'; g.fillText('hail?', hx, y0+26); }
+  if(unitRow) g.fillText(unit, x0+NS*bw+6, y0+10);
+  RG_KEYBOX={x:x0, y:top, w:Math.max(...lines.map(l=>g.measureText(l).width), steps.length*bw+200), h:y0+32-top};
+}
+/* ---- highest rain rate in the plot: bar plot, bottom right (SIT.max_hist, from rain_probe.maxh_public) ----
+   Each bar is the highest rate in its time slot, seen by radar anywhere within the 40 km plot and / or by any
+   physical EA gauge on it (sea net points are radar / model proxies, so not counted). 1 h: 5-minute bars,
+   6 h: 15-minute, 24 h: 1-hour. Log scale like the key (0.1 to 32+ mm/h), coloured with the radar key's
+   colours. No bar = no data for that slot; a short grey tick = data, but dry. Choices remembered. */
+const MH_SPANS={'1h':[3600,300],'6h':[21600,900],'24h':[86400,3600]};
+let MH_SPAN='6h', MH_SRC='both'; try{ MH_SPAN=localStorage.getItem('fvMhSpan')||'6h'; MH_SRC=localStorage.getItem('fvMhSrc')||'both'; }catch(e){}
+if(!MH_SPANS[MH_SPAN]) MH_SPAN='6h'; if(!['radar','gauge','both'].includes(MH_SRC)) MH_SRC='both';
+let MH_BTNS=[], MH_BARS=[], MH_BOX=null, MH_DRAG=null, MH_HIDDEN=false;
+try{ MH_HIDDEN=localStorage.getItem('fvMhHidden')==='1'; }catch(e){}
+// position: the box's top-left as fractions of the canvas, remembered per panel shape (the wall's radar,
+// the Rivers & floods page's and the full page differ); null = the default, bottom right
+const mhPosKey=(W,H)=>'fvMhPos.'+Math.round(10*W/H);
+function mhPosGet(W,H){ try{ const p=JSON.parse(localStorage.getItem(mhPosKey(W,H))||'null'); return Array.isArray(p)?p:null; }catch(e){ return null; } }
+function mhPosSet(W,H,p){ try{ p?localStorage.setItem(mhPosKey(W,H),JSON.stringify(p)):localStorage.removeItem(mhPosKey(W,H)); }catch(e){} }
+function drawMaxHist(W,H,steps){
+  MH_BTNS=[]; MH_BARS=[]; MH_BOX=null;
+  const mh=SIT&&SIT.max_hist; if(!mh) return;
+  if(MH_HIDDEN){                                   // collapsed to a tab, bottom right: click to show
+    g.save(); g.font='12px monospace'; const lab='▸ rate plot', tw=g.measureText(lab).width+16, th=22, tx=W-tw-12, ty=H-th-12;
+    g.fillStyle='rgba(11,16,22,.88)'; g.strokeStyle='#2c3d4f'; g.beginPath(); g.roundRect?g.roundRect(tx,ty,tw,th,5):g.rect(tx,ty,tw,th); g.fill(); g.stroke();
+    g.fillStyle='#8fa0b5'; g.textAlign='left'; g.textBaseline='middle'; g.fillText(lab,tx+8,ty+th/2+1); g.restore();
+    MH_BTNS.push({x:tx,y:ty,w:tw,h:th,act:()=>{ MH_HIDDEN=false; try{ localStorage.setItem('fvMhHidden','0'); }catch(e){} }});
+    return; }
+  const bw=Math.round(Math.min(380,Math.max(270,W*0.38))), bh=182;
+  let x0=W-bw-12, y0=H-bh-12; const pos=MH_DRAG?MH_DRAG.pos:mhPosGet(W,H);
+  if(pos){ x0=Math.round(pos[0]*W); y0=Math.round(pos[1]*H); }
+  x0=Math.max(4,Math.min(W-bw-4,x0)); y0=Math.max(4,Math.min(H-bh-4,y0));
+  MH_BOX={x:x0,y:y0,w:bw,h:bh,drag:{x:x0,y:y0,w:bw-30,h:22}};   // the title row drags it
+  g.save();
+  g.fillStyle='rgba(11,16,22,.88)'; g.strokeStyle='#22303f'; g.lineWidth=1;
+  g.beginPath(); g.roundRect?g.roundRect(x0,y0,bw,bh,8):g.rect(x0,y0,bw,bh); g.fill(); g.stroke();
+  g.font='13px monospace'; g.textAlign='left'; g.textBaseline='alphabetic'; g.fillStyle='#8fa0b5';
+  g.fillText('max rain rate in plot', x0+10, y0+19);
+  g.fillStyle='#566277'; g.fillText('⠿', x0+bw-48, y0+19);           // drag grip
+  g.font='14px monospace'; g.fillStyle='#8fa0b5'; g.textAlign='center'; g.fillText('✕', x0+bw-16, y0+19); g.textAlign='left';
+  MH_BTNS.push({x:x0+bw-28,y:y0+4,w:24,h:22,act:()=>{ MH_HIDDEN=true; try{ localStorage.setItem('fvMhHidden','1'); }catch(e){} }});
+  // chips: span, then source
+  let cx=x0+10; const cy=y0+28, ch=20;
+  const chip=(lab,on,act)=>{ g.font='12px monospace'; const w=g.measureText(lab).width+12;
+    g.fillStyle=on?'#3fb6c9':'#0f1620'; g.strokeStyle=on?'#3fb6c9':'#2c3d4f'; g.beginPath(); g.roundRect?g.roundRect(cx,cy,w,ch,4):g.rect(cx,cy,w,ch); g.fill(); g.stroke();
+    g.fillStyle=on?'#04222b':'#8fa0b5'; g.fillText(lab,cx+6,cy+14); MH_BTNS.push({x:cx,y:cy,w,h:ch,act}); cx+=w+4; };
+  ['1h','6h','24h'].forEach(k=>chip(k,MH_SPAN===k,()=>{ MH_SPAN=k; try{ localStorage.setItem('fvMhSpan',k); }catch(e){} }));
+  cx+=8;
+  [['radar','radar'],['gauge','gauges'],['both','both']].forEach(([k,l])=>chip(l,MH_SRC===k,()=>{ MH_SRC=k; try{ localStorage.setItem('fvMhSrc',k); }catch(e){} }));
+  // slots
+  const [span,slot]=MH_SPANS[MH_SPAN], now=Date.now()/1000, tEnd=Math.ceil(now/slot)*slot, n=Math.round(span/slot), tS=tEnd-n*slot;
+  const val=new Array(n).fill(null), src=new Array(n).fill('');
+  const put=(t0,dur,mm,lab)=>{ const a=Math.max(0,Math.floor((t0-tS)/slot)), b=Math.min(n-1,Math.floor((t0+dur-1-tS)/slot));
+    for(let i=a;i<=b;i++){ if(t0+dur<=tS+i*slot) continue; if(val[i]==null||mm>val[i]){ val[i]=mm; src[i]=lab; } } };
+  if(MH_SRC!=='gauge') (mh.radar||[]).forEach(r=>{ if(r[0]+(mh.radar_s||600)>tS) put(r[0],mh.radar_s||600,r[1],'radar'); });
+  if(MH_SRC!=='radar') (mh.gauge||[]).forEach(r=>{ if(r[0]+(mh.gauge_s||300)>tS) put(r[0],mh.gauge_s||300,r[1],r[2]||'gauge'); });
+  // plot area + log scale 0.1 .. 64 mm/h
+  const L=x0+36, R=x0+bw-10, T=y0+58, B=y0+bh-24, pw=R-L, ph=B-T;
+  const Y=v=>B-Math.max(0,Math.min(1,Math.log2(Math.max(v,0.1)/0.1)/Math.log2(640)))*ph;
+  g.font='11px monospace'; g.textAlign='right'; g.textBaseline='middle';
+  [1,4,16].forEach(v=>{ const y=Y(v); g.strokeStyle='rgba(90,110,140,.22)'; g.beginPath(); g.moveTo(L,y); g.lineTo(R,y); g.stroke(); g.fillStyle='#6b7c92'; g.fillText(String(v),L-5,y); });
+  g.save(); g.translate(x0+9,(T+B)/2); g.rotate(-Math.PI/2); g.textAlign='center'; g.fillStyle='#566277'; g.fillText('mm/h',0,0); g.restore();
+  g.strokeStyle='#2c3d4f'; g.beginPath(); g.moveTo(L,B+.5); g.lineTo(R,B+.5); g.stroke();
+  const sw=pw/n, gap=Math.min(2,sw*0.2);
+  const colOf=mm=>{ let i=0; while(i+1<steps.length&&mm>=steps[i+1][0]) i++; return steps[i][1]; };
+  for(let i=0;i<n;i++){ const x=L+i*sw+gap/2, w=sw-gap, v=val[i]; if(v==null) continue;
+    const t0=tS+i*slot, f=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
+    if(v<0.1){ g.fillStyle='#3a4a5c'; g.fillRect(x,B-2,w,2); }
+    else { g.fillStyle=colOf(v); g.fillRect(x,Y(v),w,B-Y(v)); }
+    MH_BARS.push({x:L+i*sw,y:T,w:sw,h:ph+2,html:`<b>${f(t0)}–${f(t0+slot)}</b><br>`+(v<0.1?'dry':`${v.toFixed(v<10?1:0)} mm/h`)+` · ${src[i]==='radar'?'radar (anywhere in the plot)':'gauge: '+src[i]}`}); }
+  // time axis
+  g.font='11px monospace'; g.textBaseline='top'; g.fillStyle='#6b7c92';
+  g.textAlign='left'; g.fillText('−'+MH_SPAN, L, B+5); g.textAlign='right'; g.fillText('now', R, B+5);
+  g.textAlign='center'; g.fillText('−'+(MH_SPAN==='1h'?'30m':MH_SPAN==='6h'?'3h':'12h'), (L+R)/2, B+5);
+  if(!val.some(v=>v!=null)){ g.font='11px monospace'; g.textAlign='center'; g.textBaseline='middle'; g.fillStyle='#566277'; g.fillText('no history yet — builds as the radar and gauges report', (L+R)/2, (T+B)/2); }
+  g.restore();
+}
 // last-said memory per channel: {phrase,tier,ts}
 const lastSaid={rain:null, now:null};
 const seen={rain:new Set(), now:new Set()};
 function xy(cx,cy,R,b,d,KM){const r=b*Math.PI/180,rr=R*Math.min(d,KM)/KM;return[cx+rr*Math.sin(r),cy-rr*Math.cos(r)];}
 function draw(){
-  const W=c.width,H=c.height,cx=W/2,cy=H/2,KM=40,R=Math.min(W,H)/2-70;
+  const W=c.width,H=c.height,PT=H>W*1.3,KM=40,MG=PT?32:70,R=Math.min(W,H)/2-MG,cx=W/2,cy=Math.min(H/2,R+MG+(PT?14:0));   // portrait: circle near the top (the nowcast line sits in the corner beside it), room below for the key and rate plot   // portrait panel (EA page): circle nearly to the edges and at the top, the spare height below it for the key and rate plot   // portrait panel: circle at the top, the spare height below it for the key and rate plot
   g.clearRect(0,0,W,H); HIT=[];
+  if(window.gbTheme&&gbTheme.get()==='light'){ g.fillStyle='#161e29'; g.beginPath(); g.arc(cx,cy,R,0,7); g.fill(); }   // light theme: the radar circle on a darker grey than its panel (Andy, 5 Nov)
+  const rgi=drawRadarGrid(cx,cy,R,KM);     // under everything else
   g.strokeStyle=col.line;g.lineWidth=1;g.font='16px monospace';g.fillStyle=col.lab;g.textAlign='left';
   [5,20,40].forEach(km=>{g.beginPath();g.arc(cx,cy,R*km/KM,0,7);g.stroke();g.fillText(km+' km',cx+2,cy-R*km/KM-3);});
   g.strokeStyle='rgba(90,110,140,.14)';
   for(let a=0;a<360;a+=45){const[x,y]=xy(cx,cy,R,a,KM,KM);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke();}
   if(!SIT){ g.font='17px monospace';g.fillStyle=col.ink;g.textAlign='center';g.fillText('waiting for data…',cx,cy-20); drawHome(cx,cy,R); return; }
+  drawRadarKey(rgi, W, H);
+  drawHomeNow(W, PT?Math.round(W*0.4):Math.max(240,cx-R-24));   // portrait: wrap within the top-left corner
+  drawMaxHist(W, H, rgi?rgi.steps:RR_STEPS);
   // intensity centroid heading
   const it=SIT.intensity||{};
   if(it.bearing!=null){ g.setLineDash([5,4]);g.strokeStyle='rgba(63,182,201,.55)';g.lineWidth=1.5;
@@ -217,7 +524,7 @@ function draw(){
     let tag;
     if(appr){ const _p=[]; const _e=etaLbl(t); if(_e)_p.push(_e); if(t.speed_kmh)_p.push(mph(t.speed_kmh)+'mph'); tag=_p.join(' · '); }
     else if(t.stale){ tag='stale'; }
-    else if(t.move_deg!=null){ tag='→ '+abbr(t.move_deg)+(t.move_kmh?(' · '+mph(t.move_kmh)+'mph'):'')+(t.move_trusted?'':' · speed unverified'); }
+    else if(t.move_deg!=null){ tag='→ '+abbr(t.move_deg)+(t.move_kmh?(' · '+mph(t.move_kmh)+'mph'):'')+mvSrc(t,false); }
     else { tag='drifting'; }
     if(tag){ g.font='15px monospace';g.fillStyle=col.lab;g.fillText(tag,bx,by-rad-6); }
     if(!appr && t.move_deg!=null && t.move_kmh){ const mr=t.move_deg*Math.PI/180, ml=Math.min(rad+26,46);
@@ -228,7 +535,8 @@ function draw(){
     HIT.push({x:bx,y:by,r:rad,html:`<b>#${t.id}${t.snow?' ❄':''}</b> ${BANDS[t.peak_band]}<br>${fromHome(t.bearing,t.dist_km)} · ${t.n} gauge${t.n>1?'s':''}<br>`+
       (appr?('approaching · '+(liveEta(t)||'')+(t.speed_kmh?(' · '+mph(t.speed_kmh)+' mph'):''))
            :(t.stale?'stale — no active gauges this cycle'
-             :(t.move_deg!=null?('moving '+abbr(t.move_deg)+(t.move_kmh?(' at '+mph(t.move_kmh)+' mph'):'')+(t.move_trusted?'':' (speed unverified)')):'drifting')))
+             :(t.move_deg!=null?('moving '+abbr(t.move_deg)+(t.move_kmh?(' at '+mph(t.move_kmh)+' mph'):'')+mvSrc(t,true)):'drifting')))
+      +(appr&&t.verified_by&&t.verified_by.length?('<br>'+(t.move_src||'gauges')+', confirmed by '+t.verified_by.join(', ')):'')
       +(t.speed_note&&!t.speed_verified?('<br><span style="color:#8595a8">'+t.speed_note+'</span>'):'')});
   });
   // probes
@@ -282,6 +590,9 @@ function drawHome(cx,cy){
   HIT.push({x:cx,y:cy,r:15,html:`<b>home</b><br>at-home reading: ${(hm.mm!=null?hm.mm+' mm/h':'—')} · ${(hm.name&&hm.name!=='dry')?hm.name:'dry'}<br><span style="color:#8595a8">model reading at home (nowcast channel). The rain voice’s “at your location” uses the measured reading: ${hiTxt(SIT)}</span>`}); }
 
 function render(sit, spk, ws){
+  // the radar grid also arrives on its own each minute (pullRadar): keep whichever frame is newer
+  const prg=SIT&&SIT.radar_grid;
+  if(prg&&prg.ts&&sit&&(!sit.radar_grid||!sit.radar_grid.ts||sit.radar_grid.ts<prg.ts)) sit.radar_grid=prg;
   SIT=sit; SPK=spk||[]; WS=ws||[]; draw();
   const st=(sit.state||'clear'); const appr=sit.approaching;
   const bcol=st.startsWith('approaching')?col.accent2||'#5b8def':(st.startsWith('continuous')?col.accent:(st.indexOf('shower')>=0?col.warn:(st==='here'?col.crit:col.faint)));
@@ -375,13 +686,20 @@ function liveEta(t){
   return lo+'\u2013'+hi+' min';
 }
 function etaLbl(t){ const e=liveEta(t); return e?(/\d/.test(e)?('ETA '+e):e):''; }
+// where a cell's movement comes from, short (plot) or long (hover): radar, area radar, gauges or the 850 hPa wind,
+// and whether a second source has confirmed it (Andy, 5 Nov)
+function mvSrc(t,long){
+  const s=t.move_src||(t.move_trusted?'gauges':'850 hPa'), v=(t.verified_by||[]).join(', ');
+  if(t.move_trusted) return long?` (${s}${v?', confirmed by '+v:''})`:` · ${s} ✓`;
+  return long?(s==='850 hPa'?' (850 hPa wind only, unverified)':` (${s}, not yet confirmed)`):(s==='850 hPa'?' · 850 hPa wind':` · ${s}, unconfirmed`);
+}
 function tracksHUD(){
   const ts=((SIT&&SIT.tracks)||[]);
   if(!ts.length) return '<div class="trow" style="color:var(--ink-faint)">none</div>';
   return ts.map(t=>{
     const dirw=bearingWord(t.bearing), appr=t.approaching, el=appr?etaLbl(t):'';
     const m=appr?('\u2193 '+(t.speed_kmh?mph(t.speed_kmh)+' mph':'closing')+(el?(' \u00b7 '+el):''))
-      :(t.stale?'stale':(t.move_deg!=null?('\u2192 '+abbr(t.move_deg)+(t.move_kmh?' '+mph(t.move_kmh)+' mph':'')+(t.move_trusted?'':' \u00b7 speed unverified')):'drifting'));
+      :(t.stale?'stale':(t.move_deg!=null?('\u2192 '+abbr(t.move_deg)+(t.move_kmh?' '+mph(t.move_kmh)+' mph':'')+mvSrc(t,false)):'drifting'));
     return `<div class="trow ${appr?'appr':''}"><span>#${t.id}</span> ${dirw} \u00b7 ${t.dist_km} km ${appr?'<span class="chip appr">approaching</span>':'<span class="chip">'+BANDS[t.peak_band]+'</span>'}<span class="m">${m}</span></div>`;
   }).join('');
 }
@@ -423,7 +741,37 @@ setInterval(()=>{ if(last){ const s=Math.round((Date.now()-last)/1000); if(!$('s
 $('go').onclick=()=>{ if(!hasLoc()){ setStatus('set lat / lon first (or open this from the EA page)',true); return; } start(); };
 $('demo').onclick=()=>{ if(timer)clearInterval(timer); $('live').classList.remove('live'); setStatus('demo data');
   render(DEMO.situational, DEMO.speak, DEMO.would); };
-addEventListener('resize',()=>{ if(SIT)draw(); });
+/* Radar-only mode: the canvas takes the frame's shape (760 units high, as wide as the frame's proportions need),
+   so the plot stays round and its labels keep their size whatever the frame's shape. It used to be a fixed
+   900 x 760 drawing stretched to the frame's height but capped at its width, which squashed the circles. */
+function fitEmbed(){ if(!EMBED) return; const w=innerWidth||900, h=innerHeight||760, W=Math.max(300,Math.round(760*w/h));
+  if(c.width!==W||c.height!==760){ c.width=W; c.height=760; } }
+fitEmbed();
+addEventListener('resize',()=>{ fitEmbed(); draw(); });
+// the radar keeps moving between data refreshes; a click on its key switches "moved to now" / "as measured"
+setInterval(()=>{ if(SIT&&SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ) draw(); }, 5000);
+setInterval(()=>{ if(SIT&&!(SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ)) draw(); }, 15000);   // keeps the nowcast countdown and cell ETAs live    // moved on to now every 5 s
+setInterval(()=>{ if(SIT&&SIT.max_hist&&!(SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ)) draw(); }, 60000);   // keeps the max-rate bars moving along
+const cvXY=e=>{ const r=c.getBoundingClientRect(); return [(e.clientX-r.left)*(c.width/r.width),(e.clientY-r.top)*(c.height/r.height)]; };
+let mhJustDragged=false;
+c.addEventListener('pointerdown',e=>{ if(!MH_BOX) return; const [mx,my]=cvXY(e), d=MH_BOX.drag;
+  if(mx<d.x||mx>d.x+d.w||my<d.y||my>d.y+d.h) return;
+  MH_DRAG={sx:mx, sy:my, bx:MH_BOX.x, by:MH_BOX.y, moved:false, pos:[MH_BOX.x/c.width, MH_BOX.y/c.height]};
+  c.setPointerCapture(e.pointerId); tip.style.display='none'; e.preventDefault(); });
+c.addEventListener('pointermove',e=>{ if(!MH_DRAG) return; const [mx,my]=cvXY(e);
+  if(Math.abs(mx-MH_DRAG.sx)+Math.abs(my-MH_DRAG.sy)>3) MH_DRAG.moved=true;
+  MH_DRAG.pos=[(MH_DRAG.bx+mx-MH_DRAG.sx)/c.width, (MH_DRAG.by+my-MH_DRAG.sy)/c.height]; c.style.cursor='grabbing'; draw(); });
+const mhDragEnd=()=>{ if(!MH_DRAG) return; const d=MH_DRAG; MH_DRAG=null;
+  if(d.moved){ mhPosSet(c.width,c.height,MH_BOX?[MH_BOX.x/c.width,MH_BOX.y/c.height]:d.pos); mhJustDragged=true; setTimeout(()=>mhJustDragged=false,0); }   // the clamped position
+  c.style.cursor='default'; draw(); };
+c.addEventListener('pointerup',mhDragEnd); c.addEventListener('pointercancel',mhDragEnd);
+c.addEventListener('dblclick',e=>{ if(!MH_BOX) return; const [mx,my]=cvXY(e), d=MH_BOX.drag;   // double-click the title row: back to the default corner
+  if(mx>=d.x&&mx<=d.x+d.w&&my>=d.y&&my<=d.y+d.h){ mhPosSet(c.width,c.height,null); draw(); } });
+c.addEventListener('click',e=>{ if(mhJustDragged) return; const rect=c.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)*(c.width/rect.width), my=(e.clientY-rect.top)*(c.height/rect.height);
+  const mb=MH_BTNS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h); if(mb){ mb.act(); draw(); return; }   // max-rate plot switches
+  if(!RG_KEYBOX) return; const b=RG_KEYBOX;
+  if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h){ RG_PROJ=!RG_PROJ; try{ localStorage.setItem('fvRadarProj',RG_PROJ?'1':'0'); }catch(_){} draw(); } });
 
 // hover tooltips over any marker
 const tip=document.createElement('div'); tip.id='tip';
@@ -433,12 +781,25 @@ function hitAt(mx,my){ let best=null,bk=1e9;
   for(const h of HIT){ if(Math.hypot(mx-h.x,my-h.y)<=h.r && h.r<bk){ bk=h.r; best=h; } }
   if(best) return best;
   let nb=null,nd=13; for(const h of HIT){ if(h.r>16)continue; const d=Math.hypot(mx-h.x,my-h.y); if(d<nd){nd=d;nb=h;} } return nb; }
-c.addEventListener('mousemove',e=>{ const rect=c.getBoundingClientRect();
+c.addEventListener('mousemove',e=>{ if(MH_DRAG) return; const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(c.width/rect.width), my=(e.clientY-rect.top)*(c.height/rect.height);
-  const h=hitAt(mx,my);
-  if(h){ tip.innerHTML=h.html; tip.style.display='block'; tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; c.style.cursor='pointer'; }
+  if(MH_BOX){ const d=MH_BOX.drag; if(mx>=d.x&&mx<=d.x+d.w&&my>=d.y&&my<=d.y+d.h&&!MH_BTNS.some(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h)){
+    tip.style.display='none'; c.style.cursor='grab'; return; } }
+  const mbar=MH_BARS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h), onBtn=MH_BTNS.some(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h);
+  const h=mbar||hitAt(mx,my);
+  if(onBtn&&!mbar){ tip.style.display='none'; c.style.cursor='pointer'; return; }
+  if(h){ tip.innerHTML=h.html; tip.style.display='block'; placeTip(e); c.style.cursor='pointer'; }
   else { tip.style.display='none'; c.style.cursor='default'; } });
 c.addEventListener('mouseleave',()=>{ tip.style.display='none'; c.style.cursor='default'; });
+// keep the tooltip inside the window (the embedded panels are small): flip it above / left of the
+// pointer when it would run off the bottom / right edge
+function placeTip(e){
+  const w=tip.offsetWidth, h=tip.offsetHeight, W=innerWidth, H=innerHeight;
+  let x=e.clientX+14, y=e.clientY+14;
+  if(x+w>W-4) x=Math.max(4, e.clientX-14-w);
+  if(y+h>H-4) y=Math.max(4, e.clientY-14-h);
+  tip.style.left=x+'px'; tip.style.top=y+'px';
+}
 
 // demo scene
 const DEMO={situational:{state:'approaching',base_state:'approaching',approaching:true,coverage:0.18,
@@ -453,7 +814,7 @@ const DEMO={situational:{state:'approaching',base_state:'approaching',approachin
     {b:330,d:20,kind:'phys',label:'showery',band:3},
     {b:200,d:40,kind:'net',label:'dry',band:0},{b:220,d:40,kind:'net',label:'dry',band:0},{b:180,d:40,kind:'net',label:'dry',band:0}],
   tracks:[{id:1,bearing:317,dist_km:23,peak_band:4,snow:false,n:3,approaching:true,speed_kmh:39,eta_text:'in 35 to 50 minutes',eta_lo:35,eta_hi:50,age_s:1800},
-    {id:2,bearing:95,dist_km:18,peak_band:3,snow:false,n:2,approaching:false,speed_kmh:null,eta_text:null,age_s:1200,move_deg:60,move_kmh:14,move_trusted:true}],
+    {id:2,bearing:95,dist_km:18,peak_band:3,snow:false,n:2,approaching:false,speed_kmh:null,eta_text:null,age_s:1200,move_deg:60,move_kmh:14,move_trusted:false,move_src:'radar',verified_by:[]}],
   probe_points:[{bearing:326,dist_km:15,mm:6,snow:false},{bearing:311,dist_km:16,mm:0,snow:false},{bearing:332,dist_km:11,mm:0,snow:false}],
   probe:{active:true,fresh_clear:false,n:3},
   home:{mm:0.0,band:0,name:'dry'}, net_feed:'degraded', net_sampled_age_s:240, ts:Math.floor(Date.now()/1000),

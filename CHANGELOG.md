@@ -16,8 +16,60 @@ exact tag.
 
 ---
 
+## 2026-11-05
+
+- **Light theme for every page.** A **☀ light** / **☾ dark** button on the dashboard, the wall, the power-cuts page and the forecast view switches every page between the dark design and a light version made from it (each colour keeps its hue; backgrounds light, text dark, data colours a deeper shade). The choice is shared by all pages and frames on the server, and switching on one page reloads the others. (`grid_dashboard.html`, `grid_wall.html`, `powercuts_page.html`, `forecast_view.html`)
+- **Rain cells: movement measured on the radar, confirmed by a second source.** Each tracked cell's speed and heading are now measured on the radar itself (the cell found again in the next frame), then confirmed by gauge hand-over or the mobile probes; the 850 hPa wind is the last fallback, not a gate. Cells no longer show a blanket "speed unverified", and approach alerts are kept to one per episode for the same rain area. (`rain_probe.py`)
+- **Possible hail.** Radar cells at 55 dBZ or more are drawn white in the radar view (a hint, not a detection: the free radar has no dual-polarisation data), the key gains a "hail?" swatch, and the nowcast line and spoken approach alerts mention possible hail nearby. (`rain_probe.py`, `forecast_view.html`)
+- **Radar view: home nowcast line.** Top left of the radar: a few words on rain at home now or when it is due ("Heavy rain now · stops 10:40", "Rain ~10:30 · in 14 min", "Dry next 3 h"), with its source underneath and a live countdown to a due time. (`forecast_view.html`, `rain_probe.py`)
+- **Spoken approach alerts give a clock time.** With a measured speed, arrival is spoken as "around 10:35" or "between 10:30 and 10:45"; within half an hour as "in about 15 minutes" or "soon". (`rain_probe.py`)
+- **Wall: big circuits on the GB map at every zoom.** Any circuit or offshore connection carrying 500 MW or more is now drawn on the zoomed-out GB map, with its end substations, whatever its voltage layer (it fades in from 400 MW); before, offshore connections such as Hornsea's (about 2 GW) appeared only once the map was zoomed in. A layer switched off in the key stays off. (`grid_wall.html` 261105.4)
+- **Wind dials and weather panels.** The dials are larger, with three lines of text under each (the 850 hPa wind in mph and m/s), and the weather panels open with "Temp | Dew point" and "Rain 1h" on one line in a large font sized to the panel. (`grid_dashboard.html`)
+- **Rivers & floods page: the rain & gauge radar fills its column and fits HD screens** (renamed from "gauge radar"); the key and rate plot are kept clear of the radar circle. The power-cuts page opened on its own is centred again. (`grid_dashboard.html`, `forecast_view.html`, `powercuts_page.html`)
+
+## 2026-11-04
+
+- **Frequency panel rebuilt.** Bands are now green 49.8–50.2 Hz, amber to 49.65 / 50.35, red to 49.5 / 50.5 and purple to 49.3 / 50.7 and beyond, on a dial widened to ±0.7 Hz. A histogram beside the dial shows the time spent at each frequency over 1 – 24 h (bin width 0.01 – 0.1 Hz). Labelled ▲ / ▼ markers show excursions on the 2-hour trace and the history plot. The 1-minute-cycle mini plot is gone; the full spectrum is behind a **⤢ spectrum** button. A **🔇 mute alarm** button silences an active frequency alarm until its level changes. (`grid_dashboard.html`)
+- **Frequency history.** Opens on the last 48 hours, zooms in to individual 15-second samples, has hour and 10-minute gridlines, steps by one view width, and in live mode runs with the clock. The min / max band and peaks take the alert colours and sit at the right times. (`grid_dashboard.html`)
+- **Rain radar: motion measured over three frame pairs, fresher frames, max-rate plot.** The picture is moved on to now only by motion the radar measures reliably (uncertain motion is not used), and the key shows it beside the 850 hPa wind. New frames reach the view within about a minute of publication. A movable bar plot shows the highest rain rate in the plot over the last 1 / 6 / 24 h, from radar and / or gauges. (`rain_probe.py`, `forecast_view.html`, `grid_server.py`)
+- **At-home rain / snow and temperature plots, −12 h to +12 h** (wall Rain radar view, Rivers & floods page): measured at home, then OpenWeather's minute nowcast and the Open-Meteo forecast, with dew point. The self-hosted Open-Meteo sync needs `relative_humidity_2m` and `snowfall_water_equivalent` (see README). (`grid_dashboard.html`, `grid_server.py`)
+- **Wall 5120 × 1440: live readouts in the title bar.** Demand, price, carbon, low-carbon %, gas linepack and gas demand, each counting to new values with a 1-hour trend arrow. Server: 1-hour deltas for low-carbon, linepack and gas demand. (`grid_wall.html`, `grid_server.py`)
+- **Dashboard: prompt to turn on audible alarms** two minutes after load if they are still off. (`grid_dashboard.html`)
+- **Gas page and wall: gas panels rearranged; gas storage by country shows % full or days left.** (`grid_dashboard.html`, `grid_wall.html`)
+
+## 2026-10-31
+
+- **Power cuts: severity bars** out of 10,000 customers (or the largest), coloured by the alert bands, on the power-cuts page and the wall; the By country table lines up with By operator. (`powercuts_page.html`, `grid_wall.html`)
+- **Wall: every ETYS boundary gets a turn-down figure**, so a constrained boundary such as B4 can show. (`wall.py`)
+
+## 2026-10-30
+
+- **Wall: constrained boundaries and a Constraint chip.** From Elexon's SO-flagged turn-down instructions the wall works out which ETYS boundary NESO is holding back and by how much; the dashboard and wall show an orange **Constraint** chip (e.g. "Constraint B6 3.6 GW") while 500 MW or more is turned down. (`wall.py`, `grid_wall.html`, `grid_dashboard.html`, `grid_server.py`)
+- **Wall: pinch-point alerts removed.** Near-rating flows in the model were more likely model or rating errors than real overloads, so the circuit alerts and glows built over the previous days were taken out; ETYS boundaries stay, drawn fainter. (`wall.py`, `grid_wall.html`, `grid_dashboard.html`)
+- **Wall: substation and power-cuts panels on the 5120 single screen.** A Power cuts panel counting as the power-cuts page does; the substation panel grows while a substation is selected, has an expand button, output bars and % of GB supply; numbers count to new values with flashing ▲ / ▼ marks; the dashboard's header chips appear in the wall's header. (`grid_wall.html`)
+- **Rain radar: the real radar picture under the gauges.** The radar view draws RainViewer's newest frame around home (0.5 km cells, 40 km each way), moved on to the current time, with a weather-app colour key and snow coloured by wet-bulb temperature. On the wall it is round again, with the local weather beneath it. (`rain_probe.py`, `forecast_view.html`, `grid_dashboard.html`)
+- **Fix: flows jumped on nearly every circuit just after midnight** (FUELINST was requested without a time window). (`grid_server.py`)
+
+## 2026-10-29
+
+- **Wall: real circuit ratings and ETYS boundaries from NESO** (new module `etys.py`): the newest ETYS Appendix B is read for seasonal circuit ratings, and the ETYS study boundaries are drawn with the modelled transfer across each. (`etys.py`, `wall.py`, `grid_wall.html`)
+- **Wall: local networks from the DNOs** (new module `dno_data.py`): the six operators' Embedded Capacity Registers (sites of 1 MW and over), their 132 / 66 / 33 kV line maps, Northern Powergrid's live 132 kV readings and NGED's measured grid supply point imports. (`dno_data.py`, `wall.py`, `grid_wall.html`)
+- **Wall: a better flow model.** Units' output reconciled with Elexon's metered output by fuel (closing the battery gap), embedded wind and solar placed by the registers' capacity, Scotland's share of demand from NESO's metered split, and a national supply check. (`wall.py`)
+- **Wall: generator sites and positions from OpenStreetMap and DESNZ's REPD** (new module `osm_sites.py`): about 3,600 generator sites drawn and named when zoomed in, BM unit positions corrected, and offshore farms joined to their connection points (audited against NESO's TEC register). (`osm_sites.py`, `wall.py`, `grid_wall.html`)
+- **Wall: maps and substation panel.** Detail fades in with zoom, with a button per layer; flows ease to each new model run; circuit values and flow dashes from 5 MW; the regional map zooms to the selected substation; a search box and a scrolling list of every generating substation. (`grid_wall.html`)
+- **Wall: "Gas sources" view** spanning two panels, with gas panels either side and one Expand all / Collapse button. (`grid_wall.html`)
+- **Reservoirs: South West Lakes Trust's weekly table added, long-silent reservoirs hidden, South West Water's page read again after a wording change.** (`reservoirs.py`)
+- **Gas flow diagram: every export route shown once, storage injection on the demand side, terminals slide out like storage.** (`grid_dashboard.html`)
+
+## 2026-10-28
+
+- **Gas storage** (new module `gas_storage.py`): each GB storage site's daily flows and estimated fill, the GB stock, LNG tanks and deliverability from National Gas, and Europe from GIE AGSI+ (free key). Shown as a **System flow | 🛢 Gas storage** switch on the gas page (UK figures, Europe trend against the last five years, or by country), as slide-out storage and LNG columns on the flow diagram, and as a wall view. Rough is no longer counted as storage. New `/api/gas-storage`. (`gas_storage.py`, `grid_server.py`, `grid_dashboard.html`, `grid_wall.html`)
+- **Gas alerts in the main alert list; alerts can be dismissed for 7 days.** New tags NG (National Gas notices), GAS (alarm levels) and STORE. Alert panels collapse to the worst alert with "show N more", and alert wording is cut to the figures. (`grid_server.py`, `grid_dashboard.html`)
+- **Power cuts: the key window shows which operators have a key and whether the feed is live.** (`powercuts_page.html`)
+
 ## 2026-10-25
 
+- **Wall: names for unnamed substations, found automatically.** About 160 of the network's 593 nodes have no name in OpenStreetMap; a background task (a few minutes after start-up, then monthly) borrows one from a nearby named substation or power station, the largest generator connected there, or a location ("Unnamed 275 kV node near Marshfield"). The hover card and substation panel say where each name came from. (`wall.py`, `node_names_seed.json`)
 - **Power cuts: optional keys for Northern Powergrid and UKPN.** Their OpenDataSoft feeds are open, so they ran without a key on the anonymous allowance (5,000 calls a day per IP, shared with anything else on the same connection). **⚙ feeds / keys** now takes an optional free OpenDataSoft account key for each; when one is stored it is sent with every request (Authorization header, never the URL), which uses that account's own allowance instead. (`powercuts.py` 261025.5, `powercuts_page.html` 261025.3, `grid_server.py` 261025.1, README)
 - **Power cuts: incidents plotted in another operator's area are flagged.** SSEN listed a 3-customer LV fault (UF3074) at "BD17 7AX", which is Baildon in West Yorkshire, Northern Powergrid's area; SSEN's own coordinates match that postcode, so the postcode itself is probably mistyped (RG17 7AX Hungerford and BH17 7AX Poole are both SSEN postcodes), and the true place can't be known. Each incident is now checked against the licence areas in `region_polys.json`: one inside another operator's area and more than 5 km outside its own is kept where published and still counted, but drawn faded with a dashed rim, explained in its hover card ("plotted in NPg's area, 205 km outside SSEN's — location as published, probably a wrong postcode"), and left out of the near-you box and the near-you alarm. Points outside every area (Shetland, Achill and other islands the simplified outlines leave out) are not flagged. On 25 Oct this flagged 1 of 1,156 incidents. (`powercuts.py` 261025.4, `powercuts_page.html` 261025.2, `grid_dashboard.html` 261025.1)
 - **Power cuts: Northern Powergrid no longer runs out of its daily API allowance.** NPg showed "down" from 15:38 UTC while its own map was live. OpenDataSoft allows 5,000 anonymous calls a day per IP, and the feeds were read 100 rows per call; with the storm NPg's dataset held about 9,000 rows (one per postcode), so each 5-minute poll cost 93 calls and the allowance ran out at about 13:40 UTC (NPg's reply: 429 "exceeded the requests limit for anonymous users", reset 00:00 UTC). All OpenDataSoft feeds (NPg, UKPN, ENWL, SPEN, NIE) now use the dataset's export endpoint, every row in one call, gzip-compressed, and NPg asks the server for live rows only (6,269 rows, 195 incidents in one call on 25 Oct). Paging remains as a fallback if an export is refused, but not on a quota error. (`powercuts.py` 261025.3)
@@ -475,6 +527,97 @@ Header history began at 260917.1; earlier builds are in the dated entries above.
 - **261024.13** (2026-10-24) — Gas chart: forecast minimum labelled with its time (UT).
 - **261024.14** (2026-10-24) — Gas alarm category voices the gas probe's events with gas tones; Alarm levels strip on the gas page; 10 % chip no longer sounds.
 - **261025.1** (2026-10-25) — Near-you power-cut alarm skips incidents flagged outside their operator's area.
+- **261028.1** (2026-10-28) — Gas flow diagram: ◂ Storage & LNG slide-out (sites, LNG tanks, days of gas; closed by default); Rough shown as production; 🛢 Gas storage button and pop-up overlay; `#embed=gasflow` view.
+- **261028.1** (2026-10-28) — Gas flow diagram: ◂ Storage & LNG slide-out (sites, LNG tanks, days of gas; closed by default); Rough shown as production; 🛢 Gas storage button and pop-up overlay; `#embed=gasflow` view.
+- **261028.2** (2026-10-28) — Gas Alarm levels strip: nominal badges outlined green; official notices grey when unpublished.
+- **261028.3** (2026-10-28) — Flow diagram with storage out: text 1.3× larger, column re-spaced, storage node "Storage", site lines joined into one trunk.
+- **261028.4** (2026-10-28) — Flow diagram with storage out: small text 2 larger and brighter; days-of-gas and LNG cargo lines split; estimate note in the column header.
+- **261028.5** (2026-10-28) — Storage lines use the flow-wave connector; lines clear of the % figures; "Interconnector Export"; spine moved right with storage out.
+- **261028.6** (2026-10-28) — "storage at max withdrawal" badge label; "Days of gas at today's demand" in the storage column.
+- **261028.7** (2026-10-28) — Storage-column flow waves use the main ribbons' wave spacing instead of a fixed 4 cycles.
+- **261028.8** (2026-10-28) — Storage lines stacked into the trunk (own slots), gentler curves, thinner, square-ended wave segments.
+- **261028.9** (2026-10-28) — Gas page: System flow | Gas storage switch above the diagram (storage view replaces it; header button and pop-up removed; `#gasview=gs`); stock headline in TWh; Europe trend draws the previous five years with a key.
+- **261028.10** (2026-10-28) — Storage lines start at dots; their widths follow each site's live flow, the stack capped at the Storage → linepack ribbon's width.
+- **261028.11** (2026-10-28) — Dot at the storage trunk's end beside the Storage label.
+- **261028.12** (2026-10-28) — Storage out: spine and demand side shifted right by the room the labels allow; Hide storage drawn in the diagram above the header.
+- **261028.13** (2026-10-28) — Gas Alarm levels strip centred at the page width like the other gas panels.
+- **261028.14** (2026-10-28) — Alert bar and NESO system warnings collapsible (show N more; one card open at a time; recent notices behind show).
+- **261028.15** (2026-10-28) — Gas alerts (NG / GAS / STORE) in the alert bar, kept out of the electricity status; dismiss 7 d on alerts open a day or more, with a dismissed list and restore.
+- **261028.16** (2026-10-28) — LNG tanks box wider and one line shorter; LNG lines branch from one spine with rounded corners and end in dots a measured gap before each label.
+- **261029.1** (2026-10-29) — Balancing: Other balancing services strip on a round ~4-line axis step, taller, markers in its key.
+- **261029.2** (2026-10-29) — Flow diagram: per-source ◂/▾ (one open at a time): storage column, LNG column (tanks box + terminal rows), sub-terminal split for St Fergus / Teesside / Bacton; ◂ Storage & LNG button removed.
+- **261029.3** (2026-10-29) — Terminal sub-terminals slide out as a column (rows, share bars, lines stacked into the label) instead of splitting in place.
+- **261029.4** (2026-10-29) — Flow diagram: wall two-panel mode (from the wall's message) with one Expand all / Collapse button; expanded, every source column stacked level with its source, drawing taller to fit.
+- **261029.5** (2026-10-29) — Wall two-panel expanded view widens to the panel's shape and re-fits on resize.
+- **261029.6** (2026-10-29) — Wall expanded view: main lines, spine and labels scaled up; demand labels fit; measured label widths for where column lines end.
+- **261029.7** (2026-10-29) — Wall expanded view: one-line column rows in wider columns (about a third of the panel).
+- **261029.8** (2026-10-29) — Storage / terminal column lines: round-ended trunk, end dots sized to the line.
+- **261029.9** (2026-10-29) — Column end dots back to their usual size (round-ended trunk kept).
+- **261029.10** (2026-10-29) — Merged column lines: round line ends, square-ended flow waves (no blur).
+- **261029.11** (2026-10-29) — Merged column lines rounded only at the label end (no seam at the join).
+- **261029.12** (2026-10-29) — Column lines run unbroken (stacked) to the label instead of joining a separate merged line; waves continuous through the join.
+- **261029.13** (2026-10-29) — Flow diagram: Storage (injection) always on the demand side; duplicate Interconnector Export line dropped when named exports are drawn.
+- **261029.14** (2026-10-29) — Flow diagram: Bacton export routes always shown (grey idle), importing routes only on the supply side; interconnector imports blue like Langeled.
+- **261029.15** (2026-10-29) — EA gauge radar re-placed on any layout change (no ghost behind the reservoir detail).
+- **261029.16** (2026-10-29) — Reservoirs: "N not shown" note for long-silent reservoirs; South West Lakes Trust credited by name.
+- **261029.17** (2026-10-29) — Header electricity chip leaves out the wall's modelled pinch-point alerts (domain "grid").
+- **261030.1** (2026-10-30) — Header chip filter for the wall's pinch-point alerts removed again (the alerts are gone).
+- **261030.2** (2026-10-30) — Constraint chip (orange, from 500 MW, from the snapshot's `constraint`); click opens the network map.
+- **261030.3** (2026-10-30) — Constraint chip gets the ⚡ icon, so it is the same height as the others.
+- **261030.4** (2026-10-30) — Power-cuts chip on one line; mode tag amber "unplanned" / blue "incl. planned".
+- **261030.5** (2026-10-30) — Network map pop-up's own ✕ removed (the map page has its own, in line with its panels).
+- **261030.6** (2026-10-30) — `#embed=wx`: the Rivers & floods page's local weather block alone (for the wall's rain radar view).
+- **261030.7** (2026-10-30) — `eaRadarPos()` corrects for the page's body zoom on wide windows (the gauge radar landed up-left of its slot).
+- **261031.1** (2026-10-31) — Gas flow: ribbons stacked where they meet the spine (`stackY`); column dots `gfDotR` (the main dots' size); column line ends 10 px on screen before the label (`gfGapU`).
+- **261031.2** (2026-10-31) — Power-cuts pop-up: corner `#pcClose` removed; closes on the page's `{gbPc:"close"}` message.
+- **261104.1** (2026-11-04) — Gas storage By country: `gsvCty` switch (% full | days left, `gbGsCty`); days bars to `GSV_DMAX` 180 d coloured by `GSV_SEV` bands (> 90, 60–90, 30–60, 7–30, < 7 d).
+- **261104.2** (2026-11-04) — Frequency: `FREQ_BANDS` + `freqBandsFill()`; dial `MAX` 0.7 with purple zones; faint bands on `drawFreq` and `fhDraw`; `colOf`/`THS`/`fhLevel` add the 49.7/50.3 and purple levels.
+- **261104.3** (2026-11-04) — `FREQ_BANDS` amber to 49.6/50.4, red 49.5–49.6/50.4–50.5; `drawFreq` range 49.3–50.7; `fhDraw` frame 49.3–50.7, padded only past it.
+- **261104.4** (2026-11-04) — Frequency: `#mcMini` removed, `#mcExpand` moved to the footer (⤢ spectrum), `spInit` no longer preloads `/api/freq-raw`; `.freq-dial-read` moved under the reading; dial scale `K` 1.2 (1 in `embedfreq`); `freqDevMarks()` on `drawFreq` (raw points) and `fhDraw` (bucket min/max).
+- **261104.5** (2026-11-04) — `freqDevMarks()`: one marker per block (readings < 60 px apart) at the largest deviation, labelled with the deviation from 50 Hz.
+- **261104.6** (2026-11-04) — Gas `#gasTrend`: drawn at the canvas's content size (padding excluded), H 196, padT 27 / padB 30, CSS padding 5 / 4 px.
+- **261104.7** (2026-11-04) — `freqDevMarks()`: value centred below ▲ / above ▼, 11.3 px (8.5 pt), `MERGE` 64.
+- **261104.8** (2026-11-04) — Frequency history: opens at 48 h; `FH_MINSPAN` 900; `fhSeries()` raw 15 s samples (`frLoad`/`frMerge`, `/api/freq-raw`) at ≤ `FH_RAW_SPAN` 6 h, dots when ≥ 4 px per sample; hour / 10-min gridlines and 1 min – 12 h time labels.
+- **261104.9** (2026-11-04) — Frequency history: `#fhPrev` / `#fhNext` relabelled ◀ step / step ▶, pan by `fhSpan` (was 7 days).
+- **261104.10** (2026-11-04) — Frequency history: hour gridlines when `fhSpan` < 18 h, 10-minute gridlines when < 3 h.
+- **261104.11** (2026-11-04) — Frequency history: envelope ribbon (`Path2D`) refilled in `FREQ_BANDS` colours clipped to each alert band; `fhZoom` calls `fhSetFollow(false)`.
+- **261104.12** (2026-11-04) — Frequency history: `fhSeries()` aggregates the raw samples into ~2 px buckets for views ≤ `FH_FINE_SPAN` 7 d (cached in `FRA`); series carry `c` (0 raw, 0.5 bucket centre) used by drawing, hover and lock.
+- **261104.13** (2026-11-04) — Frequency history: `fhDataHi()` includes the newest raw sample; `fhAtLive()` / `fhRelive()` after pan, zoom and drag end; FR reset on open; `frLoad` re-pins in live mode.
+- **261104.14** (2026-11-04) — Frequency history: `fhLiveHi()` (now) as the live edge; `fhClock()` every 100 ms (redraws ≥ 1/s in live mode, continuously while pulsing); `FHP` new readings pulse for `FH_PULSE_MS` 5 s.
+- **261104.15** (2026-11-04) — Frequency history: pulse draws the line only (no rings); `fhReadout()` (the main page's `freqPlaylist[freqPlayIdx]`) shown in a 34 px strip above the plot with a white dot on the plot; `fhClock` redraws when it steps.
+- **261104.16** (2026-11-04) — Frequency history: `fhIngest()` / `fhFromMain()` take the main page's `freqSamples` as they arrive; readout time line; readout in `#freqVal`'s font (strip 44 px). `#freqDelta` hidden.
+- **261104.17** (2026-11-04) — Frequency alarm: `#freqMuteBtn` (`srMuteToggle` / `srMuteCheck`); `SR.muted` skips bursts and the power-cut voice, cleared on a tier or side change or when the alarm clears.
+- **261104.18** (2026-11-04) — Frequency history readout: box filled and outlined from `#freqCard`'s `sev-bg-*` / `sev-bd-*` classes.
+- **261104.19** (2026-11-04) — `armPromptShow()` 2 min after load when not armed (`#armPrompt` under `#alarmBtn`); `arm()` removes it.
+- **261104.20** (2026-11-04) — At-home plots: `wxPlotsHtml()` / `wxRainDraw()` / `wxTempDraw()` (−12 h to +12 h); `<details>` panel on the Rivers & floods page (`gbWxPlotsOpen`), plain block filling the space in `embedwx`; `embedwx` dials and text larger, one row.
+- **261104.21** (2026-11-04) — `eaPressDraw()` caption: centre note / hover readout only where it fits between the end labels.
+- **261104.22** (2026-11-04) — `FREQ_BANDS` amber to 49.65 / 50.35 (dial zones to 0.01 Hz, `fhLevel`, `colOf`, `THS`); frequency histogram `#freqHistBox` (`fhgLoad` / `fhgAdd` / `fhgDraw`, `gbFreqHistP`); dial `K` 1.1 (0.85 on narrow wall panels); compact risk box.
+- **261104.23** (2026-11-04) — Frequency histogram resolution `fhgR` (0.01 / 0.02 / 0.05 / 0.1 Hz, `gbFreqHistR`), axis zoomed to the readings below 0.1 Hz.
+- **261104.24** (2026-11-04) — Frequency histogram axis fixed at 49.3–50.7 Hz for all resolutions.
+- **261104.25** (2026-11-04) — Histogram header text removed; buttons wrap when narrow; histogram width/height capped on the wall so the dial and risk panel keep their size.
+- **261104.26** (2026-11-04) — `wxTempDraw()`: forecast joined to the latest reading (`WX_JOIN` 6 h cosine fade of the offset, per series; model values kept for the hover); forecast from now − 2 h.
+- **261104.27** (2026-11-04) — Temperature plot legend and hover: "joined to the latest reading" removed.
+- **261104.28** (2026-11-04) — `html.embedfreq .freq-hist` max-width none (fills to `#freqRisk`).
+- **261104.29** (2026-11-04) — `fqFont()` (+4/3 px in `embedfreq`) for `fhgDraw`, `drawFreq` y labels and `drawFreqDial` labels; `embedfreq` CSS sizes +1.33 px for ≤ 10.5 px text; `.fh-p` wraps.
+- **261104.30** (2026-11-04) — `embed=freq`: `#freqCard h2` size = the wall's `.pn h2` size ÷ the frame's scale (on load, after 1.5 s and on resize); 13.67 px fallback.
+- **261104.31** (2026-11-04) — `embedfreq` `#freqCard h2` colour `--ink`.
+- **261104.32** (2026-11-04) — `wxTempDraw` `fcAt()`: first forecast hour for a time up to 1 h before it.
+- **261105.1** (2026-11-05) — `.ea-radar-slot` height `min(620px,70vh)` (was `min(560px,62vh)`).
+- **261105.2** (2026-11-05) — `.ea-radar-slot` `aspect-ratio:5/6`, `max-height:min(820px,85vh)`.
+- **261105.3** (2026-11-05) — `.ea-radar-slot` `aspect-ratio:10/13`, `max-height:min(880px,88vh)` (rate plot clear of the circle).
+- **261105.4** (2026-11-05) — Light / dark theme block (`gbTheme`), `#themeBtn` in the header; no corner glows in light.
+- **261105.5** (2026-11-05) — Theme lightness map darker for text and lines.
+- **261105.6** (2026-11-05) — Theme: panels ~15 % darker, background/border tones desaturated.
+- **261105.7** (2026-11-05) — `window.name` `gbwall` cleared on load.
+- **261105.8** (2026-11-05) — "gauge radar" → "rain & gauge radar".
+- **261105.9** (2026-11-05) — `wxTempDraw`: logged readings joined across gaps up to 2 h, a dot per reading.
+- **261105.10** (2026-11-05) — Wind dials: merged first lines, `.wd-svg` fills the cell, surface arrow `aLen` 39, 850 hPa glyph ×0.7 on top.
+- **261105.11** (2026-11-05) — `.ea-radar-slot` `aspect-ratio:20/29`, `max-height:min(920px,90vh)`.
+- **261105.12** (2026-11-05) — 850 hPa line "mph | m/s"; `.wd-gust` / `.wd-sub` lines one size, no wrap.
+- **261105.13** (2026-11-05) — `.ea-detail` `container-type:inline-size`; `.ea-radar-slot` `width:100%`, `height:min(145cqw,920px,90vh)` (no aspect-ratio).
+- **261105.14** (2026-11-05) — `eaRadarPos()`: slot height fitted once to the visible space (480 px – min(1.45 × width, 920 px)).
+- **261105.15** (2026-11-05) — `.wd-big` top lines: temp | dew point (block 3), rain / snow 1h (block 4).
+- **261105.16** (2026-11-05) — Top lines as one line with labels in the value font and brightness, blank line after; `wdFitBig()` fits them to the panel width (cap 20/24 px, floor row size + 1).
 
 ### `powercuts_page.html`
 
@@ -515,6 +658,17 @@ Header history began at 260916.1; earlier builds are in the dated entries above.
 - **261025.1** (2026-10-25) — Hover card notes when an incident is shown at its postcodes' centre instead of the operator's location.
 - **261025.2** (2026-10-25) — Incidents flagged outside their operator's area drawn faded with a dashed rim and left out of the near-you box.
 - **261025.3** (2026-10-25) — Key settings list Northern Powergrid and UKPN with optional keys.
+- **261028.1** (2026-10-28) — Key window shows "✓ key entered" / "key saved · feed down" for each operator with a saved key.
+- **261028.1** (2026-10-28) — Key window shows "✓ key entered" / "key saved · feed down" for each operator with a saved key.
+- **261031.1** (2026-10-31) — Severity bars (By operator, Countries) linear out of max(1,000, largest), coloured by the alert bands (`sevScale`, `sevBar`).
+- **261031.2** (2026-10-31) — Severity bars out of max(10,000, largest).
+- **261031.3** (2026-10-31) — By operator / By country tables share fixed column widths (`.ops` `table-layout:fixed`); country rows get the empty feed and mute cells.
+- **261031.4** (2026-10-31) — `.ops th.num` right-aligned.
+- **261031.5** (2026-10-31) — ✕ in the header when framed (`#popClose`, posts `{gbPc:"close"}` to the dashboard); Esc forwards the same.
+- **261105.1** (2026-11-05) — Light / dark theme block, `#themeBtn` (top-level only).
+- **261105.2** (2026-11-05) — Theme lightness map darker for text and lines.
+- **261105.3** (2026-11-05) — Theme: panels ~15 % darker, background/border tones desaturated.
+- **261105.4** (2026-11-05) — `div.top` (was `.top`, which also matched `html.top` and made the page a flex box).
 
 ### `powercuts.py`
 
@@ -570,6 +724,17 @@ Header carried only the current build; builds before 260923.1 are in the dated e
 - **261022.1** (2026-10-22) — "At your location" intensity measured at home (radar box at home / nearest gauge < 5 km, two-reading smoothing) instead of the 40 km 90-min peak; at-home heartbeats 20/60 min; re-entry hold and upgrade window 30 min; hourly heavier-rain-nearby note.
 - **261022.2** (2026-10-22) — Alert audit fixes: rain at home also from radar (two frames); area words from current measured readings, "Continuous rain across the area", quiet after rain at home, 20-min re-announce floor; nowcast lines from measured home reading, gauge confirm within 5 km, visibility-only fog line, no wind/persistence claims; all-clear only when the area is clear.
 - **261024.1** (2026-10-24) — Forward nowcast "heavier" message: time from the minute series (`intensify_eta_min`), "soon" when unknown, "Rain is continuing at your location…" after 30 min of measured rain at home (`home_wet_since`); edge trigger keyed on a stable identity so the countdown doesn't re-speak.
+- **261030.1** (2026-10-30) — `radar_grid()`: the newest RainViewer frame as 0.5 km rain-rate cells around home, with a motion vector from the frame before (`_rg_motion()`, correlation) or the steering flow; in `situational["radar_grid"]`.
+- **261104.1** (2026-11-04) — Max-rate history: `maxh_radar()` (each new frame's `_rg_max()` within `RG_KM`; one-off background back-fill of past frames via `_rg_grid(tile_fn=…)`), `maxh_gauges()` (physical gauges within the plot, 5-minute slots, 15-minute readings), `maxh_public()` → `situational.max_hist`; `rain_max_hist.json`.
+- **261104.2** (2026-11-04) — `maxh_home()`: radar box at home and nearest gauge within `SIT_HERE_KM` into the max-rate store (`home_radar` / `home_gauge` in `maxh_public()`).
+- **261104.3** (2026-11-04) — `_rv_newest_frame()`: frame list every `RV_MAPS_DUE_S` once a frame is due, else `RV_MAPS_TTL_S`; records publication / first seen (`_rv['pub']`, on the grid as `pub` / `seen`); `radar_view_grid()` with the engine's last flow.
+- **261104.4** (2026-11-04) — `om_get_json(..., public_only=True)` / `_om_request(public_only)`: public host only, for variables the local instance doesn't sync.
+- **261105.1** (2026-11-05) — `_rg_motion_multi()` (`RG_PAIRS` 3, `RG_AGREE_KMH` 8, `RG_AGREE_FRAC` 0.35): motion `src` radar / uncertain / steering; `_rg_motion_grid()` per-frame 1 km grids (`_rg['mgrids']`); `_rg_fetch_tile()`; `steer` on the grid.
+- **261105.2** (2026-11-05) — `radar_cell_motion()` / `_rg_patch_motion()` (`RG_CELL_BOX_KM` 12), `radar_area_motion()`; `_track_motion()` radar first, verified by `_gauge_motion()` agreement or `_motion_hits()` (`TRACK_HIT_KM` 6, `TRACK_HIT_MIN_MOVE` 4, 45 min); approaching by path miss ≤ `SIT_APPR_MISS_KM` 8; tracks carry `move_src`, `verified_by`; `sit_probe_hist`, mobile `hist`.
+- **261105.3** (2026-11-05) — `approach_episode.threat` adds `eta_lo`, `eta_hi`, `measured`, `snow`, `too_far`.
+- **261105.4** (2026-11-05) — `_eta_say()`: spoken arrival (about N min within 30 min; clock time when measured; minutes on the steering wind); `eta_say` on the threat, used by the alert and confirm phrases.
+- **261105.5** (2026-11-05) — `RG_HAIL_DBZ` 55 / `RG_HAIL_MMH`: hail cells as byte 255, grid `hail` summary.
+- **261105.6** (2026-11-05) — `radar_hail_cells()`; threat `hail` (cone, ≤ `APPR_MAX_KM`); `sit.hail_here` (≤ `HAIL_HERE_KM` 3); "possibly with hail" in the alert, confirm and at-home phrases.
 
 ### `forecast_view.html`
 
@@ -581,6 +746,27 @@ Formerly `engine_view_live.html`, an unversioned diagnostic page served at `/eng
 - **261022.1** (2026-10-22) — "at-home voice" row: the measured at-home reading and its source.
 - **261022.2** (2026-10-22) — State line shows the current area intensity; 90-min peak in brackets only when higher.
 - **261024.1** (2026-10-24) — Dashboard size rules: 1,320 px max width, margins, 980 px single column, phone margins, wide-screen zoom when standalone.
+- **261104.3** (2026-11-04) — `pullRadar()` each minute from `/api/radar-grid` (newer frame kept); key shows published time and minutes moved; redraw every 5 s.
+- **261105.1** (2026-11-05) — Radar not moved when motion is uncertain; key: radar motion vs 850 hPa wind line, pairs agreeing, 13.3 px text on a dark backing.
+- **261105.2** (2026-11-05) — Radar key 20 px lower, shorter wording.
+- **261105.3** (2026-11-05) — Radar key lines wrapped at " · " to the room left of `MH_BOX`.
+- **261105.4** (2026-11-05) — Portrait panel: `cy=min(H/2,R+70)`; key scale `bw` 22–36 to fit, units label on its own line when narrow.
+- **261105.5** (2026-11-05) — Light / dark theme block, `#themeBtn` in the titlebar (top-level only); `rgBuild` uses the mapped key colours.
+- **261105.6** (2026-11-05) — Theme lightness map darker for text and lines.
+- **261105.7** (2026-11-05) — Theme: panels ~15 % darker, tones desaturated; radar circle filled darker grey in light.
+- **261105.8** (2026-11-05) — Portrait margin `MG` 32 (landscape 70).
+- **261105.9** (2026-11-05) — `mvSrc()`: cell movement source / confirmation in the plot tag, hover and tracked-cells list.
+- **261105.10** (2026-11-05) — `homeNow()` / `drawHomeNow()`; portrait circle 58 px lower.
+- **261105.11** (2026-11-05) — Key: every other scale number when swatches < 30 px; long part breaks after its colon.
+- **261105.12** (2026-11-05) — `homeNow()` wording cut to a few words.
+- **261105.13** (2026-11-05) — Hail cells white (unthemed), key "hail?" swatch, "· hail nearby"; `cd()` countdown; 15 s redraw.
+- **261105.14** (2026-11-05) — Portrait circle +14 (was +58) from the top margin; nowcast wraps to 40 % of the width.
+- **261105.15** (2026-11-05) — Tall layout only when height ≥ 1.3 × width (`PT`).
+- **261104.2** (2026-11-04) — `placeTip()` keeps hover text inside the window; max-rate plot draggable by its title row (`fvMhPos.<shape>`, double-click resets) and hideable (`fvMhHidden`).
+- **261104.1** (2026-11-04) — `drawMaxHist()`: max rain rate bar plot, bottom right (1h / 6h / 24h, radar / gauges / both, `fvMhSpan` / `fvMhSrc`); bar hover; redrawn each minute.
+- **261031.1** (2026-10-31) — Radar overlay palette: rain green to red, sleet pinks, snow blues (Andy); opacity 45–75 %.
+- **261030.2** (2026-10-30) — Radar overlay: `radar_grid` drawn under the plot at up to 50 % (75 % from 261031.1), coloured by rain rate (`RR_STEPS`, snow / sleet palettes by wet-bulb at home), moved to now by its motion; key with click toggle (`fvRadarProj`).
+- **261030.1** (2026-10-30) — Radar-only mode draws at the frame's shape (`fitEmbed()`: 760 units high, width to the frame's proportions), so the plot stays round.
 
 ### `metar.py`
 
@@ -598,6 +784,8 @@ Unversioned until 260929.1; earlier changes are in the dated entries above.
 - **260929.1** (2026-09-29) — Header build line added. No code changes.
 - **261024.1** (2026-10-24) — Margins Notice signal: NTS demand forecast vs Expected Available Supply estimate (non-storage supply now + LNG/storage deliverability); day-specific values from the current gas day only; PCLP 0 placeholders ignored; live linepack for the rate guard.
 - **261024.2** (2026-10-24) — Alarm ladder: demand-level alerts, 90/95/100 % margin tiers, live linepack below forecast minimum, PCLP revision, storage cover, price stress; rate guard as corroborator; event list for the dashboard.
+- **261028.1** (2026-10-28) — Rough no longer a storage site (paused): its flow counts as non-storage supply and its deliverability is left out of storage.
+- **261028.1** (2026-10-28) — Rough no longer a storage site (paused): its flow counts as non-storage supply and its deliverability is left out of storage.
 
 ### `owm_onecall.py`
 
@@ -613,6 +801,8 @@ New module at 261016.1.
 - **261016.2** (2026-10-16) — South West Water reservoir-levels page (total and eight reservoirs with SWW's dates), logged by published date to `reservoir_company_log.jsonl` for history.
 - **261016.3** (2026-10-16) — Water companies from Stream open data (ArcGIS feature services, read incrementally when a layer changes, with new layers found by catalogue search) plus company websites (Severn Trent weekly pages, South West Water, Northumbrian, Essex & Suffolk, United Utilities, Bristol Water), merged into `reservoir_store.json` with a daily backup. Per-region capacity-weighted totals; per-source status for monitoring; `series=` for one reservoir's full history.
 - **261024.1** (2026-10-24) — "Republic of Ireland" renamed "Ireland" in the module notes.
+- **261029.1** (2026-10-29) — South West Water website: reads "levels are at" as well as "level is at"; no reservoir rows is now reported as a failure.
+- **261029.2** (2026-10-29) — South West Lakes Trust weekly table (reservoirs South West Water's page doesn't list); reservoirs silent 90+ days left out while the company has current ones.
 
 ### `balancing.py`
 
@@ -627,6 +817,27 @@ New module at 261023.1.
 - **261023.1** (2026-10-23) — New module: /api/wall, /api/wall-network, /api/wall-history, /api/wall-replay for the transmission wall.
 - **261023.2** (2026-10-23) — Replay history and /api/wall-replay removed; 20-minute in-memory interconnector history for the 15-min change.
 - **261024.1** (2026-10-24) — REMIT unavailability reports (units and interconnectors, now and next 24 h) in /api/wall as `outages`.
+- **261025.1** (2026-10-25) — Background node naming from OpenStreetMap (Overpass), cached in `node_names.json` with a committed seed; names overlaid on /api/wall-network.
+- **261029.1** (2026-10-29) — Unit positions from `osm_sites.py` (OpenStreetMap) where available; each unit row carries its position source and km moved.
+- **261029.2** (2026-10-29) — `sites_bytes()` for the new `/api/wall-sites` endpoint (generator sites from `osm_sites.py`).
+- **261030.4** (2026-10-30) — `so_summary()` for the dashboard chip (background PN/BOALF fetch when no fresh wall payload, `_so_areas()`, `_area()`); units' names in the turn-down; `post_b6()` keeps the page's `bnd`.
+- **261030.3** (2026-10-30) — SO-flagged turn-down by node (`_so_turndown()`, `so` in /api/wall); `_seg()` keeps the SO flag; `_level(seg=True)`.
+- **261030.2** (2026-10-30) — Pinch-point store and `pinch_alerts()` removed.
+- **261030.1** (2026-10-30) — `_fuelinst_ic()` keeps the last good interconnector flows for up to 10 minutes through a FUELINST gap (`FI_HOLD_S`).
+- **261029.16** (2026-10-29) — `post_b6()` keeps the page's pinch-point alerts (`_pinch_store()`, validated, at most 30); `pinch_alerts()` returns them while under 5 minutes old.
+- **261029.15** (2026-10-29) — ETYS boundaries sent with /api/wall-network (`etysbnd`).
+- **261029.14** (2026-10-29) — ETYS ratings (`etys.py`) matched to the network's lines and sent with /api/wall-network (`ratings`, `ratings_info`); unnamed nodes' nearby names offered as second-choice names.
+- **261029.13** (2026-10-29) — `_measured()`: NGED live GSP imports matched to nodes (aliases; old, all-zero and shared-operator nodes left out), `meas` in /api/wall; embedded units behind a measured GSP left out of the reconciliation; `_gsp_log()` / `_gsp_check()` score the model's unmeasured estimate against the measurements.
+- **261029.12** (2026-10-29) — `_recon()`: FUELINST reconciliation by fuel (gap at FUELINST's time spread over that fuel's located units, by capacity for OTHER and PS, by output for the rest), `recon` in /api/wall.
+- **261029.11** (2026-10-29) — `_emb_now()`: NESO's embedded wind and solar estimate shared over the nodes by Embedded Capacity Register capacity (registered fraction only), `emb` in /api/wall; NESO embedded capacities read with the demand split.
+- **261029.10** (2026-10-29) — Scotland's share of transmission demand fitted from NESO's Demand Data Update (half-hour x weekday/weekend + embedded wind and solar, refitted every 3 h) and sent as `split` in /api/wall; `post_b6()` keeps the page's modelled transfer per half-hour (`b6_log.json`) and checks it against NESO's metered Scottish transfer.
+- **261029.9** (2026-10-29) — Gunfleet Sands 3: own landing at Waterglade, Clacton (GFS3 newsletter); a landing within 2 km of where another farm's line to the same node starts ends the line there ("to" kind "land").
+- **261029.8** (2026-10-29) — Export cables mapped part way out from the connection (LINK_SEA_KM 15 km): line from the farm to the cable's sea end ("to"), one farm per cable; NODE_RENAME for Sizewell, Heysham, New Deer, Crystal Rig.
+- **261029.7** (2026-10-29) — Offshore connection audit: OFFSHORE_UNITS (Hornsea 3 → Norwich Main, Walney 2 → Stanah, Walney 3, Burbo Bank 1 → Birkenhead); local-network landings ("near") for 12 small farms; nearest node never another wind farm's substation; sources noted per entry.
+- **261029.6** (2026-10-29) — Offshore links follow a farm's mapped 132 kV export cable (OpenStreetMap or operator) to where it ends; Gwynt y Môr → Bodelwyddan.
+- **261029.5** (2026-10-29) — `/api/wall-dnolines?kv=`; OpenStreetMap 132 kV lines an operator's map covers are left out of /api/wall-network; Northern Powergrid live readings by node in /api/wall (`local_live`).
+- **261029.4** (2026-10-29) — `/api/wall-local` (embedded generation per node from `dno_data.py`); offshore farms not in `OFFSHORE_LINKS` use their DNO register GSP; unit rows carry registered capacity (Elexon).
+- **261029.3** (2026-10-29) — `OFFSHORE_LINKS`: offshore wind farms' connection points (TEC register, published project information, mapped export cables); `offlinks` in /api/wall-network and each link's output in /api/wall; the farms' units counted at their connection.
 
 ### `grid_wall.html`
 
@@ -661,6 +872,94 @@ New page at 261023.1.
 - **261024.13** (2026-10-24) — Network pop-up: max 1,320 px wide, centred; stacked scrolling layout below 900 px with key hidden by default.
 - **261024.14** (2026-10-24) — Frequency panel: no wall frame around the embedded card.
 - **261024.15** (2026-10-24) — Regional panel sources: Generators, 7-day generation, My home; source buttons wrap.
+- **261025.1** (2026-10-25) — Borrowed node names, generation-site names and locations for unnamed nodes, with their source in the hover card and panel; shorter map labels.
+- **261028.1** (2026-10-28) — Regional panel: Gas storage source spreading over the map panel (⇤ one panel / ⇥ two panels); single-HD map panel gets the regional source buttons.
+- **261028.1** (2026-10-28) — Regional panel: Gas storage source spreading over the map panel (⇤ one panel / ⇥ two panels); single-HD map panel gets the regional source buttons.
+- **261029.1** (2026-10-29) — Regional source "Gas storage" renamed "Gas sources"; tells the embedded diagram when it spans two panels.
+- **261029.2** (2026-10-29) — Gas panels over the columns either side of the two-panel Gas sources view, with selector buttons where space is short.
+- **261029.3** (2026-10-29) — Unit position source (OpenStreetMap via UK Grid Atlas, or Terravolt) on hover in the substation panel; credit in Data sources.
+- **261029.4** (2026-10-29) — Map layers fade in with zoom (400 kV only fully out); layer buttons in each key strip replace "132 kV dist."; flow dashes from 5 MW, faint below 40 MW.
+- **261029.5** (2026-10-29) — Generators layer: OpenStreetMap generator sites as faint dots (area by capacity, colour by fuel, smaller ones fading in with zoom), hover card, map credit.
+- **261029.6** (2026-10-29) — REPD status and capacity on generator-site hover cards; REPD layer (rings) for operational projects with no OSM site; map credits drawn on top.
+- **261029.7** (2026-10-29) — Circuit values on every circuit carrying 5 MW or more (was 150 MW).
+- **261029.8** (2026-10-29) — Generator and REPD site names when zoomed in, placed around substation names and circuit values, biggest first.
+- **261029.9** (2026-10-29) — Offshore wind farms drawn straight to their connection points, with their published output as dashes and MW values; hover card with the source.
+- **261031.1** (2026-10-31) — Counting tint on KPI figures limited to the digits (`.kpi .v .tn`).
+- **261031.2** (2026-10-31) — ETYS boundary sides from substation position (`bndPolygon`, `inRing`) instead of a network walk; near-closed boundaries closed across their mouths (`loop`, inward / outward); pocket turn-down only when exporting.
+- **261031.3** (2026-10-31) — Power-cuts panel bars out of max(1,000, largest), coloured by the alert bands (`pcCol`).
+- **261031.4** (2026-10-31) — Power-cuts panel bars out of max(10,000, largest).
+- **261104.1** (2026-11-04) — Gas sources: `GAS_L` gsys, galarm, gmet (table); `GAS_R` gmetbar, gbal, gstore, geu, glng, gpower; `gasMet()`, `gasBalChart()`, `axTicks()`, `axTime()`; `P_.price` Electricity | Gas SAP switch (`gbWallPrice.<layout>`) with `priceChart()`.
+- **261104.2** (2026-11-04) — Rain radar view split 0.6 → 0.5 (radar top half; at-home plots and weather panels below).
+- **261104.3** (2026-11-04) — Header readouts on `uw` (`{ read: 1 }`): `setRead()` / `hgPoll()` (`/api/gas`, 2 min); `tn` counts and `.tri` 1-hour arrows; `TF.d1`.
+- **261104.4** (2026-11-04) — `.pn h2` `calc(var(--h2) + 2.67px)`; `.rt` and `.tag` keep `var(--h2)`; `uw` margin `h` 76.
+- **261104.5** (2026-11-04) — `.pn h2` colour `--ink` (was `--ink-faint`).
+- **261105.1** (2026-11-05) — Light / dark theme block, `#themeBtn` in the header.
+- **261105.2** (2026-11-05) — Theme lightness map darker for text and lines.
+- **261105.3** (2026-11-05) — Theme: panels ~15 % darker, background/border tones desaturated.
+- **261105.4** (2026-11-05) — `BIG_MW` 500: `lineA()` draws a circuit / offshore link of 500 MW or more (fading in from 400) at every zoom; its end nodes via `_bigN`; link hover and line values follow.
+- **261030.19** (2026-10-30) — Rain radar source: radar above (60 %), `#embed=wx` local weather below (`srcFrame()`, `url2`, `split`).
+- **261030.18** (2026-10-30) — Interconnectors: "← export | import →" row above the bars, divided at their zero line (`.icdir`).
+- **261030.17** (2026-10-30) — `fitSlot()`: a panel with `fit` grows into the panel below when its content overflows (uw: interconnectors over powercuts).
+- **261030.16** (2026-10-30) — ▲ / ▼ flashing also in mix, interconnectors, boundaries and movers (`data-keep`: flash only).
+- **261030.15** (2026-10-30) — Substation list and units: ▲ / ▼ column (`.tri`, `data-tk`) flashes green / red at 1 Hz while its number counts (`triPaint()`).
+- **261030.14** (2026-10-30) — Substation panel ⤒ expand / ⤓ shrink button (`NODE_EXP`, `nodeBig()`), where the panel has `grow`.
+- **261030.13** (2026-10-30) — Counting panel numbers: `tn()`, `tnScan()` after each panel draw, 10 Hz tick; tints from `chgRGB()`; tagged in system, mix, transfer, boundaries, ics, topflows, movers, margin and the substation panel.
+- **261030.12** (2026-10-30) — `growNode()`: a node panel with `grow` covers that panel while a substation is selected (uw: over powercuts); `drawNodeChart()` stops if its canvas has gone.
+- **261030.11** (2026-10-30) — Substation list: output bars (`.sgb`, sized to the panel) and % of GB supply (metered generation + imports).
+- **261030.10** (2026-10-30) — Power cuts panel: severity bars (`.pcbar`, share of the worst operator's customers off).
+- **261030.9** (2026-10-30) — Power cuts panel: operator rows count all cuts (as the power-cuts page), with planned beside; All cuts KPI.
+- **261030.8** (2026-10-30) — Power cuts panel (`P_.powercuts`, `renderPC()`, `PC_OPN`; redrawn after each `/api/powercuts` fetch); uw column 4: ics 340, powercuts 400, node 386, margin 178.
+- **261030.7** (2026-10-30) — Outages: every report in a scrolling list (`.olist`, place kept on refresh); uw layout: boundaries 450, movers 250, outages from y 966 (454 high).
+- **261030.6** (2026-10-30) — Header chips: Grid, power cuts, gas margin, floods (`pollSums()`, `setSums()`); short labels below 2,600 px (`.hdr.cmp`).
+- **261030.5** (2026-10-30) — Map pop-up's ✕ in its own bar (`#popClose`, only when framed), in line with the panels; bar's right padding 10 px (6 px narrow).
+- **261030.4** (2026-10-30) — Live chip reads "updated at" (Andy).
+- **261030.3** (2026-10-30) — Constraint badge in the header and map bars (`setCon()`, from 500 MW); boundaries shown as constrained sent with the transfer report (`bnd`); live chip reads "live · figures for" with a tooltip.
+- **261030.2** (2026-10-30) — Constrained boundaries: `bndSides()`, `bndState()`, `BND_LIM` (ETYS 2025), `BND_NESO` adds B4 (SSE_SP2), `BNDON` each run; orange dashed when constrained; hover card with limit, % and SO turn-down; key.
+- **261030.1** (2026-10-30) — Pinch points removed (evalPinch, glows, hover labels, layer, panel; topflows back in d1 and h2); ETYS boundaries at half opacity (.175).
+- **261029.30** (2026-10-29) — Regional check per pinch point (`scotCheck()`, `conf`; Scotland held at watch while its transfer check fails); alerts sent with the transfer report (`pinch`); newest NPg live reading time in Data sources.
+- **261029.29** (2026-10-29) — Pinch points on loading now only (N-1 / line-outage factors removed); watch ≥ 80 %, warning ≥ 90 %, critical > 95 %; hover label and panel simplified.
+- **261029.28** (2026-10-29) — ETYS boundaries layer: faint dashed lines, hover highlight and card with the modelled transfer across (circuits and HVDC crossing an odd number of times) and NESO's SCOTEX day-ahead figures on B6.
+- **261029.27** (2026-10-29) — Pinch-point labels on hover only (`pickAlert()`); glow opacity 30 % watch, 50 % warning and critical.
+- **261029.26** (2026-10-29) — Pinch points: line-outage factors in the background, intact and N-1 loading each run, alert levels held for two runs (standard-rated circuits held at watch), glow and label on the maps (orange / yellow / blue-white), pinch points layer button, Pinch points panel (in place of Heaviest circuits in the d1 and h2 layouts).
+- **261029.25** (2026-10-29) — Seasonal ETYS rating per circuit (`rating()`), standard rating marked * where unmatched; substation panel loading and hover; coverage in Data sources.
+- **261029.24** (2026-10-29) — Measured GSP imports used at their nodes (rest of the demand spread over the others; embedded generation there left out); the model's estimate there reported with each run; measured section in the substation panel; summary and score in the transfer panel.
+- **261029.23** (2026-10-29) — Flow model adds the server's FUELINST reconciliation at its nodes; transfer panel lists it.
+- **261029.22** (2026-10-29) — Flow model injects the server's embedded wind and solar at its nodes and adds it to its region's demand; transfer panel says how much was placed and which registers are missing.
+- **261029.21** (2026-10-29) — Flow model puts the server's Scotland share of demand on the Scottish nodes (fixed shares if none); reports each run's transfer to /api/wall-b6; transfer panel shows the estimate and the check; boundary panel says "day-ahead forecast".
+- **261029.20** (2026-10-29) — A line that stops at its landing beside another farm's line says so in its hover card.
+- **261029.19** (2026-10-29) — Offshore line ends at its export cable's sea end where the server gives one; hover card says so.
+- **261029.18** (2026-10-29) — Drawn flows ease from the shown to the new values after each model run (80 % of the gap, 20–90 s); changed values count and their ▲▼⇄ flash at 1 Hz; dash phase integrated per line.
+- **261029.17** (2026-10-29) — Offshore connection lines bend at a farm's local-network landing; hover tests every leg.
+- **261029.16** (2026-10-29) — Offshore connection lines start where the farm's mapped export cable ends (none where it already reaches the connection).
+- **261029.15** (2026-10-29) — Regional map zooms to the selected substation; Network source can span two panels (own setting).
+- **261029.14** (2026-10-29) — Substation panel search box (name search over all named substations; Enter selects the first, Esc clears).
+- **261029.13** (2026-10-29) — Gas sources panel: ⇤ two panels / ⇥ one panel (arrows swapped).
+- **261029.12** (2026-10-29) — Substation panel: every generating substation listed; the panel scrolls and keeps its place across refreshes.
+- **261029.11** (2026-10-29) — Operators' 132 / 66 / 33 kV line maps with 66 kV and 33 kV layers (fade in with zoom, loaded on demand), hover card; Northern Powergrid live 132 kV circuit readings in the substation panel; line-map and live-feed status in Data sources.
+- **261029.10** (2026-10-29) — Substation panel: local network (DNO registers), generator sites within 8 km, circuit loading %, unit capacity; site hover cards say where the site connects; register status in Data sources.
+
+### `osm_sites.py`
+
+New module at 261029.1.
+
+- **261029.1** (2026-10-29) — New module: UK Grid Atlas's OpenStreetMap generator sites and BM unit map, fetched weekly into `osm_sites.json`; OSM unit positions laid over Terravolt's (missing filled, >1 km corrected, >20 km only with matching fuel and name).
+- **261029.2** (2026-10-29) — Generator-site list for `/api/wall-sites` (position, fuel, capacity, name, operator, start; biggest first).
+- **261029.4** (2026-10-29) — Each generator site carries its DNO register entry (`conn`: operator, GSP, BSP, kV) in `/api/wall-sites`.
+- **261029.3** (2026-10-29) — REPD: newest quarterly CSV found weekly via the gov.uk content API, operational and under-construction GB projects kept in `repd_sites.json`, OSGB36→WGS84; matched to OSM sites (fuel, size-scaled radius, names or capacity); REPD-only operational projects added to `/api/wall-sites`.
+
+### `dno_data.py`
+
+New module at 261029.1.
+
+- **261029.1** (2026-10-29) — New module: the six DNOs' Embedded Capacity Registers (Opendatasoft with the power-cuts keys, CKAN without), weekly into `dno_ecr.json`; GSP → network node by name; per-node embedded generation; site → register entry matching.
+- **261029.4** (2026-10-29) — NPg live 132 kV: newest reading's time asked for first, readings within 40 minutes of it exported with a 120 s limit (the 90-minute window from now found nothing); `newest` in its status.
+- **261029.3** (2026-10-29) — NGED live GSP data (about 55 files, every 5 minutes, background, 150 s limit): `nged_gsp()`, `nged_gsp_status()`.
+- **261029.2** (2026-10-29) — The operators' 132 / 66 / 33 kV line maps (Opendatasoft GeoJSON, SSEN shapefiles, any shapefile in `dno_lines/`), monthly into `dno_lines.json`, simplified; Northern Powergrid live 132 kV circuit readings (every 5 minutes).
+
+### `etys.py`
+
+- **261029.2** (2026-10-29) — ETYS study boundaries from NESO's shapefile (monthly, standard library, Web Mercator → lon/lat, simplified; closed loops in two halves), cached in `etys_boundaries.json`.
+- **261029.1** (2026-10-29) — New: transmission circuit ratings from NESO's ETYS Appendix B (newest found on NESO's page, monthly check), read with the standard library, cached in `etys_ratings.json`; matched to network lines by name, nearby name, connections, tees and intermediate nodes; plausibility range per voltage.
 
 ### `build_network.py`
 
@@ -675,3 +974,20 @@ New script at 261023.1.
 New launcher at 261023.1.
 
 - **261023.1** (2026-10-23) — New launcher: opens the wall on two monitors as Chrome/Edge app windows.
+
+### `gas_storage.py`
+
+New module at 261028.1.
+
+- **261028.1** (2026-10-28) — New module: National Gas per-site storage flows, stock, LNG tanks and deliverability; estimated per-site fill; GIE AGSI+ Europe; GIE key test and storage.
+- **261028.2** (2026-10-28) — 12-month average NTS demand (PUBOBJ1030) for GB days at average use.
+- **261028.3** (2026-10-28) — Europe trend rows carry each of the previous five years' same-day % full.
+
+### `gas_storage.html`
+
+New page at 261028.1.
+
+- **261028.1** (2026-10-28) — New page: gas storage pop-up (UK figures, embedded flow diagram, Europe Trend / By country, GIE key window).
+- **261028.2** (2026-10-28) — GB days at average use (table and neighbour tile); days labels name their basis.
+- Retired at 261028.2 (2026-10-28): the view moved into the dashboard's gas page; `/gas-storage` redirects there.
+

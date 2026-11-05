@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261105.6  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -412,6 +412,7 @@ class ProbeState:
     sit_probe_phase: int = 0                           # rotates so consecutive probes cover new ground
     sit_probe_used: int = 0                            # probe SAMPLES spent this episode (budget cap)
     sit_probe_used_ts: float = 0.0                     # when the episode budget was last touched
+    sit_probe_hist: list = field(default_factory=list) # [[ts, bearing, dist_km, mm, src]] probe readings, last hour (track checks)
     sit_last_showery_ts: float = 0.0                   # last time the situation was showery (episode memory)
     sit_last_centroid: "list | None" = None            # [bearing, dist] of the last active cluster
     sea_pts: list = field(default_factory=list)         # [[az,range],...] that are sea
@@ -882,13 +883,14 @@ def _om_mark_local(ok, reason=None, now=None):
             _om_local.update(down_until=now + OM_LOCAL_RETRY_S, reason=reason)
 
 
-def _om_request(q, timeout):
+def _om_request(q, timeout, public_only=False):
     """One Open-Meteo forecast GET, local-first. Returns (http_code, headers, raw, host)
     with host "local" or "public". Raises OMBackoff if public is needed but cooling
     down; public HTTPError / network errors propagate unchanged so callers' existing
-    rate-limit handling still applies. Local failures never raise -- they fall through."""
+    rate-limit handling still applies. Local failures never raise -- they fall through.
+    public_only: skip the local instance (for variables it doesn't sync)."""
     now = time.time()
-    if _om_local_ready(now):
+    if not public_only and _om_local_ready(now):
         lq = dict(q)
         if OM_MODELS:
             lq["models"] = OM_MODELS
@@ -930,11 +932,11 @@ def _om_request(q, timeout):
     return code, _om_pick_headers(getattr(resp, "headers", None)), raw, "public"
 
 
-def om_get_json(q, timeout=12):
+def om_get_json(q, timeout=12, public_only=False):
     """Local-first Open-Meteo GET for other modules (grid_server's cloud read).
     Returns (data, host). Raises on any failure, including OMBackoff and an error body
-    (a public rate-limit body also trips the shared public backoff)."""
-    code, hdrs, raw, host = _om_request(q, timeout)
+    (a public rate-limit body also trips the shared public backoff). public_only: public host only."""
+    code, hdrs, raw, host = _om_request(q, timeout, public_only)
     d = json.loads(raw)
     if isinstance(d, dict) and d.get("error"):
         reason = str(d.get("reason") or "Open-Meteo error")
@@ -1083,7 +1085,11 @@ def fetch_om_precip(points, timeout=8):
 RADAR_ENABLED   = os.environ.get("RAIN_RADAR", "1") != "0"
 RV_MAPS_URL     = "https://api.rainviewer.com/public/weather-maps.json"
 RV_ZOOM, RV_SIZE, RV_COLOR = 7, 512, 2        # zoom cap 7; Universal Blue = scheme 2
-RV_MAPS_TTL_S   = 5 * 60                      # re-read the frame list at most this often
+RV_MAPS_TTL_S   = 5 * 60                      # re-read the frame list at most this often...
+RV_MAPS_DUE_S   = 60                          # ...but every minute once the next frame is due
+RV_FRAME_S      = 600                         # frames are 10 minutes apart
+RV_PUB_LAG_S    = 300                         # a frame is published ~5.4 min after its time (measured 4 Nov 2026:
+                                              # 19:50 at 19:55:25, 20:00 at 20:05:21); poll fast from 5 min after due
 RV_MAX_AGE_S    = 30 * 60                     # newest frame older than this -> radar unusable
 RV_NET_TTL_S    = 10 * 60                     # net sampling interval while radar serves (frames are 10-min)
 RV_MIN_DBZ      = 10.0                        # below this: clutter / non-precipitating echo -> dry
@@ -1101,7 +1107,7 @@ _RV_TABLE = ",".join([
 ])
 _RV_DBZ = {k: float(d) for d, k in (e.split(":") for e in _RV_TABLE.split(","))}
 _RV_RGB = [(int(k[0:2], 16), int(k[2:4], 16), int(k[4:6], 16), d) for k, d in _RV_DBZ.items()]
-_rv = {"maps": None, "maps_ts": 0.0, "tiles": {}, "last_err": None, "frame_ts": None}
+_rv = {"maps": None, "maps_ts": 0.0, "tiles": {}, "last_err": None, "frame_ts": None, "pub": {}}   # pub: frame time -> (generated, first seen)
 
 
 def _png_rgba(b):
@@ -1155,11 +1161,28 @@ def _rv_dbz(r, g, b):
 
 
 def _rv_newest_frame(now):
-    if _rv["maps"] is None or now - _rv["maps_ts"] >= RV_MAPS_TTL_S:
+    """(host, newest frame). The frame list is re-read every RV_MAPS_TTL_S, or every RV_MAPS_DUE_S once
+    the next frame is due (newest frame time + 10 min + ~5 min publishing), so a new frame is picked up
+    within about a minute of RainViewer publishing it. Records each frame's publication ("generated" of
+    the first list that carried it) and when we first saw it, for the radar view's key."""
+    ttl = RV_MAPS_TTL_S
+    if _rv["maps"] is not None:
+        _p = ((_rv["maps"].get("radar") or {}).get("past") or [])
+        _newest = max((f.get("time") or 0) for f in _p) if _p else 0
+        if now >= _newest + RV_FRAME_S + RV_PUB_LAG_S:
+            ttl = RV_MAPS_DUE_S
+    if _rv["maps"] is None or now - _rv["maps_ts"] >= ttl:
         req = urllib.request.Request(RV_MAPS_URL, headers={"User-Agent": "gb-energy-monitor"})
         with urllib.request.urlopen(req, timeout=15) as r:
             _rv["maps"] = json.loads(r.read()); _rv["maps_ts"] = now
         meter_api("RV", "radar_index", 1)
+        _p = ((_rv["maps"].get("radar") or {}).get("past") or [])
+        if _p:
+            _nt = int(max((f.get("time") or 0) for f in _p))
+            if _nt not in _rv["pub"]:
+                _rv["pub"][_nt] = (_rv["maps"].get("generated"), round(now))
+                for k in sorted(_rv["pub"])[:-20]:
+                    del _rv["pub"][k]
     past = ((_rv["maps"] or {}).get("radar") or {}).get("past") or []
     if not past:
         raise RuntimeError("no radar frames")
@@ -1208,6 +1231,512 @@ def fetch_radar_precip(points, now=None):
 
 def radar_status():
     return {"enabled": RADAR_ENABLED, "frame_ts": _rv.get("frame_ts"), "last_err": _rv.get("last_err")}
+
+
+# ───────────────── radar grid for the Forecast view's overlay (RainViewer) ─────────────────
+# The newest RainViewer frame around home as a grid of rain rates (RG_CELL km cells, RG_KM each way), for the
+# radar view to draw under its gauges. The frame is 10-20 min old, so the view moves it on to the current time
+# with a motion vector: measured from the radar itself (the shift that best lines up the frame before with the
+# newest, by correlation on a 1 km grid; needs RG_MIN_CELLS rainy cells and a clear peak), else the steering
+# flow (850 hPa, the engine's `flow`). Translation only: no growth or decay. Rates are Marshall-Palmer from the
+# tile colours, as for the sampled points; below RV_MIN_DBZ is dry. Cached per frame and home; never raises.
+RG_KM, RG_CELL     = 40, 0.5          # half-width (km) and cell size (km): 161 x 161 cells
+RG_SEARCH          = 14               # motion search, 1 km cells each way per frame gap (14 km / 10 min = 84 km/h)
+RG_MIN_CELLS       = 20               # rainy 1 km cells needed in both frames to measure motion
+RG_MIN_CORR        = 0.45             # correlation peak needed to trust the measured motion
+# Motion from up to RG_PAIRS consecutive frame pairs (the last ~30 min), not one: the radar's motion is used only
+# when at least two pairs agree (each within RG_AGREE_KMH, or RG_AGREE_FRAC of the speed, of their median). Where
+# there is rain to measure but the pairs disagree or don't match well, the motion is "uncertain" and the view
+# shows the frame as measured rather than moving it on a guess. The 850 hPa wind moves it only when there is too
+# little rain to measure at all (as before). The 850 hPa wind is always given alongside (`steer`), for the key.
+RG_PAIRS           = 3
+# Possible hail (Andy, 5 Nov): a cell at or above RG_HAIL_DBZ on the radar is a hail hint (not a detection: the free
+# radar has no dual-polarisation data). In the grid sent to the view such a cell is the byte 255 (rain is capped at
+# 25.4 mm/h, 254), and the grid carries a summary {"n", "near_km", "bearing"} of those within the plot.
+RG_HAIL_DBZ        = 55.0
+RG_HAIL_MMH        = (10 ** (RG_HAIL_DBZ / 10.0) / 200.0) ** (1 / 1.6)     # Marshall-Palmer, ~100 mm/h
+RG_AGREE_KMH       = 8.0
+RG_AGREE_FRAC      = 0.35
+_rg = {"key": None, "data": None, "tiles": {}, "mgrids": {}}
+
+
+def _rg_fetch_tile(host, path, tx, ty, tag="radar_tile"):
+    url = f"{host}{path}/{RV_SIZE}/{RV_ZOOM}/{tx}/{ty}/{RV_COLOR}/0_0.png"
+    req = urllib.request.Request(url, headers={"User-Agent": "gb-energy-monitor"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        img = _png_rgba(r.read())
+    meter_api("RV", tag, 1)
+    return img
+
+
+def _rg_tile(host, path, tx, ty):
+    key = (path, tx, ty)
+    if key not in _rg["tiles"]:
+        img = _rg_fetch_tile(host, path, tx, ty)
+        keep = {k[0] for k in _rg["tiles"]} | {path}
+        if len(keep) > 2:                                     # keep the two newest frames' tiles
+            old = sorted(keep)[:-2]
+            _rg["tiles"] = {k: v for k, v in _rg["tiles"].items() if k[0] not in old}
+        _rg["tiles"][key] = img
+    return _rg["tiles"][key]
+
+
+def _rg_grid(host, path, lat, lon, km, cell, tile_fn=None):
+    """[[mm/h]] rows north to south, columns west to east, cell centres every `cell` km around (lat, lon).
+    tile_fn(host, path, tx, ty) defaults to _rg_tile (which keeps only the two newest frames' tiles)."""
+    tile_fn = tile_fn or _rg_tile
+    n2 = 2 ** RV_ZOOM; m = int(round(km / cell)); N = 2 * m + 1
+    kx = 111.32 * math.cos(math.radians(lat)); memo = {}; rows = []
+    for j in range(N):
+        la = lat + (m - j) * cell / 111.32
+        yf = (1 - math.log(math.tan(math.radians(la)) + 1 / math.cos(math.radians(la))) / math.pi) / 2 * n2
+        row = []
+        for i in range(N):
+            lo = lon + (i - m) * cell / kx
+            xf = (lo + 180.0) / 360.0 * n2
+            w, h, px = tile_fn(host, path, int(xf), int(yf))
+            r_, g_, b_, a_ = px(min(w - 1, int((xf % 1) * w)), min(h - 1, int((yf % 1) * h)))
+            if a_ == 0:
+                row.append(0.0); continue
+            c = (r_, g_, b_)
+            if c not in memo:
+                dbz = _rv_dbz(r_, g_, b_)
+                memo[c] = 0.0 if dbz < RV_MIN_DBZ else (10 ** (dbz / 10.0) / 200.0) ** (1 / 1.6)
+            row.append(memo[c])
+        rows.append(row)
+    return rows
+
+
+def _rg_motion_grid(host, path, lat, lon, newest=False):
+    """A frame's 1 km grid for motion, cached per frame and home (the last few). Older frames use their own
+    short-lived tiles, so the newest frames' tile cache (_rg_tile) isn't disturbed."""
+    key = (path, round(lat, 3), round(lon, 3))
+    g = _rg["mgrids"].get(key)
+    if g is None:
+        tmp = {}
+        def tf(h, p, tx, ty):
+            if (p, tx, ty) not in tmp:
+                tmp[(p, tx, ty)] = _rg_fetch_tile(h, p, tx, ty, "radar_tile_motion")
+            return tmp[(p, tx, ty)]
+        fine = _rg_grid(host, path, lat, lon, RG_KM, RG_CELL, tile_fn=None if newest else tf)
+        g = _rg_coarse(fine, int(round(1.0 / RG_CELL)))
+        _rg["mgrids"][key] = g
+        while len(_rg["mgrids"]) > RG_PAIRS + 3:
+            _rg["mgrids"].pop(next(iter(_rg["mgrids"])))
+    return g
+
+
+def _rg_motion_multi(host, frames, lat, lon):
+    """Motion from consecutive pairs of `frames` (oldest first, newest last). Returns the motion dict
+    ({"src": "radar", vx, vy, "pairs": n agreeing, "of": n measured} or {"src": "uncertain", ...}), or None when
+    no pair had enough rain to measure (then the 850 hPa wind may be used)."""
+    ests, rain = [], False
+    rainy = lambda g: sum(1 for r in g for v in r if v > 0.05)
+    for a, b in reversed(list(zip(frames[:-1], frames[1:]))):
+        try:
+            ga = _rg_motion_grid(host, a["path"], lat, lon)
+            gb = _rg_motion_grid(host, b["path"], lat, lon, newest=(b is frames[-1]))
+        except Exception:
+            continue
+        if rainy(ga) >= RG_MIN_CELLS and rainy(gb) >= RG_MIN_CELLS:
+            rain = True
+        m = _rg_motion(ga, gb, (b["time"] - a["time"]), 1.0)
+        if m:
+            ests.append(m)
+    if not rain:
+        return None
+    med = lambda xs: sorted(xs)[len(xs) // 2] if len(xs) % 2 else sum(sorted(xs)[len(xs) // 2 - 1:len(xs) // 2 + 1]) / 2
+    if ests:
+        mx, my = med([e["vx"] for e in ests]), med([e["vy"] for e in ests])
+        tol = max(RG_AGREE_KMH, RG_AGREE_FRAC * math.hypot(mx, my))
+        ok = [e for e in ests if math.hypot(e["vx"] - mx, e["vy"] - my) <= tol]
+        if len(ok) >= 2:
+            return {"src": "radar", "vx": round(med([e["vx"] for e in ok]), 1), "vy": round(med([e["vy"] for e in ok]), 1),
+                    "corr": round(min(e["corr"] for e in ok), 2), "pairs": len(ok), "of": len(ests)}
+        return {"src": "uncertain", "vx": round(mx, 1), "vy": round(my, 1), "pairs": len(ok), "of": len(ests),
+                "why": "the last frames disagree" if len(ests) >= 2 else "only one frame pair matched"}
+    return {"src": "uncertain", "vx": None, "vy": None, "pairs": 0, "of": 0, "why": "the frames don't match well"}
+
+
+# Each tracked cell's OWN motion on the radar (Andy, 5 Nov): a box of RG_CELL_BOX_KM each way around the cell is
+# found again in the next frame (normalised correlation, 2 km then 1 km search), over the same frame pairs as the
+# area motion; at least two pairs must agree. Uses the 1 km grids radar_grid() already keeps: no extra fetching.
+RG_CELL_BOX_KM   = 12
+RG_CELL_MIN_CELLS = 12                 # rainy 1 km cells needed in the box
+
+
+def _rg_patch_motion(a, b, cx, cy, dt_s):
+    """(east, north) km/h of the rain in a box around (cx, cy) km from home, from grid a (older) to b, or None."""
+    n = len(a); m = n // 2; c0, r0 = int(round(m + cx)), int(round(m - cy)); B = RG_CELL_BOX_KM
+    patch = [(j, i, math.log1p(a[j][i])) for j in range(max(0, r0 - B), min(n, r0 + B + 1))
+             for i in range(max(0, c0 - B), min(n, c0 + B + 1)) if a[j][i] > 0.05]
+    if dt_s <= 0 or len(patch) < RG_CELL_MIN_CELLS:
+        return None
+    lb = [[math.log1p(v) for v in r] for r in b]
+    na = math.sqrt(sum(v * v for _, _, v in patch)) or 1.0
+    j0, j1 = min(p[0] for p in patch), max(p[0] for p in patch)
+    i0, i1 = min(p[1] for p in patch), max(p[1] for p in patch)
+    def corr(dy, dx):
+        sxy = 0.0
+        for j, i, v in patch:
+            jj, ii = j + dy, i + dx
+            if 0 <= jj < n and 0 <= ii < n:
+                sxy += v * lb[jj][ii]
+        sbb = sum(lb[jj][ii] ** 2 for jj in range(max(0, j0 + dy), min(n, j1 + dy + 1))
+                  for ii in range(max(0, i0 + dx), min(n, i1 + dx + 1)))
+        return sxy / (na * (math.sqrt(sbb) or 1.0))
+    S = RG_SEARCH
+    coarse = {(y, x): corr(y, x) for y in range(-S, S + 1, 2) for x in range(-S, S + 1, 2)}
+    _, y2, x2 = max((c, y, x) for (y, x), c in coarse.items())
+    cc = {(y, x): corr(y, x) for y in range(y2 - 2, y2 + 3) for x in range(x2 - 2, x2 + 3) if abs(y) <= S + 1 and abs(x) <= S + 1}
+    c, dy, dx = max((c, y, x) for (y, x), c in cc.items())
+    if c < RG_MIN_CORR or abs(dy) >= S or abs(dx) >= S or any(k not in cc for k in ((dy - 1, dx), (dy + 1, dx), (dy, dx - 1), (dy, dx + 1))):
+        return None
+    def sub(mm, z, pp):
+        d = mm - 2 * z + pp
+        return 0.0 if d >= 0 else 0.5 * (mm - pp) / d
+    fy = dy + sub(cc[(dy - 1, dx)], c, cc[(dy + 1, dx)]); fx = dx + sub(cc[(dy, dx - 1)], c, cc[(dy, dx + 1)])
+    k = 3600.0 / dt_s
+    return {"vx": round(fx * k, 1), "vy": round(-fy * k, 1), "corr": round(c, 2)}
+
+
+def radar_cell_motion(cx, cy):
+    """A cell's own radar motion around (cx, cy) km from home over the last frame pairs: {"vx", "vy", "pairs", "of"}
+    when at least two pairs agree, else None. Cached per newest frame and box position (2 km)."""
+    fr = _rg.get("mframes") or []; hk = _rg.get("mhome")
+    if len(fr) < 3 or not hk:
+        return None
+    key = (fr[-1][0], round(cx / 2), round(cy / 2))
+    cache = _rg.setdefault("cellmot", {})
+    if key in cache:
+        return cache[key]
+    ests = []
+    for (pa, ta), (pb, tb) in reversed(list(zip(fr[:-1], fr[1:]))):
+        ga, gb = _rg["mgrids"].get((pa,) + hk), _rg["mgrids"].get((pb,) + hk)
+        if ga is None or gb is None:
+            continue
+        e = _rg_patch_motion(ga, gb, cx, cy, tb - ta)
+        if e:
+            ests.append(e)
+            # the box follows the rain back in time for the next older pair
+            cx -= e["vx"] * (tb - ta) / 3600.0; cy -= e["vy"] * (tb - ta) / 3600.0
+    out = None
+    if len(ests) >= 2:
+        med = lambda xs: sorted(xs)[len(xs) // 2] if len(xs) % 2 else sum(sorted(xs)[len(xs) // 2 - 1:len(xs) // 2 + 1]) / 2
+        mx, my = med([e["vx"] for e in ests]), med([e["vy"] for e in ests])
+        tol = max(RG_AGREE_KMH, RG_AGREE_FRAC * math.hypot(mx, my))
+        ok = [e for e in ests if math.hypot(e["vx"] - mx, e["vy"] - my) <= tol]
+        if len(ok) >= 2:
+            out = {"vx": round(med([e["vx"] for e in ok]), 1), "vy": round(med([e["vy"] for e in ok]), 1),
+                   "pairs": len(ok), "of": len(ests)}
+    if len(cache) > 64:
+        cache.clear()
+    cache[key] = out
+    return out
+
+
+HAIL_HERE_KM = 3.0          # a possible-hail cell this close to home: "possibly with hail" at home
+
+
+def radar_hail_cells(now, max_age_s=None):
+    """[(bearing, km)] of the newest radar frame's possible-hail cells (>= RG_HAIL_DBZ), or [] when the frame is
+    older than max_age_s (default APPR_RADAR_MAX_AGE_S)."""
+    h = _rg.get("hail") or {}
+    if not h.get("ts") or now - h["ts"] > (max_age_s or APPR_RADAR_MAX_AGE_S):
+        return []
+    return h.get("cells") or []
+
+
+def radar_area_motion():
+    """The area-wide radar motion when it is measured (pairs agree), else None."""
+    d = _rg.get("data") or {}
+    mo = d.get("motion")
+    return mo if (mo and mo.get("src") == "radar") else None
+
+
+def radar_view_grid(lat, lon, now=None):
+    """The radar view's grid on its own (the /api/radar-grid poll): the same as the engine's, with the
+    engine's last steering flow, so a new frame reaches the view within about a minute of publication
+    instead of waiting for the next engine cycle and the 5-minute EA cache."""
+    return radar_grid(lat, lon, flow=_rg.get("flow"), now=now)
+
+
+def _rg_coarse(g, k):
+    """Each k x k block's mean, as a smaller grid (the motion is measured on 1 km cells)."""
+    n = len(g) // k
+    return [[sum(g[j * k + a][i * k + b] for a in range(k) for b in range(k)) / (k * k) for i in range(n)] for j in range(n)]
+
+
+def _rg_corr(a, b, shifts):
+    """{(dy, dx): normalised correlation of log rates} for grid a moved by (dy rows south, dx columns east) onto b."""
+    n = len(a); wa = [(j, i, math.log1p(v)) for j, r in enumerate(a) for i, v in enumerate(r) if v > 0.05]
+    lb = [[math.log1p(v) for v in r] for r in b]
+    na = math.sqrt(sum(x[2] ** 2 for x in wa)) or 1; nb = math.sqrt(sum(v * v for r in lb for v in r)) or 1
+    cc = {}
+    for dy, dx in shifts:
+        sxy = 0.0
+        for j, i, v in wa:
+            jj, ii = j + dy, i + dx
+            if 0 <= jj < n and 0 <= ii < n:
+                sxy += v * lb[jj][ii]
+        cc[(dy, dx)] = sxy / (na * nb)
+    return cc
+
+
+def _rg_motion(a, b, dt_s, cell_km):
+    """(east, north) km/h moving 1 km grid a (older) onto b (newer), dt_s apart, with the correlation, or None.
+    Two stages: a search on 2 km cells over the whole range, then 1 km cells around its best."""
+    rainy = lambda g: sum(1 for r in g for v in r if v > 0.05)
+    if dt_s <= 0 or rainy(a) < RG_MIN_CELLS or rainy(b) < RG_MIN_CELLS:
+        return None
+    s2 = RG_SEARCH // 2
+    c2 = _rg_corr(_rg_coarse(a, 2), _rg_coarse(b, 2), [(y, x) for y in range(-s2, s2 + 1) for x in range(-s2, s2 + 1)])
+    _, y2, x2 = max((c, y, x) for (y, x), c in c2.items())
+    cc = _rg_corr(a, b, [(2 * y2 + y, 2 * x2 + x) for y in range(-3, 4) for x in range(-3, 4)])
+    c, dy, dx = max((c, y, x) for (y, x), c in cc.items())
+    if c < RG_MIN_CORR or abs(dy) >= RG_SEARCH or abs(dx) >= RG_SEARCH or (dy - 1, dx) not in cc or (dy + 1, dx) not in cc \
+            or (dy, dx - 1) not in cc or (dy, dx + 1) not in cc:
+        return None
+    def sub(m, z, p):                                      # parabolic sub-cell refinement
+        d = m - 2 * z + p
+        return 0.0 if d >= 0 else 0.5 * (m - p) / d
+    fy = dy + sub(cc[(dy - 1, dx)], c, cc[(dy + 1, dx)]); fx = dx + sub(cc[(dy, dx - 1)], c, cc[(dy, dx + 1)])
+    k = cell_km * 3600.0 / dt_s
+    return {"vx": round(fx * k, 1), "vy": round(-fy * k, 1), "corr": round(c, 2)}
+
+
+def radar_grid(lat, lon, flow=None, now=None):
+    """{"ts": frame time, "cell_km", "n", "km", "b64": one byte per cell (mm/h x 10, max 255; rows north to south),
+    "motion": {"vx", "vy" (km/h east / north), "src": "radar" | "uncertain" | "steering", ...} or None,
+    "steer": the 850 hPa wind as {"vx", "vy", "kmh", "to_deg"} when known} or {"err"}."""
+    if not RADAR_ENABLED:
+        return {"err": "radar off"}
+    now = now or time.time()
+    if flow is not None:
+        _rg["flow"] = flow                    # the engine's steering flow, for radar-only requests (radar_view_grid)
+    try:
+        host, fr = _rv_newest_frame(now)
+        key = (fr["path"], round(lat, 3), round(lon, 3))
+        if _rg["key"] == key and _rg["data"]:
+            out = dict(_rg["data"])
+        else:
+            g = _rg_grid(host, fr["path"], lat, lon, RG_KM, RG_CELL)
+            _rg["mgrids"][(fr["path"], round(lat, 3), round(lon, 3))] = _rg_coarse(g, int(round(1.0 / RG_CELL)))
+            mot = None
+            past = sorted(((_rv["maps"] or {}).get("radar") or {}).get("past") or [], key=lambda f: f.get("time") or 0)
+            prev = [f for f in past if (f.get("time") or 0) < (fr.get("time") or 0)]
+            if prev:
+                try:
+                    mot = _rg_motion_multi(host, prev[-RG_PAIRS:] + [fr], lat, lon)
+                except Exception:
+                    mot = None
+                _rg["mframes"] = [(f["path"], f["time"]) for f in prev[-RG_PAIRS:] + [fr]]
+                _rg["mhome"] = (round(lat, 3), round(lon, 3))
+            import base64
+            raw = bytes((255 if v >= RG_HAIL_MMH * 0.999 else min(254, int(round(v * 10)))) for r in g for v in r)
+            m_ = len(g) // 2; hail = []
+            for j_, r_ in enumerate(g):
+                for i_, v_ in enumerate(r_):
+                    if v_ >= RG_HAIL_MMH * 0.999:
+                        x_, y_ = (i_ - m_) * RG_CELL, (m_ - j_) * RG_CELL
+                        if math.hypot(x_, y_) <= RG_KM:
+                            hail.append((math.hypot(x_, y_), math.degrees(math.atan2(x_, y_)) % 360))
+            hs = ({"n": len(hail), "near_km": round(min(hail)[0], 1), "bearing": round(min(hail)[1])} if hail else None)
+            _rg["hail"] = {"ts": fr.get("time"), "cells": [(round(b_), round(d_, 1)) for d_, b_ in hail]}
+            out = {"ts": fr.get("time"), "cell_km": RG_CELL, "km": RG_KM, "n": len(g), "b64": base64.b64encode(raw).decode("ascii"),
+                   "motion": mot, "hail": hs}
+            _rg["key"], _rg["data"] = key, dict(out)
+            maxh_radar(fr.get("time"), _rg_max(g, RG_KM, RG_CELL), lat, lon, host, now)
+        pg = _rv["pub"].get(int(fr.get("time") or 0))
+        if pg:
+            out["pub"], out["seen"] = pg                                # RainViewer published / we first saw it
+        fl = _rg.get("flow")
+        if fl and fl.get("from_deg") is not None and fl.get("kmh"):
+            to = math.radians(fl["from_deg"] + 180.0)                 # steering: rain moves with the flow
+            out["steer"] = {"vx": round(fl["kmh"] * math.sin(to), 1), "vy": round(fl["kmh"] * math.cos(to), 1),
+                            "kmh": round(fl["kmh"], 1), "to_deg": round((fl["from_deg"] + 180.0) % 360)}
+            if not out.get("motion"):                                  # too little rain to measure: the 850 hPa wind
+                out["motion"] = dict(out["steer"], src="steering", corr=None)
+        return out
+    except Exception as e:
+        return {"err": f"{type(e).__name__}: {str(e)[:120]}"}
+
+
+# ---------------------------------------------------------------- max-rate history (radar view's bar plot)
+# The highest rain rate seen within the radar plot (RG_KM of home), over the last 25 h, kept for the radar
+# view's bar plot and saved in rain_max_hist.json beside this module so it survives a restart:
+#   radar: one entry per RainViewer frame — the frame's highest cell (mm/h) within the circle, at the
+#          frame's time (a frame stands for the 10 minutes from its time);
+#   gauge: the highest physical EA gauge rate in each 5-minute slot, with the gauge's name. An EA reading
+#          is the 15 minutes up to its time, so it fills the three slots it covers. Gauges only: the sea
+#          net points are radar / model proxies, not measurements;
+#   home_radar / home_gauge: rain AT HOME for the weather panel's rain plot — the radar mean over the
+#          ~1 km box at home on each frame, and the nearest physical gauge within SIT_HERE_KM (each
+#          reading, with its name and distance): the two measured sources the "at your location"
+#          voice uses.
+# A different home location (> 1 km) starts a new history. On the first run with no recent radar, the
+# past RainViewer frames (about 2 h) are back-filled in the background with their own tile cache.
+MAXH_FILE   = os.path.join(_METER_DIR, "rain_max_hist.json")
+MAXH_KEEP_S = 25 * 3600
+MAXH_SLOT_S = 300
+MAXH_EA_S   = 900
+_maxh = {"loaded": False, "home": None, "radar": {}, "gauge": {}, "hrad": {}, "hgau": {}, "dirty": False, "saved": 0.0, "bf": False}
+_MAXH_SERIES = ("radar", "gauge", "hrad", "hgau")
+_maxh_lock = threading.Lock()
+
+
+def _rg_max(g, km, cell):
+    """Highest cell (mm/h) of a radar grid within `km` of its centre."""
+    m = len(g) // 2; lim = (km / cell) ** 2; best = 0.0
+    for j, row in enumerate(g):
+        dy2 = (j - m) ** 2
+        if dy2 > lim:
+            continue
+        for i, v in enumerate(row):
+            if v > best and dy2 + (i - m) ** 2 <= lim:
+                best = v
+    return round(best, 2)
+
+
+def _maxh_load():
+    if _maxh["loaded"]:
+        return
+    _maxh["loaded"] = True
+    try:
+        with open(MAXH_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        _maxh["home"] = d.get("home")
+        for k in _MAXH_SERIES:
+            _maxh[k] = {int(t): v for t, v in (d.get(k) or {}).items()}
+    except Exception:
+        pass
+
+
+def _maxh_home(lat, lon):
+    """Start a new history if home has moved more than 1 km."""
+    h = _maxh["home"]
+    if h is None or haversine_km(h[0], h[1], lat, lon) > 1.0:
+        if h is not None:
+            for k in _MAXH_SERIES:
+                _maxh[k] = {}
+        _maxh["home"] = [round(lat, 4), round(lon, 4)]; _maxh["dirty"] = True
+
+
+def _maxh_save(now, force=False):
+    cut = now - MAXH_KEEP_S
+    for k in _MAXH_SERIES:
+        for t in [t for t in _maxh[k] if t < cut]:
+            del _maxh[k][t]; _maxh["dirty"] = True
+    if not _maxh["dirty"] or (not force and now - _maxh["saved"] < 60):
+        return
+    try:
+        tmp = MAXH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(dict({"home": _maxh["home"]}, **{k: _maxh[k] for k in _MAXH_SERIES}), f, separators=(",", ":"))
+        os.replace(tmp, MAXH_FILE)
+        _maxh["dirty"] = False; _maxh["saved"] = now
+    except Exception:
+        pass
+
+
+def maxh_radar(ts, mm, lat, lon, host=None, now=None):
+    """Record a radar frame's highest rate within the plot; back-fill past frames once. Never raises."""
+    now = now or time.time()
+    try:
+        with _maxh_lock:
+            _maxh_load(); _maxh_home(lat, lon)
+            if ts:
+                _maxh["radar"][int(ts)] = mm; _maxh["dirty"] = True
+            _maxh_save(now)
+            want_bf = host and not _maxh["bf"]
+            if want_bf:
+                _maxh["bf"] = True
+        if want_bf:
+            threading.Thread(target=_maxh_backfill, args=(host, lat, lon), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _maxh_backfill(host, lat, lon):
+    """Past RainViewer frames (about 2 h) missing from the radar history, with a private tile cache."""
+    try:
+        past = ((_rv["maps"] or {}).get("radar") or {}).get("past") or []
+        have = set(_maxh["radar"])
+        todo = [f for f in past if f.get("time") and int(f["time"]) not in have]
+        for fr in todo:
+            tiles = {}
+
+            def tile(h, path, tx, ty):
+                if (tx, ty) not in tiles:
+                    url = f"{h}{path}/{RV_SIZE}/{RV_ZOOM}/{tx}/{ty}/{RV_COLOR}/0_0.png"
+                    req = urllib.request.Request(url, headers={"User-Agent": "gb-energy-monitor"})
+                    with urllib.request.urlopen(req, timeout=20) as r:
+                        tiles[(tx, ty)] = _png_rgba(r.read())
+                    meter_api("RV", "radar_tile_backfill", 1)
+                return tiles[(tx, ty)]
+            g = _rg_grid(host, fr["path"], lat, lon, RG_KM, RG_CELL, tile_fn=tile)
+            with _maxh_lock:
+                _maxh["radar"][int(fr["time"])] = _rg_max(g, RG_KM, RG_CELL); _maxh["dirty"] = True
+        with _maxh_lock:
+            _maxh_save(time.time(), force=True)
+    except Exception:
+        pass
+
+
+def maxh_gauges(gauge_hist, plotted, lat, lon, now):
+    """Fold the physical gauges' recent readings (gauge_hist, keys "g:…") into the 5-minute slots.
+    plotted: {key: name} of the gauges within the plot. Never raises."""
+    try:
+        with _maxh_lock:
+            _maxh_load(); _maxh_home(lat, lon)
+            G = _maxh["gauge"]
+            for k, name in plotted.items():
+                for ts, mm in gauge_hist.get(k) or []:
+                    if mm is None:
+                        continue
+                    a = int((ts - MAXH_EA_S) // MAXH_SLOT_S + 1) * MAXH_SLOT_S     # slots starting in (ts-15 min, ts]
+                    for sl in range(a, int(ts) + 1, MAXH_SLOT_S):
+                        if sl < ts - MAXH_EA_S:
+                            continue
+                        cur = G.get(sl)
+                        if cur is None or mm > cur[0]:
+                            G[sl] = [round(mm, 2), name]; _maxh["dirty"] = True
+            _maxh_save(now)
+    except Exception:
+        pass
+
+
+def maxh_home(radar, points, lat, lon, now):
+    """Record rain AT HOME: the radar box at home (radar = {frame_ts, home_mm}) and the nearest
+    physical gauge within SIT_HERE_KM (not late). Never raises."""
+    try:
+        with _maxh_lock:
+            _maxh_load(); _maxh_home(lat, lon)
+            if radar and radar.get("frame_ts") and radar.get("home_mm") is not None:
+                _maxh["hrad"][int(radar["frame_ts"])] = round(radar["home_mm"], 2); _maxh["dirty"] = True
+            near = [p for p in points if p.get("kind") == "phys" and not p.get("late") and p.get("mm") is not None
+                    and p.get("last_ts") and p.get("dist_km") is not None and p["dist_km"] < SIT_HERE_KM]
+            if near:
+                n = min(near, key=lambda p: p["dist_km"])
+                _maxh["hgau"][int(n["last_ts"])] = [round(n["mm"], 2), n.get("name") or "gauge", round(n["dist_km"], 1)]
+                _maxh["dirty"] = True
+            _maxh_save(now)
+    except Exception:
+        pass
+
+
+def maxh_public(now=None):
+    """The history for the radar view: radar [[ts, mm/h]], gauge [[slot start, mm/h, gauge]]."""
+    now = now or time.time()
+    with _maxh_lock:
+        _maxh_load()
+        cut = now - MAXH_KEEP_S
+        return {"radar": sorted([t, v] for t, v in _maxh["radar"].items() if t >= cut), "radar_s": 600,
+                "gauge": sorted([t, v[0], v[1]] for t, v in _maxh["gauge"].items() if t >= cut), "gauge_s": MAXH_SLOT_S,
+                "km": RG_KM,
+                "home_radar": sorted([t, v] for t, v in _maxh["hrad"].items() if t >= cut),
+                "home_gauge": sorted([t, v[0], v[1], v[2]] for t, v in _maxh["hgau"].items() if t >= cut),
+                "home_gauge_s": MAXH_EA_S}
 
 
 def fetch_net_precip(points):
@@ -1372,6 +1901,8 @@ def _update_mobiles(state, home, now, track_sample_fn, wind_kmh, net_speed_kmh, 
         # frame when it has one, so its true age is known downstream (approach ETA)
         m["confirmed"] = (m.get("src") in ("OC4", "RV")) and (m.get("mm") is not None)
         m["ts"] = ((rt.get("radar_ts") if isinstance(rt, dict) else None) or now) if m.get("mm") is not None else m.get("ts")
+        if m.get("mm") is not None:                        # where and when it read what (track movement checks)
+            m["hist"] = [x for x in m.get("hist", []) if now - x[0] <= 3600] + [[m["ts"], m["bearing"], m["range_km"], m["mm"], m.get("src")]]
         wet = (m.get("mm") or 0) >= ARC_DETECT_MMH
         if wet:
             m["last_wet_ts"] = now
@@ -2348,7 +2879,62 @@ def _ang_diff(a, b):
 SIT_DIR_TOL    = 75.0    # deg: a track heading this far off the wind flow is distrusted
 SIT_UPWIND_TOL = 90.0    # deg: a track must be within this of UPWIND to count as approaching
 
-def _track_motion(t, now, wind_from=None, flow=None):
+SIT_APPR_MISS_KM   = 8.0    # a cell's path must pass within this of home to count as approaching
+TRACK_HIT_KM       = 6.0    # a sensor within this of where the radar motion puts the cell then = a hit
+TRACK_HIT_MIN_MOVE = 4.0    # ...the cell must have moved at least this far since (else it proves nothing)
+TRACK_HIT_WINDOW_S = 45 * 60
+TRACK_AGREE_DEG    = 45.0   # gauge hand-over motion agrees with the radar's within this heading...
+TRACK_AGREE_RATIO  = (0.5, 2.0)   # ...and this speed ratio
+
+
+def _motion_hits(tx, ty, vx, vy, sensors, now):
+    """Which independent sensors confirm a radar motion (vx, vy km/h) of the cell now at (tx, ty) km: a sensor that
+    read wet where the motion puts the cell at that time (within TRACK_HIT_KM), clearly not where a stationary cell
+    would be, and has since gone dry (the rain moved off it). Radar-sampled points are not independent and are
+    skipped. Model probes (Open-Meteo) need two hits. Returns the sorted list of confirming kinds."""
+    spd = math.hypot(vx, vy); kinds = {}
+    for s_ in sensors or []:
+        if s_.get("src") == "RV":
+            continue
+        hist = sorted(s_.get("hist") or [], key=lambda r: r[0])
+        if not hist:
+            continue
+        latest = hist[-1]
+        for r in hist:
+            ts, sx, sy, mm = r[0], r[1], r[2], r[3]
+            if mm is None or mm < SIT_WET_MMH or now - ts > TRACK_HIT_WINDOW_S or ts >= latest[0]:
+                continue
+            if (latest[3] or 0) >= SIT_WET_MMH and math.hypot(latest[1] - sx, latest[2] - sy) < 1.0:
+                continue                                   # still wet at that spot: not left behind
+            dt = (now - ts) / 3600.0
+            if spd * dt < TRACK_HIT_MIN_MOVE:
+                continue
+            dm = math.hypot(sx - (tx - vx * dt), sy - (ty - vy * dt))
+            ds = math.hypot(sx - tx, sy - ty)
+            if dm <= TRACK_HIT_KM and ds >= dm + TRACK_HIT_MIN_MOVE:
+                kinds[s_["kind"]] = kinds.get(s_["kind"], 0) + 1
+                break
+    return sorted(k for k, n in kinds.items() if n >= (2 if k == "model probe" else 1))
+
+
+def _gauge_motion(t, h):
+    """(km/h, heading) of a track from its gauge hand-over (gained AND lost members over TRACK_MIN_SPAN_S), or None."""
+    if len(h) < 2:
+        return None
+    span = h[-1][0] - h[0][0]
+    ids0 = set(h[0][5]) if len(h[0]) > 5 else set()
+    ids1 = set(h[-1][5]) if len(h[-1]) > 5 else set()
+    if not (span >= TRACK_MIN_SPAN_S and bool(ids1 - ids0) and bool(ids0 - ids1)):
+        return None
+    c = lambda x: x[6] if (len(x) > 6 and x[6]) else [x[1], x[2]]
+    c0, c1 = c(h[0]), c(h[-1])
+    dx = c1[1] * math.sin(math.radians(c1[0])) - c0[1] * math.sin(math.radians(c0[0]))
+    dy = c1[1] * math.cos(math.radians(c1[0])) - c0[1] * math.cos(math.radians(c0[0]))
+    v = math.hypot(dx, dy) / (span / 3600.0)
+    return (v, math.degrees(math.atan2(dx, dy)) % 360.0) if v >= 1.0 else None
+
+
+def _track_motion(t, now, wind_from=None, flow=None, sensors=None, radar_fn=None):
     """Motion of one tracked cluster. HONEST motion only: a fixed gauge can't move, and a
     cluster that only grows shifts its centroid without real motion, so a speed/heading is
     measured only when the cluster has both GAINED and LOST member gauges across at least
@@ -2362,12 +2948,57 @@ def _track_motion(t, now, wind_from=None, flow=None):
     out = {"approaching": False, "speed_kmh": None, "eta_text": None,
            "eta_lo": None, "eta_hi": None,
            "move_kmh": None, "move_deg": None, "move_trusted": False,
-           "speed_verified": False, "speed_note": None, "stale": stale}
+           "speed_verified": False, "speed_note": None, "stale": stale,
+           "move_src": None, "verified_by": []}
     flow_to = ((wind_from + 180.0) % 360.0) if wind_from is not None else None
     if flow_to is not None:
         out["move_deg"] = round(flow_to)            # wind-implied direction, unconfirmed
+        out["move_src"] = "850 hPa"
     if stale:
         out["speed_note"] = "no active gauges this cycle"
+        return out
+    # RADAR FIRST (Andy, 5 Nov): the cell's own radar motion, else the area's; then a second, independent source
+    # must confirm it — the gauges' hand-over motion agreeing, or gauges / probes / mobiles the rain has passed over
+    # where the radar motion says it was. Only a confirmed motion can make the cell "approaching".
+    rv, rsrc = None, None
+    if radar_fn:
+        try:
+            rv = radar_fn(t["_x"], t["_y"]); rsrc = "radar"
+            if rv is None:
+                rv = radar_area_motion(); rsrc = "radar (area)"
+        except Exception:
+            rv = None
+    gv = _gauge_motion(t, h)
+    if rv and rv.get("vx") is not None:
+        vx, vy = rv["vx"], rv["vy"]; spd = math.hypot(vx, vy)
+        out["move_src"] = rsrc
+        if spd < SPEED_MIN_MPH * KMH_PER_MPH:
+            out["move_deg"] = None; out["move_kmh"] = round(spd, 1)
+            out["speed_note"] = rsrc + ": barely moving"
+            return out
+        deg = math.degrees(math.atan2(vx, vy)) % 360.0
+        out["move_deg"] = round(deg); out["move_kmh"] = round(spd, 1)
+        if spd > SPEED_MAX_MPH * KMH_PER_MPH:
+            out["speed_note"] = f"{rsrc}: {spd / KMH_PER_MPH:.0f} mph is implausible"
+            return out
+        vby = []
+        if gv and _ang_diff(gv[1], deg) <= TRACK_AGREE_DEG and TRACK_AGREE_RATIO[0] <= gv[0] / spd <= TRACK_AGREE_RATIO[1]:
+            vby.append("gauge hand-over")
+        vby += [k for k in _motion_hits(t["_x"], t["_y"], vx, vy, sensors, now) if k not in vby]
+        out["verified_by"] = vby
+        if not vby:
+            out["speed_note"] = rsrc + " only: no second source yet"
+            return out
+        out["speed_verified"] = out["move_trusted"] = True
+        out["speed_note"] = rsrc + " + " + ", ".join(vby)
+        x, y = t["_x"], t["_y"]; d1 = math.hypot(x, y) or 0.01
+        closing = -(vx * x + vy * y) / d1                       # speed towards home
+        miss = abs(vx * y - vy * x) / spd                       # how close the path passes to home
+        if closing > 0 and miss <= SIT_APPR_MISS_KM and d1 > SIT_HERE_KM:
+            out["speed_kmh"] = round(closing, 1)
+            txt, elo, ehi = eta_from_speed(d1, closing, measured=True)
+            out["approaching"] = True
+            out["eta_text"] = txt; out["eta_lo"] = elo; out["eta_hi"] = ehi
         return out
     if len(h) < 2:
         return out
@@ -2399,6 +3030,8 @@ def _track_motion(t, now, wind_from=None, flow=None):
     out["speed_verified"] = out["move_trusted"] = True
     out["move_deg"] = round(obs_deg)
     out["move_kmh"] = round(mspd, 1)
+    out["move_src"] = "gauges"; out["verified_by"] = ["850 hPa wind"]
+    out["speed_note"] = "gauges + 850 hPa wind (no radar motion)"
     closing = d0 - d1                            # wet-centre distance decreasing = closing on home
     if closing > 0:
         spd = closing / dt_hr
@@ -2423,7 +3056,7 @@ def _next_track_id(tracks):
     return i
 
 
-def update_tracks(points, pstate, now, wind_from=None, flow=None):
+def update_tracks(points, pstate, now, wind_from=None, flow=None, sensors=None, radar_fn=None):
     """Cluster active gauges and match to persistent tracks by nearest centre, so a
     system keeps ONE id as it drifts across sectors. Returns a list of track summaries
     (bearing, dist, intensity, snow, approaching, eta)."""
@@ -2463,7 +3096,7 @@ def update_tracks(points, pstate, now, wind_from=None, flow=None):
     pstate.sit_tracks = survivors
     out = []
     for t in survivors:
-        mot = _track_motion(t, now, wind_from, flow)
+        mot = _track_motion(t, now, wind_from, flow, sensors=sensors, radar_fn=radar_fn)
         out.append({"id": t["id"], "bearing": round(t["bearing"]), "dist_km": round(t["dist_km"], 1),
                     "peak_band": t["peak_band"], "snow": bool(t["snow"]), "n": t["n"],
                     "approaching": mot["approaching"], "speed_kmh": mot["speed_kmh"],
@@ -2472,6 +3105,7 @@ def update_tracks(points, pstate, now, wind_from=None, flow=None):
                     "move_kmh": mot["move_kmh"], "move_deg": mot["move_deg"],
                     "move_trusted": mot["move_trusted"],
                     "speed_verified": mot["speed_verified"], "speed_note": mot["speed_note"],
+                    "move_src": mot["move_src"], "verified_by": mot["verified_by"],
                     "stale": mot["stale"]})
     return out
 
@@ -2602,6 +3236,8 @@ def run_land_probes(state, sit, home, wind_from, now, sampler, cadence_mult=1.0,
                            "mm": mm, "snow": bool(rt.get("snow")) if isinstance(rt, dict) else False,
                            "ts": now})
         state.sit_probes = probes
+        state.sit_probe_hist = [x for x in (state.sit_probe_hist or []) if now - x[0] <= 3600] + \
+            [[now, pr["bearing"], pr["dist_km"], pr["mm"], "OM"] for pr in probes if pr["mm"] is not None]
         state.sit_probe_ts = now
         state.sit_probe_used += len(pts); state.sit_probe_used_ts = now
         state.sit_probe_phase += 1
@@ -2713,9 +3349,10 @@ def _sit_here_phrase(sit, band):
     lead = {"very heavy": "Very heavy", "heavy": "Heavy", "moderate": "",
             "light": "Light", "dry": ""}.get(_SIT_BAND_NAMES[band], "")
     body = (lead + " " + noun).strip()
+    hail = ", possibly with hail," if sit.get("hail_here") else ""
     if sit["snow"]:
-        return _cap(body) + " is falling at your location."
-    return _cap(body) + " at your location."
+        return _cap(body) + hail + " is falling at your location."
+    return _cap(body) + (" at your location, possibly with hail." if sit.get("hail_here") else " at your location.")
 
 def _area_band(sit, which="max_band"):
     """Current measured area band for spoken words (never the 90-min peak)."""
@@ -3208,11 +3845,15 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
     data_age_s = lead.get("age_s") or 0
     if eta_lo is not None and eta_hi is not None and data_age_s >= 60:
         eta_txt, eta_lo, eta_hi = _eta_age_corrected(eta_lo, eta_hi, data_age_s)
+    eta_say = _eta_say(eta_lo, eta_hi, measured, now) if eta_txt else None
     weakening = bool((land and land.get("active") and land.get("intensity_trend") == "weakening")
                      or (sea and sea.get("detected") and sea.get("weakening")))
     trend = ("weakening" if weakening else
              (land.get("intensity_trend") if (land and land.get("active")) else "steady"))
     snow_cells = [c for c in cells if c.get("snow")]
+    # possible hail (radar >= RG_HAIL_DBZ) among the rain heading this way: in the cone, within the alert range
+    hail = any(_in_cone(b, wind_from) and GAUGE_CONFIRM_KM < d <= APPR_MAX_KM for b, d in radar_hail_cells(now)) \
+        if wind_from is not None else False
     return {"cls": cls, "why": why, "edge_km": lead["d"], "bearing": lead["b"],
             "data_age_s": (int(data_age_s) if data_age_s else 0),
             "dir": compass(lead["b"], spoken=True), "peak_mm": round(peak, 2),
@@ -3220,7 +3861,8 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
             "width_km": width, "sources": sorted({c["src"] for c in cells}),
             "speed_kmh": round(spd, 1) if spd else None, "measured": measured,
             "speed_src": speed_src,
-            "eta_text": eta_txt, "eta_lo": eta_lo, "eta_hi": eta_hi, "too_far": too_far,
+            "eta_text": eta_txt, "eta_lo": eta_lo, "eta_hi": eta_hi, "too_far": too_far, "eta_say": eta_say,
+            "hail": hail,
             "weakening": weakening, "trend": trend, "press_cls": press_cls,
             "snow": len(snow_cells) > len(cells) / 2,
             "cells": sorted(cells, key=lambda c: c["d"])[:12]}
@@ -3239,6 +3881,26 @@ def _eta_age_corrected(lo, hi, age_s):
     if lo2 < ETA_MIN_MIN:
         return "within the next fifteen minutes", lo2, hi2
     return f"in {lo2} to {hi2} minutes", lo2, hi2
+
+
+def _eta_say(lo, hi, measured, now):
+    """How the approach alert says WHEN (Andy, 5 Nov). Within half an hour: "in about 15 minutes" (or "soon, within
+    about 25 minutes" when the speed is only the steering wind). Further out with a MEASURED speed, a clock time that
+    doesn't go stale while it's spoken: "around 10:35" (window <= 15 min) or "between 10:30 and 10:45". Further out on
+    the steering wind: the minutes range as before. lo/hi: minutes from now, already corrected for the data's age."""
+    if lo is None or hi is None:
+        return None
+    if hi <= 0:
+        return "any time now"
+    if hi <= 7:
+        return "within the next few minutes"
+    mid = (lo + hi) / 2.0
+    if mid <= 30:
+        return f"in about {max(5, _round5(mid))} minutes" if measured else f"soon, within about {_round5(hi)} minutes"
+    if not measured:
+        return f"in {lo} to {hi} minutes"
+    clk = lambda m: time.strftime("%H:%M", time.localtime(now + m * 60.0 - (now + m * 60.0) % 300))
+    return f"around {clk(mid + 2.5)}" if hi - lo <= 15 else f"between {clk(lo + 2.5)} and {clk(hi + 2.5)}"
 
 
 def _appr_qualifies(th, supp=None):
@@ -3278,16 +3940,19 @@ def _appr_subject(ep):
 def _appr_alert_phrase(th):
     noun = _appr_noun(th)
     d = th["dir"] or "nearby"
+    hail = ", possibly with hail" if th.get("hail") else ""          # radar core >= RG_HAIL_DBZ in the cone (Andy, 5 Nov)
     if th["cls"] == "organised":
         if th["eta_text"]:
-            return f"A band of {noun} is approaching from the {d} and may arrive {th['eta_text']}."
-        return f"A band of {noun} is moving in from the {d}."
+            return f"A band of {noun} is approaching from the {d} and may arrive {th.get('eta_say') or th['eta_text']}{hail}."
+        return f"A band of {noun} is moving in from the {d}{hail}."
     what = "A wintry shower" if th.get("snow") else "A shower"
-    return f"{what} is approaching from the {d} and may reach you {th['eta_text'] or 'soon'}."
+    return f"{what} is approaching from the {d} and may reach you {th.get('eta_say') or th['eta_text'] or 'soon'}{hail}."
 
 
 def _appr_confirm_phrase(ep, th):
-    tail = f", and may arrive {th['eta_text']}." if th.get("eta_text") else ", and is getting closer."
+    hail = ", possibly with hail" if th.get("hail") else ""
+    tail = (f", and may arrive {th.get('eta_say') or th['eta_text']}{hail}." if th.get("eta_text")
+            else f", and is getting closer{hail}.")
     return f"Confirmed: the {_appr_subject(ep)} approaching from the {ep['dir']} is still on its way" + tail
 
 
@@ -3607,16 +4272,19 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
 
     # ---- situational engine (read-only diagnostic, WEATHER_ALERT_DESIGN.md phase A/B) --
     _sit_pts = []
+    _maxh_plot = {}                      # physical gauges within the radar plot: gauge_hist key -> name
     for _g in (gauges or []):
         if _g.get("lat") is None or _g.get("lon") is None:
             continue
         _k = "g:" + str(_g.get("ref") or _g.get("label") or id(_g))
         _mm = _g.get("mm_h"); _mm = _mm if _mm is not None else _g.get("mm")
         _push_ghist(state.gauge_hist, _k, _iso_ts(_g.get("dt")) or now, _mm)
+        if (_g.get("dist_km") or haversine_km(home[0], home[1], _g["lat"], _g["lon"])) <= RG_KM:
+            _maxh_plot[_k] = _gname(_g)
         _sit_pts.append({"bearing": bearing_deg(home[0], home[1], _g["lat"], _g["lon"]),
                          "dist_km": _g.get("dist_km") or haversine_km(home[0], home[1], _g["lat"], _g["lon"]),
                          "char": gauge_character(state.gauge_hist.get(_k), now),
-                         "snow": False, "kind": "phys", "key": _gkey(_g),
+                         "snow": False, "kind": "phys", "key": _gkey(_g), "hk": _k,
                          "flag": (state.gauge_flags.get(_gkey(_g)) or {}).get("flag"),
                          "name": _gname(_g), "ref": _g.get("ref"), "grid": _g.get("grid"),
                          "place": _g.get("place"),
@@ -3631,7 +4299,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         _push_ghist(state.gauge_hist, _k, _rts, (None if _vg.get("stale") else _vg.get("mm")))
         _sit_pts.append({"bearing": _vg["bearing"], "dist_km": _vg["dist_km"],
                          "char": gauge_character(state.gauge_hist.get(_k), now),
-                         "snow": bool(_vg.get("snow")), "kind": "net", "key": _k,
+                         "snow": bool(_vg.get("snow")), "kind": "net", "key": _k, "hk": _k,
                          "name": _vg.get("name"), "mm": _vg.get("mm"),
                          "last_ts": _vg.get("model_ts"), "src": _vg.get("source"),
                          "stale": bool(_vg.get("stale"))})
@@ -3653,6 +4321,9 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                               "place": p.get("place")}
                              for p in _sit_pts]
     situational["steering"] = _steer_public(flow)
+    situational["radar_grid"] = radar_grid(home[0], home[1], flow=flow, now=now)   # the view's radar overlay
+    maxh_gauges(state.gauge_hist, _maxh_plot, home[0], home[1], now)
+    situational["max_hist"] = maxh_public(now)   # highest rate in the plot, radar and gauges, last 25 h
     situational["gauge_flags"] = gauge_flags
     # at-home reading that drives the nowcast "at your location" voice (model/nearest
     # sensor rain rate) — surfaced so the view can SHOW what caused an at-home alert.
@@ -3692,8 +4363,27 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                               for m in vgauges if m.get("kind") == "mobile"]
     # phase (d): cluster continuity — track systems across sectors; if home is dry but
     # a tracked cluster is closing, surface it as ONE approaching system (dir + ETA).
+    # the independent sensors a cell's radar motion can be checked against: EA gauges, sea-net / ring points that
+    # aren't radar-sampled, the mobiles' readings and the land probes' (positions in km east / north of home)
+    _xy = lambda b, d: (d * math.sin(math.radians(b)), d * math.cos(math.radians(b)))
+    _sens = []
+    for _p in _sit_pts:
+        if _p.get("flag") or _p.get("src") == "RV":
+            continue
+        _sx, _sy = _xy(_p["bearing"], _p["dist_km"])
+        _sens.append({"kind": "gauge" if _p["kind"] == "phys" else ("sea net" if _p.get("src") == "OC4" else "model probe"),
+                      "src": _p.get("src"), "hist": [[e[0], _sx, _sy, e[1]] for e in state.gauge_hist.get(_p.get("hk"), [])]})
+    for _m in state.mobiles:
+        _hh = [[r[0]] + list(_xy(r[1], r[2])) + [r[3]] for r in _m.get("hist", []) if r[4] != "RV"]
+        if _hh:
+            _sens.append({"kind": "mobile", "src": _m.get("src"), "hist": _hh})
+    _pp = {}
+    for r in (state.sit_probe_hist or []):
+        _pp.setdefault((round(r[1]), round(r[2], 1)), []).append([r[0]] + list(_xy(r[1], r[2])) + [r[3]])
+    _sens += [{"kind": "model probe", "src": "OM", "hist": v} for v in _pp.values()]
     _tracks = update_tracks([p for p in _sit_pts if not p.get("flag") and not p.get("stale")],
-                            state, now, wind_from, flow=flow)
+                            state, now, wind_from, flow=flow, sensors=_sens,
+                            radar_fn=radar_cell_motion if RADAR_ENABLED else None)
     situational["tracks"] = _tracks
     _appr = [t for t in _tracks if t.get("approaching")]
     _appr_tr = min(_appr, key=lambda t: t["dist_km"]) if _appr else None
@@ -3750,6 +4440,8 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         except Exception:
             _rvv = None
     situational["home_int"] = home_intensity(state, _sit_pts, _rvv, now)
+    maxh_home(_rvv, _sit_pts, home[0], home[1], now)            # rain at home, for the weather panel's plot
+    situational["max_hist"] = maxh_public(now)
     situational["far_heavier"] = far_heavier(_sit_pts)
     # Rain AT home = the nearest gauge < 5 km is wet OR the radar box at home is wet on a
     # fresh frame. The gauge alone missed heavy rain at home (22 Oct 18:05: radar 10.5 mm/h,
@@ -3762,6 +4454,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                       and _rb[-1][0] - _rb[-2][0] <= HERE_PAIR_GAP_S
                       and min(_rb[-1][1] or 0, _rb[-2][1] or 0) >= SIT_WET_MMH)
     situational["here"] = situational["here_gauge"] or _radar_wet
+    situational["hail_here"] = any(d <= HAIL_HERE_KM for _, d in radar_hail_cells(now, HERE_RADAR_MAX_AGE_S))
     situational_speak = schedule_situational(
         situational, state, now, mult=cadence_mult,
         # the approach engine owns anything upwind: while it is weighing a threat (even one it
@@ -3871,7 +4564,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         "suppressed": bool(state.appr_supp),
         "threat": (None if not _threat else {k: _threat[k] for k in (
             "cls", "why", "edge_km", "dir", "peak_mm", "n_cells", "width_km", "sources", "eta_text", "weakening",
-            "speed_src", "data_age_s")}),
+            "speed_src", "data_age_s", "eta_lo", "eta_hi", "measured", "snow", "too_far")}),   # eta_lo/hi: minutes from `ts`
         "present_reads": state.appr_present_reads, "empty_reads": state.appr_empty_reads,
         "qualifies": (None if not _threat else _appr_qualifies(_threat, state.appr_supp)[1]),
         "shadow_candidate": (state.appr_cand or {}).get("cand"),

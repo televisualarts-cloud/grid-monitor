@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261025.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261104.4  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -112,6 +112,14 @@ try:
 except Exception:
     _balancing = None
 
+# Gas storage (UK per-site flows and estimated fill, LNG tanks, GIE AGSI+ Europe) for the
+# gas storage pop-up and the wall; refreshes in its own background thread, never blocks.
+try:
+    import gas_storage as _gas_storage
+    _gas_storage._kick()
+except Exception:
+    _gas_storage = None
+
 # Background sampler: fetch + log one history row every POWERCUTS_SAMPLE_S and cache the
 # latest snapshot, so the endpoint is instant and history rows land at the sample cadence
 # (not once per browser request). Aligned to the slowest DNO feed (~15 min); 300 s is safe.
@@ -195,7 +203,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261024.3"
+SERVER_BUILD = "261104.4"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -373,7 +381,11 @@ def _rows(payload):
 
 def get_generation():
     """Latest instantaneous generation by fuel type (MW), with 1-hour trend."""
-    d = _rows(fetch_json(f"{BMRS}/datasets/FUELINST?format=json"))
+    # An explicit window of the last 2 hours: with none, Elexon returns only the current settlement day, which is
+    # empty for several minutes after midnight, so interconnector flows and the wall's reconciliation dropped out.
+    now = datetime.now(timezone.utc)
+    frm, to = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%MZ"), (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%MZ")
+    d = _rows(fetch_json(f"{BMRS}/datasets/FUELINST?format=json&publishDateTimeFrom={frm}&publishDateTimeTo={to}"))
     if not d:
         return None
     # Latest publish batch
@@ -1275,7 +1287,7 @@ def _station_stem(code):
 
 
 def _load_bmu_registry():
-    """Return {elexonBmUnit: {'fuel','name','stem','cap'}}, fetched from Elexon
+    """Return {elexonBmUnit: {'fuel','name','stem','cap','ft'}}, fetched from Elexon
     and cached to disk for a day. Never raises — returns {} on total failure so
     classification degrades to the prefix heuristic."""
     now = time.time()
@@ -1285,7 +1297,8 @@ def _load_bmu_registry():
     # try disk cache first
     try:
         blob = json.loads(BMU_REG_FILE.read_text())
-        if now - blob.get("ts", 0) < BMU_REG_TTL:
+        # a cache written before the raw fuel type ("ft") was kept is refetched
+        if now - blob.get("ts", 0) < BMU_REG_TTL and any("ft" in v for v in blob["map"].values()):
             _bmu_reg["map"], _bmu_reg["ts"] = blob["map"], blob["ts"]
             return _bmu_reg["map"]
     except Exception:
@@ -1311,7 +1324,7 @@ def _load_bmu_registry():
         fuel = _FUELTYPE_MAP.get(ft) if ft else None
         name = (r.get("bmUnitName") or "").strip()
         mp[code] = {"fuel": fuel, "name": name, "stem": _station_stem(code),
-                    "cap": r.get("generationCapacity")}
+                    "cap": r.get("generationCapacity"), "ft": ft}      # ft: Elexon's own fuel type (FUELINST)
     if mp:
         _bmu_reg["map"], _bmu_reg["ts"] = mp, now
         try:
@@ -1472,6 +1485,19 @@ ALERT_LOG = Path(__file__).with_name("alert_history.json")
 ALERT_LOG_DAYS = 30          # prune cleared events older than this
 # 'System nominal'/'ok' is a UI reassurance, not an event worth journalling.
 ALERT_LOG_SKIP_LEVELS = {"ok"}
+# Dismissed alerts (the dashboard's "dismiss 7 d" on an alert open a long time). Kept per
+# episode: a dismissal ends early if the alert clears or changes level, so a new or worse
+# episode always shows. Critical alerts can't be dismissed.
+ALERT_DISMISS = Path(__file__).with_name("alert_dismissed.json")
+ALERT_DISMISS_DAYS = 7
+ALERT_DISMISS_MIN_S = 24 * 3600      # offered once an alert has been open this long
+_alert_dismiss_lock = threading.Lock()
+# Gas alerts in the main alert list (tags NG / GAS / STORE, plus DATA for stale storage
+# figures). They never set the electricity status (alert_level).
+GAS_PROBE_MAX_AGE_S = 3 * 3600       # ignore gas-probe results older than this
+GAS_DAYS_NOTICE = 5.0                # storage + LNG / today's demand below this -> notice
+GAS_DAYS_WARN = 3.0                  #   ... below this -> warning
+GAS_STORE_STALE_DAYS = 2             # National Gas storage stock older than this -> DATA notice
 
 
 def _log_margin_history(margin):
@@ -1506,6 +1532,44 @@ def _log_margin_history(margin):
         return sorted(pruned.items())
     except Exception:
         return []
+
+
+def _delta_1h(points, key, now_t, now_v, tol_s=1200):
+    """now_v minus the value of points[key] about an hour before now_t (an ISO time), from the
+    point nearest to now_t - 1 h within tol_s; None when there isn't one (e.g. under an hour of log)."""
+    try:
+        if now_v is None or not now_t:
+            return None
+        tgt = datetime.fromisoformat(str(now_t).replace("Z", "+00:00")).timestamp() - 3600
+        best = None
+        for p in points or []:
+            v = p.get(key)
+            if v is None:
+                continue
+            dt = abs(datetime.fromisoformat(str(p["t"]).replace("Z", "+00:00")).timestamp() - tgt)
+            if dt <= tol_s and (best is None or dt < best[0]):
+                best = (dt, v)
+        return round(now_v - best[1], 2) if best else None
+    except Exception:
+        return None
+
+
+# Low-carbon share over the last ~2 h, for its 1-hour trend (the wall's header readout). Held in
+# memory only, so the trend is absent for the first hour after a restart rather than guessed.
+_lc_ring = []
+
+
+def _lc_delta_1h(pct):
+    now = time.time()
+    _lc_ring.append((now, pct))
+    while _lc_ring and _lc_ring[0][0] < now - 7200:
+        _lc_ring.pop(0)
+    best = None
+    for t, v in _lc_ring:
+        dt = abs(t - (now - 3600))
+        if dt <= 600 and (best is None or dt < best[0]):
+            best = (dt, v)
+    return round(pct - best[1], 1) if best else None
 
 
 def _log_gas_history(linepack, supply, demand, at):
@@ -4606,7 +4670,9 @@ GAS_SITE_KIND = {
     "HILLTOP": ("storage", "Hilltop storage"),
     "HOLE HOUSE FARM": ("storage", "Hole House Farm storage"),
     "STUBLACH": ("storage", "Stublach storage"),
-    "EASINGTON ROUGH ST": ("storage", "Rough storage"),
+    # Rough: Centrica paused storage in 2025 and National Gas excludes it from the storage
+    # stock; its live flow is production, so it is not counted as storage supply.
+    "EASINGTON ROUGH ST": ("terminal", "Rough (production)"),
 }
 GAS_KIND_COLOUR = {
     "norway": "#5b8def", "interconnector": "#7b6cf0", "lng": "#3fb6c9",
@@ -4701,6 +4767,9 @@ def get_gas():
         local_hist = _log_gas_history(
             out["linepack"], out["supply_total"], out["demand_total"],
             out.get("linepack_at"))
+        # 1-hour change of linepack and total demand from the same log (the wall's header readout)
+        out["linepack_delta_1h"] = _delta_1h(local_hist, "lp", out.get("linepack_at"), out["linepack"])
+        out["demand_delta_1h"] = _delta_1h(local_hist, "d", out.get("linepack_at"), out["demand_total"])
         # prefer REAL hourly-actual linepack history from the Published Data API
         # (backfills the full 48h immediately, vs the local log which accrues
         # over time). Attach the operator's Forecast Minimum Linepack as a floor.
@@ -5242,6 +5311,42 @@ def _log_pressure(lat, lon, hpa):
     except Exception as e:
         dbg("pressure log failed:", e)
         return None
+
+HOME_TEMP_LOG = Path(__file__).with_name("home_temp_history.json")
+HOME_TEMP_LOG_HOURS = 26
+
+def _log_home_temp(lat, lon, temp, dew):
+    """Append the current temperature and dew point (deg C) for this location, prune to
+    HOME_TEMP_LOG_HOURS, and return the series [[epoch_s, temp, dew], ...] oldest first for
+    the weather panel's temperature plot. Logged when OpenWeather is fetched (~every 15 min).
+    Never raises; returns [] on failure."""
+    key = f"{round(lat,2)},{round(lon,2)}"
+    now = datetime.now(timezone.utc)
+    try:
+        store = {}
+        if HOME_TEMP_LOG.exists():
+            try:
+                store = json.loads(HOME_TEMP_LOG.read_text())
+            except Exception:
+                store = {}
+        series = store.get(key, {})
+        if temp is not None:
+            series[now.isoformat()] = [round(temp, 1), (round(dew, 1) if dew is not None else None)]
+        cutoff = now - timedelta(hours=HOME_TEMP_LOG_HOURS)
+        series = {k: v for k, v in series.items() if _keep_after(k, cutoff)}
+        store[key] = series
+        store = {k: v for k, v in store.items() if v}
+        HOME_TEMP_LOG.write_text(json.dumps(store))
+        out = []
+        for k, v in series.items():
+            try:
+                out.append([round(datetime.fromisoformat(k.replace("Z", "+00:00")).timestamp()), v[0], v[1]])
+            except Exception:
+                continue
+        return sorted(out)
+    except Exception as e:
+        dbg("home temperature log failed:", e)
+        return []
 
 def _keep_after(iso, cutoff):
     try:
@@ -6138,6 +6243,84 @@ def _openmeteo_today_range(lat, lon, timeout=12):
         return None
 
 
+_om_homefc_cache = {}         # (round(lat,2), round(lon,2)) -> {"data":..., "ts":...}
+OM_HOMEFC_TTL = 1800          # 30 min: the model only moves with new runs
+
+def _openmeteo_home_fc(lat, lon, timeout=12):
+    """The next ~13 h at home from Open-Meteo (local-first, keyless; a MODEL forecast, labelled as
+    such): 15-minute precipitation with its snow share (minutely_15; skipped if the instance can't
+    serve it) and hourly temperature, dew point, precipitation and snow share. Precipitation is mm/h;
+    snow share = snowfall water equivalent (cm / 7 x 10 mm, Open-Meteo's rule) / precipitation.
+    Returns {source, m15: [[t, mm_h, snow]], hourly: [[t, temp, dew, mm_h, snow]]} or None."""
+    if _rain_probe is None or not hasattr(_rain_probe, "om_get_json"):
+        return None
+    key = (round(lat, 2), round(lon, 2))
+    c = _om_homefc_cache.get(key)
+    if c and time.time() - c["ts"] < OM_HOMEFC_TTL:
+        return c["data"]
+    base = {"latitude": lat, "longitude": lon, "timeformat": "unixtime", "timezone": "GMT", "forecast_days": 2,
+            "hourly": "temperature_2m,dew_point_2m,precipitation,snowfall"}
+    now = time.time()
+    snow_of = lambda mm, cm: (round(min(1.0, (cm or 0) * 10 / 7 / mm), 2) if mm and mm > 0 else 0.0)
+    try:
+        try:
+            d, om_host = _rain_probe.om_get_json(dict(base, minutely_15="precipitation,snowfall"), timeout=timeout)
+        except Exception:
+            d, om_host = _rain_probe.om_get_json(base, timeout=timeout)       # instance without 15-minute data
+        _meter("OM", "home_fc", 1)
+        # A self-hosted instance holds only the variables it syncs (the README's sync has no dew point
+        # or snowfall), so those come back null: fill them from public Open-Meteo, same model run timing
+        # aside (labelled in the source). Skipped when the local instance has them.
+        filled = []
+        if om_host == "local":
+            h0, m0 = (d or {}).get("hourly") or {}, (d or {}).get("minutely_15") or {}
+            need_h = [v for v in ("dew_point_2m", "snowfall") if not any(x is not None for x in (h0.get(v) or []))]
+            need_m = "snowfall" if m0.get("time") and not any(x is not None for x in (m0.get("snowfall") or [])) else None
+            if need_h or need_m:
+                try:
+                    pq = {"latitude": lat, "longitude": lon, "timeformat": "unixtime", "timezone": "GMT", "forecast_days": 2}
+                    if need_h:
+                        pq["hourly"] = ",".join(need_h)
+                    if need_m:
+                        pq["minutely_15"] = "snowfall"
+                    pd, _ = _rain_probe.om_get_json(pq, timeout=timeout, public_only=True)
+                    _meter("OM", "home_fc_fill", 1)
+                    for blk, need in (("hourly", need_h), ("minutely_15", [need_m] if need_m else [])):
+                        src, dst = (pd or {}).get(blk) or {}, d.get(blk) or {}
+                        at = {t: i for i, t in enumerate(src.get("time") or [])}
+                        for v in need:
+                            vals = src.get(v) or []
+                            dst[v] = [vals[at[t]] if t in at and at[t] < len(vals) else None for t in dst.get("time") or []]
+                    filled = [{"dew_point_2m": "dew point", "snowfall": "snow"}[v] for v in need_h] + (["15-min snow"] if need_m else [])
+                except Exception as e:
+                    dbg("open-meteo home forecast public fill failed:", _ea_errstr(e))
+        h = (d or {}).get("hourly") or {}
+        hourly = []
+        for i, t in enumerate(h.get("time") or []):
+            if now - 7200 <= t <= now + 13 * 3600:
+                mm = (h.get("precipitation") or [None] * (i + 1))[i]
+                hourly.append([t, (h.get("temperature_2m") or [None] * (i + 1))[i], (h.get("dew_point_2m") or [None] * (i + 1))[i],
+                               mm, snow_of(mm, (h.get("snowfall") or [0] * (i + 1))[i])])
+        m = (d or {}).get("minutely_15") or {}
+        m15 = []
+        for i, t in enumerate(m.get("time") or []):
+            mm = (m.get("precipitation") or [None] * (i + 1))[i]
+            if now - 900 <= t <= now + 13 * 3600 and mm is not None:
+                m15.append([t, round(mm * 4, 2), snow_of(mm, (m.get("snowfall") or [0] * (i + 1))[i])])
+        if not hourly:
+            raise ValueError("no hourly forecast")
+        src = "Open-Meteo (local)" if om_host == "local" else "Open-Meteo"
+        if filled:
+            src += "; " + ", ".join(filled) + " from public Open-Meteo"
+        data = {"source": src, "m15": m15, "hourly": hourly,
+                "fetched": round(now)}
+        _om_homefc_cache[key] = {"data": data, "ts": now}
+        return data
+    except Exception as e:
+        dbg("open-meteo home forecast fetch failed:", _ea_errstr(e))
+        return c["data"] if c else None
+
+
 # ---- background rain engine --------------------------------------------------
 # The rain engine used to run only when a page asked for EA data, so with the EA page
 # and Forecast view closed it stopped. This sampler keeps it running at the location
@@ -6294,6 +6477,12 @@ def _ea_collect_wind(out, lat, lon, sampling_mult=1.0):
             cond["pressure_tendency"] = None
         # logged history for the panel's pressure plot (same file, no extra fetch)
         cond["pressure_series"] = _pressure_series_read(lat, lon)
+        # the weather panel's plots: logged temperature / dew point, OpenWeather's one-minute rain
+        # nowcast (One Call only; kept with the cached reading) and Open-Meteo's next ~13 h at home
+        cond["temp_series"] = _log_home_temp(lat, lon, temp, dew)
+        cond["minute"] = [[mn.get("dt"), mn.get("mm_h")] for mn in (_owm_minute or [])
+                          if isinstance(mn, dict) and mn.get("dt") and mn.get("mm_h") is not None]
+        cond["home_fc"] = _openmeteo_home_fc(lat, lon)
         wind = {
             "home": home,
             "ring": [],                    # no ring: OpenWeather can't batch points
@@ -6539,10 +6728,9 @@ def _risk_alert_text(sr, hz_txt, dev, lvl):
     inertia_low = sr.get("inertia_band") in ("amber", "red")
     why = []
     if "statutory" in drv:
-        why.append(f"beyond the statutory {p.get('stat_lo', 49.5):.1f}–{p.get('stat_hi', 50.5):.1f} Hz limit")
+        why.append(f"outside statutory {p.get('stat_lo', 49.5):.1f}–{p.get('stat_hi', 50.5):.1f} Hz")
     elif "band" in drv:
-        why.append(f"outside the normal operational band "
-                   f"({p.get('op_lo', 49.8):.1f}–{p.get('op_hi', 50.2):.1f} Hz)")
+        why.append(f"outside operational {p.get('op_lo', 49.8):.1f}–{p.get('op_hi', 50.2):.1f} Hz")
     # CGRI is a reason only when it says something the deviation alone doesn't: reduced
     # inertia, or (inside the band) a fast-moving frequency. On a normal grid CGRI equals
     # the deviation, so outside the band it just mirrors the band reason.
@@ -6550,18 +6738,123 @@ def _risk_alert_text(sr, hz_txt, dev, lvl):
                  and (inertia_low or (dev or 0) < p.get("cgri_amber", 0.2)))
     if cgri_adds:
         if inertia_low:
-            why.append(f"system inertia is {'low' if sr.get('inertia_band') == 'red' else 'reduced'} "
-                       f"({sr.get('inertia_gws')} GVA·s, notional post-fault RoCoF {npf} Hz/s), "
-                       f"so a trip now would move frequency faster (CGRI {cgri})")
+            why.append(f"{'low' if sr.get('inertia_band') == 'red' else 'reduced'} inertia "
+                       f"{sr.get('inertia_gws')} GVA·s, post-fault RoCoF {npf} Hz/s (CGRI {cgri})")
         elif rocof:
-            why.append(f"frequency is moving quickly (~{rocof * 60:+.2f} Hz/min) (CGRI {cgri})")
+            why.append(f"moving ~{rocof * 60:+.2f} Hz/min (CGRI {cgri})")
         else:
-            why.append(f"composite risk index raised (CGRI {cgri})")
+            why.append(f"CGRI {cgri}")
     if "gen_loss" in drv:
-        why.append("a sudden infeed loss was detected (see the infeed-loss alert)")
+        why.append("sudden infeed loss")
     if not why:                       # level held by hysteresis after the cause eased
         why.append(f"easing (CGRI {cgri})" if cgri is not None else "easing")
-    return f"Grid frequency {hz_txt}, {dev:.3f} Hz off nominal — " + "; ".join(why) + "."
+    return f"{hz_txt} ({dev:.3f} Hz off) — " + "; ".join(why) + "."
+
+
+def _gas_day_label(d):
+    try:
+        dt = datetime.fromisoformat(str(d)[:10])
+        return f"{dt.day} {dt:%b}"
+    except Exception:
+        return str(d or "")
+
+
+def _gas_alerts():
+    """Gas alerts for the main list: official National Gas notices (NG), the gas probe's
+    derived ladder (GAS), storage (STORE) and stale storage figures (DATA). Each carries
+    domain 'gas' so it never sets the electricity status. Never raises."""
+    out = []
+    lv = {"notice": "notice", "warn": "warning", "crit": "critical"}
+
+    def add(level, title, detail, tag):
+        a = _a(level, title, detail, tag=tag)
+        a["domain"] = "gas"
+        out.append(a)
+    try:
+        gp = _gas_probe_snap.get("data") if _gas_probe is not None else None
+        fresh = gp and (time.time() - (_gas_probe_snap.get("ts") or 0)) <= GAS_PROBE_MAX_AGE_S
+        sg = (gp or {}).get("signals") or {}
+        if fresh and sg.get("feed_ok"):
+            for base, name, level in (("gdw", "Gas Deficit Warning", "warning"),
+                                      ("gbn", "Gas Balancing Notification", "critical")):
+                t = _gas_probe._notice_active(sg.get(base + "_today"))
+                m = _gas_probe._notice_active(sg.get(base + "_tomorrow"))
+                if t or m:
+                    add(level, "National Gas: " + name, "In force " + ("today." if t else "tomorrow."), "NG")
+            der = {}
+            for x in sg.get("derived_all") or []:
+                k, _, tier = str(x).partition("/")
+                if tier in lv:
+                    der[k] = lv[tier]
+            pclp1, fmin, lp = sg.get("pclp1"), sg.get("forecast_min"), sg.get("actual_lp")
+            day = _gas_day_label(sg.get("demand_fc_for") or sg.get("gas_day"))
+            if "pclp" in der and pclp1 is not None and fmin is not None:
+                add(der["pclp"], "Closing linepack near minimum",
+                    f"Predicted {pclp1:.1f} mcm vs forecast minimum {fmin:.1f} mcm ({pclp1 - fmin:+.1f}).", "GAS")
+            if "mn" in der:
+                r, sp, fc, eac = sg.get("mn_ratio"), sg.get("spare_mcm"), sg.get("demand_fc"), sg.get("eac")
+                add(der["mn"], "Gas supply margin narrowing" if der["mn"] == "notice" else "Gas supply margin tight",
+                    f"Forecast demand {fc:.0f} mcm/d for {day} vs expected supply {eac:.0f} mcm/d "
+                    f"({100 * r:.0f}%, {sp:.0f} spare)." if None not in (r, sp, fc, eac) else "Forecast demand close to expected supply.", "GAS")
+            if "lpmin" in der and lp is not None and fmin is not None:
+                add(der["lpmin"], "Linepack below forecast minimum",
+                    f"Linepack {lp:.1f} mcm, {fmin - lp:.1f} below today's minimum ({fmin:.1f}).", "GAS")
+            if "pclprev" in der and sg.get("pclp_drop_3h") is not None:
+                add(der["pclprev"], "Closing linepack revised down",
+                    f"Down {sg['pclp_drop_3h']:.1f} mcm in 3 h.", "GAS")
+            if "rate" in der:
+                cph = sg.get("change_per_h")
+                add(der["rate"], "Linepack falling abnormally fast",
+                    f"{cph:+.1f} mcm/h." if cph is not None else "Faster than usual for this hour.", "GAS")
+            if "storage" in der and sg.get("storage_cover_days") is not None:
+                add(der["storage"], "Gas storage low",
+                    f"Storage at max withdrawal {sg['storage_cover_days']:.1f} days.", "STORE")
+            if "price" in der and sg.get("price_x_median") is not None:
+                add(der["price"], "Gas price stress",
+                    f"SAP {sg.get('sap') or 0:.2f} p/kWh, {sg['price_x_median']:.1f}× its 30-day median.", "GAS")
+            fc = sg.get("demand_fc")
+            if fc is not None:
+                ratio = sg.get("mn_ratio") or 0
+                lvl = ("critical" if fc >= _gas_probe.DEMAND_EXCEPT_MCM and ratio >= _gas_probe.MN_NARROW_FRAC
+                       else "warning" if fc >= _gas_probe.DEMAND_VHIGH_MCM
+                       else "notice" if fc >= _gas_probe.DEMAND_HIGH_MCM else None)
+                if lvl:
+                    add(lvl, "High gas demand forecast", f"{fc:.0f} mcm/d forecast for {day}.", "GAS")
+    except Exception:
+        pass
+    try:
+        if _gas_storage is not None:
+            g = _gas_cache.get("data") or {}
+            dem = g.get("demand_total") if not g.get("error") else None
+            gs = _gas_storage.get_gas_storage(demand_mcm_d=dem) or {}
+            dg, uk, eu = gs.get("days_of_gas"), gs.get("uk"), gs.get("eu") or {}
+            if dg and dg.get("total_days") is not None:
+                td = dg["total_days"]
+                lvl = "warning" if td < GAS_DAYS_WARN else "notice" if td < GAS_DAYS_NOTICE else None
+                if lvl:
+                    add(lvl, "Days of gas low",
+                        f"Storage + LNG {td:.1f} days at today's demand ({dg.get('demand_mcm_d') or 0:.0f} mcm/d).", "STORE")
+            e = eu.get("eu") or {}
+            if e.get("full") is not None and e.get("band_lo") is not None and e["full"] < e["band_lo"] and not eu.get("stale"):
+                add("notice", "EU gas storage below 5-year range",
+                    f"EU {e['full']:.1f}% on {_gas_day_label(e.get('gas_day'))}; 5-year range "
+                    f"{e['band_lo']:.1f}–{e.get('band_hi') or 0:.1f}%.", "STORE")
+            if uk and uk.get("stock_day"):
+                try:
+                    age = (datetime.now(timezone.utc).date() - datetime.fromisoformat(uk["stock_day"][:10]).date()).days
+                except Exception:
+                    age = 0
+                if age > GAS_STORE_STALE_DAYS:
+                    add("notice", "Gas storage figures stale",
+                        f"Last National Gas storage stock {_gas_day_label(uk['stock_day'])}.", "DATA")
+            if eu.get("status") == "bad_key":
+                add("notice", "GIE key rejected", "Europe storage figures not updating.", "DATA")
+            elif eu.get("stale"):
+                add("notice", "EU storage figures stale",
+                    f"Last GIE figure {_gas_day_label(e.get('gas_day'))}.", "DATA")
+    except Exception:
+        pass
+    return out
 
 
 def build_alerts(snap):
@@ -6586,8 +6879,7 @@ def build_alerts(snap):
         else:
             msg = "No frequency data available."
         alerts.append(_a("warning", "Frequency feed stale",
-            msg + " Frequency figures show — and frequency alarms are paused until the "
-            "feed recovers.", tag="DATA"))
+            msg + " Frequency alarms paused.", tag="DATA"))
     if sr and sr.get("hz") is not None:
         # Judge on the burst's worst point (hz_judge), not just the newest sample, so a
         # mid-burst excursion that recovered by the last 15s point still raises the card.
@@ -6597,7 +6889,7 @@ def build_alerts(snap):
         dev = sr.get("dev") or 0.0
         if abs(hz - hz_now) >= 0.005:
             verb = "dipped to" if hz < FREQ_NOMINAL else "peaked at"
-            hz_txt = f"{verb} {hz:.3f} Hz in the latest 2-min data, now {hz_now:.3f} Hz"
+            hz_txt = f"{verb.capitalize()} {hz:.3f} Hz, now {hz_now:.3f} Hz"
         else:
             hz_txt = f"{hz:.3f} Hz"
         lvl = sr.get("level") or "green"; rocof = sr.get("rocof_obs")
@@ -6611,15 +6903,13 @@ def build_alerts(snap):
                 # Over-frequency (low demand / sudden loss of load or export). No demand
                 # disconnection; the risk is generation tripping — units must ride through
                 # to ~52 Hz, beyond which over-frequency protection sheds generation.
-                tail = (f"Over-frequency, beyond the statutory {stat_lo:.1f}–{stat_hi:.1f} Hz limit. "
-                        "Sustained high frequency risks generation tripping (units ride through to ~52 Hz).")
+                tail = f"Statutory {stat_lo:.1f}–{stat_hi:.1f} Hz; generation trips beyond ~52 Hz."
             elif hz <= lfdd:
-                tail = f"At/below {lfdd:.1f} Hz automatic low-frequency demand disconnection can arm."
+                tail = f"Demand disconnection can arm at {lfdd:.1f} Hz."
             else:
-                tail = (f"Under-frequency, beyond the statutory {stat_lo:.1f}–{stat_hi:.1f} Hz limit; "
-                        f"automatic demand disconnection would begin at {lfdd:.1f} Hz.")
+                tail = f"Statutory {stat_lo:.1f}–{stat_hi:.1f} Hz; demand disconnection from {lfdd:.1f} Hz."
             alerts.append(_a("critical", "Frequency outside statutory limit",
-                f"Grid frequency {hz_txt} ({dev:.3f} Hz off nominal). " + tail, tag="FREQ"))
+                f"{hz_txt} ({hz - FREQ_NOMINAL:+.3f}). ".replace("(-", "(−") + tail, tag="FREQ"))
             # SUSTAINED statutory breach — distinct from the instantaneous crossing
             # above. Once frequency has stayed beyond a statutory limit continuously
             # for >= FREQ_DWELL_S (60 s), raise a persisting critical alert. The TITLE
@@ -6629,12 +6919,10 @@ def build_alerts(snap):
             if sod and sod >= FREQ_DWELL_S:
                 side = dyn.get("statutory_side") or ("low" if hz <= stat_lo else "high")
                 m, s = int(sod // 60), int(sod % 60)
-                dur = (f"{m}m {s:02d}s" if m else f"{s}s")
-                edge = f"below {stat_lo:.1f}" if side == "low" else f"above {stat_hi:.1f}"
-                cons = ("nearing automatic low-frequency demand disconnection (from 48.8 Hz)."
-                        if side == "low" else "with rising risk of over-frequency generation tripping.")
+                dur = (f"{m} min {s:02d} s" if m else f"{s} s")
+                edge = f"Below {stat_lo:.1f}" if side == "low" else f"Above {stat_hi:.1f}"
                 alerts.append(_a("critical", "Sustained statutory frequency breach",
-                    f"Grid frequency has stayed {edge} Hz for {dur} (now {hz_now:.3f} Hz) — {cons}", tag="FREQ"))
+                    f"{edge} Hz for {dur} (now {hz_now:.3f} Hz).", tag="FREQ"))
         # (b) composite risk — the inertia-weighted CGRI level, so a small drift on a
         #     low-inertia grid escalates while noise on a stiff grid stays quiet. This is
         #     the SYSTEM-RISK alert (tag RISK), kept separate from the frequency-limit
@@ -6648,19 +6936,16 @@ def build_alerts(snap):
             a_ro = abs(rocof); arrow = "falling" if rocof < 0 else "rising"
             if a_ro >= SLEW_ALERT:
                 alerts.append(_a("warning", "Frequency slewing",
-                    f"Frequency has been {arrow} steadily (~{rocof*60:+.2f} Hz/min over ~90s). "
-                    "The 15s public feed gives a trend, not protection-grade RoCoF.", tag="SLEW"))
+                    f"{arrow.capitalize()} ~{rocof*60:+.2f} Hz/min over ~90 s.", tag="SLEW"))
             elif a_ro >= SLEW_WARN:
                 alerts.append(_a("notice", "Frequency drifting",
-                    f"Frequency is {arrow} gently (~{rocof*60:+.2f} Hz/min). "
-                    "Watch for a developing imbalance.", tag="SLEW"))
+                    f"{arrow.capitalize()} ~{rocof*60:+.2f} Hz/min.", tag="SLEW"))
         # (d) sudden infeed loss — from the SAME detector the panel flashes
         gl = sr.get("gen_loss")
         if gl and gl.get("flagged"):
             src = f" ({gl.get('worst_fuel')})" if gl.get("worst_fuel") else ""
             alerts.append(_a("critical" if gl.get("severe") else "warning", "Sudden infeed loss",
-                f"Infeed dropped {gl.get('d_infeed_mw')} MW in ~{int((gl.get('interval_s') or 0)/60)} min{src} — "
-                "a generator or interconnector may have tripped.", tag="RISK"))
+                f"Infeed down {gl.get('d_infeed_mw')} MW in ~{int((gl.get('interval_s') or 0)/60)} min{src}. Possible trip.", tag="RISK"))
 
     # ---- 2. Reserve vs largest infeed (N-1 security), coupled to frequency --
     r = snap.get("reserve")
@@ -6670,38 +6955,30 @@ def build_alerts(snap):
             and not r.get("stale")):
         spin, infeed = r["spinning_reserve_mw"], r["largest_infeed_mw"]
         if spin < infeed:
-            extra = (" Frequency is already below nominal, so a trip now would "
-                     "bite immediately." if freq_low else "")
+            extra = " Frequency already below nominal." if freq_low else ""
             alerts.append(_a("critical", "System not secured against largest loss",
-                f"Spinning reserve {spin:,} MW is below the largest single infeed "
-                f"({infeed:,} MW). A trip of that unit could not be fully covered "
-                f"by running plant.{extra}", tag="N-1"))
+                f"Spinning reserve {spin:,} MW < largest infeed {infeed:,} MW.{extra}", tag="N-1"))
         elif spin < infeed * 1.5:
             # thin reserve is a warning, but escalate to critical if frequency
             # is also sagging — the two together are a genuine pre-event state
             lvl = "critical" if freq_low else "warning"
             alerts.append(_a(lvl, "Thin reserve against largest loss",
-                f"Spinning reserve {spin:,} MW is only {r.get('cover_ratio')}× the "
-                f"largest single infeed ({infeed:,} MW)."
-                + (" Compounded by below-nominal frequency." if freq_low else ""),
+                f"Spinning reserve {spin:,} MW, {r.get('cover_ratio')}× largest infeed ({infeed:,} MW)."
+                + (" Frequency below nominal." if freq_low else ""),
                 tag="N-1"))
     elif r and r.get("stale"):
         alerts.append(_a("notice", "Reserve figure stale",
-            "Operating-reserve calculation is using a cached value this cycle "
-            "(insufficient live unit coverage).", tag="DATA"))
+            "Cached value in use (too few live units).", tag="DATA"))
 
     # ---- 3. Capacity margin (forecast trough) -------------------------------
     m = snap.get("margin")
     if m and m.get("min_mw") is not None:
         if m["min_mw"] <= MARGIN_ALERT_MW:
             alerts.append(_a("critical", "Low capacity margin",
-                f"Indicated margin drops to {m['min_mw']:,} MW around "
-                f"{_hhmm(m['min_time'])}. Headroom is very tight — the window "
-                "where power cuts become a risk.", tag="MARGIN"))
+                f"Margin falls to {m['min_mw']:,} MW around {_hhmm(m['min_time'])}.", tag="MARGIN"))
         elif m["min_mw"] <= MARGIN_WARN_MW:
             alerts.append(_a("warning", "Tightening margin",
-                f"Indicated margin falls to {m['min_mw']:,} MW around "
-                f"{_hhmm(m['min_time'])}. Watch for further tightening.",
+                f"Margin falls to {m['min_mw']:,} MW around {_hhmm(m['min_time'])}.",
                 tag="MARGIN"))
 
     # ---- 4. Steep national demand ramp into a tight margin ------------------
@@ -6711,11 +6988,8 @@ def build_alerts(snap):
         margin_tight = bool(m and m.get("min_mw") is not None
                             and m["min_mw"] <= MARGIN_WARN_MW * 1.5)
         if abs(dd) >= DEMAND_RAMP_WARN_MW and margin_tight:
-            direction = "rising" if dd > 0 else "falling"
             alerts.append(_a("warning", "Steep demand ramp",
-                f"National demand is {direction} fast ({dd:+,} MW over the past "
-                "hour) while margin is already tightening — dispatch is working "
-                "hard to keep pace.", tag="DEMAND"))
+                f"Demand {dd:+,} MW in the past hour, margin tight.", tag="DEMAND"))
 
     # ---- 5. Import / export dependence (interconnector concentration) -------
     ss = snap.get("supply_stack")
@@ -6724,25 +6998,18 @@ def build_alerts(snap):
         infeed = (r or {}).get("largest_infeed_mw")
         if share >= IMPORT_SHARE_ALERT:
             alerts.append(_a("warning", "High import dependence",
-                f"Net imports are meeting {share:.0f}% of demand "
-                f"({ss.get('net_imports_mw', 0):,} MW). Interconnector loss would "
-                "be a very large single infeed to absorb.", tag="IMPORT"))
+                f"Net imports {share:.0f}% of demand ({ss.get('net_imports_mw', 0):,} MW).", tag="IMPORT"))
         elif share >= IMPORT_SHARE_WARN:
             alerts.append(_a("notice", "Notable import dependence",
-                f"Net imports are supplying {share:.0f}% of demand "
-                f"({ss.get('net_imports_mw', 0):,} MW).", tag="IMPORT"))
+                f"Net imports {share:.0f}% of demand ({ss.get('net_imports_mw', 0):,} MW).", tag="IMPORT"))
         elif share <= -EXPORT_SHARE_ALERT:
             exp_mw = -ss.get("net_imports_mw", 0)
             alerts.append(_a("warning", "High export level",
-                f"GB is a large net exporter — exports equal {abs(share):.0f}% of "
-                f"demand ({exp_mw:,} MW). Domestic generation is running well above "
-                "demand; loss of export capability would leave a large surplus to "
-                "shed.", tag="EXPORT"))
+                f"Net exports {abs(share):.0f}% of demand ({exp_mw:,} MW).", tag="EXPORT"))
         elif share <= -EXPORT_SHARE_WARN:
             exp_mw = -ss.get("net_imports_mw", 0)
             alerts.append(_a("notice", "Notable net export",
-                f"GB is net exporting — exports equal {abs(share):.0f}% of demand "
-                f"({exp_mw:,} MW).", tag="EXPORT"))
+                f"Net exports {abs(share):.0f}% of demand ({exp_mw:,} MW).", tag="EXPORT"))
 
     # ---- 6. Official NESO system warnings (layered on top) ------------------
     # Tier set by get_warnings (classify_warning / neso_resolve): only notices
@@ -6759,6 +7026,8 @@ def build_alerts(snap):
         alerts.append(_a(w["tier"], title, detail or "NESO system warning in force.",
                          tag="NESO"))
 
+    alerts.extend(_gas_alerts())
+
     # De-dupe by (level,title), then order worst-first for an alarm-list feel.
     seen, uniq = set(), []
     for a in alerts:
@@ -6770,13 +7039,13 @@ def build_alerts(snap):
     # If nothing of substance fired, say so — but still surface any 'notice'
     # items (e.g. import dependence, stale caches) alongside the reassurance,
     # rather than suppressing them.
-    if not any(a["level"] in ("critical", "warning") for a in uniq):
+    if not any(a["level"] in ("critical", "warning") and a.get("domain") != "gas" for a in uniq):
         neso_up = any(a.get("tag") == "NESO" for a in uniq)
-        uniq.insert(0, _a("ok", "System nominal",
-            ("No frequency, reserve or margin triggers active. A NESO advisory "
-             "notice is in force (below)." if neso_up else
-             "No frequency, reserve, margin or warning triggers active. Grid "
-             "operating within normal parameters."), tag="OK"))
+        # below any gas warning/critical (they don't affect the electricity status), above the rest
+        _at = sum(1 for a in uniq if a["level"] in ("critical", "warning"))
+        uniq.insert(_at, _a("ok", "System nominal",
+            ("No frequency, reserve or margin triggers. NESO notice in force (below)."
+             if neso_up else "No frequency, reserve, margin or warning triggers."), tag="OK"))
     return uniq
 
 
@@ -6872,8 +7141,95 @@ def _log_alerts(alerts):
         tmp = ALERT_LOG.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(store))
         tmp.replace(ALERT_LOG)   # atomic-ish: write to temp then rename
+        return cur_active
+    except Exception:
+        return {}
+
+
+def _alert_key(a):
+    return f"{a['level']}|{a['title']}"
+
+
+def _load_dismissed():
+    try:
+        d = json.loads(ALERT_DISMISS.read_text()) if ALERT_DISMISS.exists() else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_dismissed(d):
+    try:
+        tmp = ALERT_DISMISS.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d))
+        tmp.replace(ALERT_DISMISS)
     except Exception:
         pass
+
+
+def _annotate_alerts(alerts, active):
+    """Add to each alert: key, since (when this episode was raised), dismissable (open
+    ALERT_DISMISS_MIN_S or more and not critical) and dismissed_until. Drops dismissals that
+    have expired or whose episode has ended (cleared, or the level changed). Never raises."""
+    try:
+        now = datetime.now(timezone.utc)
+        with _alert_dismiss_lock:
+            dis = _load_dismissed()
+            keep = {}
+            for k, rec in dis.items():
+                act = active.get(k)
+                try:
+                    alive = datetime.fromisoformat(rec.get("until")) > now
+                except Exception:
+                    alive = False
+                if alive and act and act.get("raised") == rec.get("raised"):
+                    keep[k] = rec
+            if keep != dis:
+                _save_dismissed(keep)
+        for a in alerts:
+            k = _alert_key(a)
+            a["key"] = k
+            act = active.get(k)
+            if act and act.get("raised"):
+                a["since"] = act["raised"]
+                try:
+                    open_s = (now - datetime.fromisoformat(act["raised"])).total_seconds()
+                except Exception:
+                    open_s = 0
+                a["dismissable"] = a["level"] not in ("critical", "ok") and open_s >= ALERT_DISMISS_MIN_S
+            if k in keep:
+                a["dismissed_until"] = keep[k]["until"]
+    except Exception:
+        pass
+
+
+def dismiss_alert(key, restore=False):
+    """Dismiss the currently active alert `key` for ALERT_DISMISS_DAYS (or restore it)."""
+    with _alert_dismiss_lock:
+        dis = _load_dismissed()
+        if restore:
+            dis.pop(key, None)
+            _save_dismissed(dis)
+            return {"ok": True, "restored": key}
+        try:
+            act = (json.loads(ALERT_LOG.read_text()).get("active") or {}).get(key) if ALERT_LOG.exists() else None
+        except Exception:
+            act = None
+        if not act or not act.get("raised"):
+            return {"ok": False, "error": "that alert is not active"}
+        if act.get("level") == "critical":
+            return {"ok": False, "error": "critical alerts can't be dismissed"}
+        try:
+            open_s = (datetime.now(timezone.utc) - datetime.fromisoformat(act["raised"])).total_seconds()
+        except Exception:
+            open_s = 0
+        if open_s < ALERT_DISMISS_MIN_S:
+            return {"ok": False, "error": "only alerts open for a day or more can be dismissed"}
+        until = (datetime.now(timezone.utc) + timedelta(days=ALERT_DISMISS_DAYS)).isoformat()
+        dis[key] = {"until": until, "raised": act["raised"], "title": act.get("title")}
+        _save_dismissed(dis)
+    _cache["ts"] = 0                 # next snapshot carries the dismissal
+    return {"ok": True, "key": key, "until": until}
 
 
 def _median(xs):
@@ -7646,6 +8002,7 @@ def build_snapshot():
         tot = gen["generation_total_mw"] or 1
         snap["renewable_pct"] = round(100 * renew / tot, 1)
         snap["low_carbon_pct"] = round(100 * low_carbon / tot, 1)
+        snap["low_carbon_delta_1h"] = _lc_delta_1h(snap["low_carbon_pct"])
 
     # Weather: if this cycle failed, fall back to the last good reading so the
     # panel doesn't blank out on a single transient failure. But preserve the
@@ -7768,10 +8125,19 @@ def build_snapshot():
         log_mix(snap)
     except Exception as e:
         snap["errors"].append("data_log: " + str(e))
+    # NESO's turn-down for system reasons (mostly constraints), for the header chip; measured, not an alert
+    try:
+        if _wall is not None and hasattr(_wall, "so_summary") and not _wall._S:
+            _wall.attach(globals())                # as the wall routes do on first use
+        snap["constraint"] = _wall.so_summary() if _wall is not None and hasattr(_wall, "so_summary") else None
+    except Exception as e:
+        snap["constraint"] = {"err": f"{type(e).__name__}"}
     snap["alerts"] = build_alerts(snap)
-    _log_alerts(snap["alerts"])
-    snap["alert_level"] = ("critical" if any(a["level"] == "critical" for a in snap["alerts"])
-                           else "warning" if any(a["level"] == "warning" for a in snap["alerts"])
+    _annotate_alerts(snap["alerts"], _log_alerts(snap["alerts"]))
+    # electricity status: gas alerts (domain "gas") and dismissed alerts don't set it
+    _el = [a for a in snap["alerts"] if a.get("domain") != "gas" and not a.get("dismissed_until")]
+    snap["alert_level"] = ("critical" if any(a["level"] == "critical" for a in _el)
+                           else "warning" if any(a["level"] == "warning" for a in _el)
                            else "ok")
     return snap
 
@@ -7810,7 +8176,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _wall_api(self):
-        """/api/wall, /api/wall-network, /api/wall-history?node=N."""
+        """/api/wall, /api/wall-network, /api/wall-sites, /api/wall-dnolines?kv=, /api/wall-local, /api/wall-history?node=N."""
         if _wall is None:
             self._send_json({"error": "wall.py not installed next to grid_server.py"}, 503)
             return
@@ -7818,10 +8184,20 @@ class Handler(BaseHTTPRequestHandler):
             _wall.attach(globals())
         p = self.path.split("?", 1)[0]
         try:
-            if p == "/api/wall-network":
-                body = _wall.network_bytes()
+            if p in ("/api/wall-network", "/api/wall-sites", "/api/wall-dnolines"):
+                net = p == "/api/wall-network"
+                if p == "/api/wall-dnolines":
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    try:
+                        kv = int((qs.get("kv") or ["132"])[0])
+                    except ValueError:
+                        kv = 0
+                    body = _wall.dnolines_bytes(kv) if hasattr(_wall, "dnolines_bytes") else None
+                else:
+                    body = _wall.network_bytes() if net else (_wall.sites_bytes() if hasattr(_wall, "sites_bytes") else None)
                 if body is None:
-                    self._send_json({"error": "grid_network.json not found (run build_network.py)"}, 503)
+                    self._send_json({"error": "grid_network.json not found (run build_network.py)" if net
+                                     else "not available yet (osm_sites.py / dno_data.py)"}, 503)
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -7834,6 +8210,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_wall.get_history(int((qs.get("node") or ["-1"])[0])))
             elif p == "/api/wall":
                 self._send_json(_wall.get_wall())
+            elif p == "/api/wall-local" and hasattr(_wall, "get_local"):
+                self._send_json(_wall.get_local())
             else:
                 self.send_error(404)
         except Exception as e:
@@ -7841,7 +8219,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.path.startswith("/api/weather-key"):
+            if self.path.startswith("/api/wall-b6"):
+                # the wall page's modelled Scotland -> England transfer, checked later against NESO's metered one
+                n = int(self.headers.get("Content-Length") or 0)
+                if _wall is None or not hasattr(_wall, "post_b6") or n > 20000:
+                    self._send_json({"ok": False}, 400); return
+                try:
+                    body = json.loads((self.rfile.read(n) if n else b"{}").decode("utf-8") or "{}")
+                except Exception:
+                    body = {}
+                self._send_json(_wall.post_b6(body))
+            elif self.path.startswith("/api/weather-key"):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(n) if n else b""
                 try:
@@ -7875,6 +8263,27 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "areas list missing"}, 400); return
                 res = _powercuts.save_watch([x if isinstance(x, dict) else str(x) for x in ent[:50]])
                 self._send_json(res, 200 if res.get("ok") else 500)
+            elif self.path.startswith("/api/alert-dismiss"):
+                # {"key": "<level>|<title>", "restore": false} -> hide that alert for 7 days
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                res = dismiss_alert(str(payload.get("key") or ""), bool(payload.get("restore")))
+                self._send_json(res, 200 if res.get("ok") else 400)
+            elif self.path.startswith("/api/gie-key"):
+                # GIE AGSI+ key, saved as "GIE" in powercut_keys.json; tested with GIE first.
+                if _gas_storage is None:
+                    self._send_json({"ok": False, "error": "gas_storage module not installed"}, 503); return
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                self._send_json(_gas_storage.save_gie_key(str(payload.get("key") or "")))
             elif self.path.startswith("/api/powercut-keys"):
                 if _powercuts is None:
                     self._send_json({"ok": False, "error": "powercuts module not installed"}, 503); return
@@ -8026,6 +8435,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_units())
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "stations": []}, 500)
+        elif self.path.startswith("/api/gas-storage"):
+            # NB: must precede "/api/gas" (same prefix).
+            if _gas_storage is None:
+                self._send_json({"status": "unavailable", "error": "gas_storage module not installed"}, 503)
+                return
+            try:
+                g = _gas_cache.get("data") or {}
+                dem = g.get("demand_total") if not g.get("error") else None
+                self._send_json(_gas_storage.get_gas_storage(demand_mcm_d=dem))
+            except Exception as e:
+                self._send_json({"status": "error", "error": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/gas-probe"):
             # Gas alarm ladder: latest signals + recent spoken events (voiced by the dashboard).
             # Served from the background sampler's cache, so the endpoint is instant.
@@ -8083,6 +8503,23 @@ class Handler(BaseHTTPRequestHandler):
                                                 archive=arch, week=wk))
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}", "fuels": [], "t": []}, 500)
+        elif self.path.startswith("/api/radar-grid"):
+            # the radar view's grid alone, polled each minute so a new RainViewer frame shows within
+            # about a minute of publication (the full /api/ea is cached for 5 min)
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                lat = float(qs.get("lat", [EA_DEFAULT_LAT])[0]); lon = float(qs.get("lon", [EA_DEFAULT_LON])[0])
+                if _rain_probe is None or not hasattr(_rain_probe, "radar_view_grid"):
+                    self._send_json({"err": "radar unavailable"})
+                elif _RAIN_PROBE_LOCK.acquire(timeout=3):   # the engine is mid-cycle: wait briefly, else serve the last grid
+                    try:
+                        self._send_json(_rain_probe.radar_view_grid(lat, lon))
+                    finally:
+                        _RAIN_PROBE_LOCK.release()
+                else:
+                    self._send_json(dict((_rain_probe._rg.get("data") or {"err": "busy"}), busy=True))
+            except Exception as e:
+                self._send_json({"err": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/freq-raw"):
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -8114,6 +8551,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_balancing.get_balancing(detail=qs.get("detail", ["0"])[0] == "1"))
             except Exception as e:
                 self._send_json({"status": "error", "error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/gie-key"):
+            # Status only -- never returns the key itself.
+            if _gas_storage is None:
+                self._send_json({"has_key": False, "status": None, "error": "gas_storage module not installed"}, 503)
+                return
+            self._send_json(_gas_storage.gie_key_status())
+        elif self.path.startswith("/api/powercut-keys"):
+            # Which operators have a key saved -- names only, never the keys.
+            if _powercuts is None:
+                self._send_json({"configured": [], "error": "powercuts module not installed"}, 503)
+                return
+            ops = ("NPg", "UKPN", "ENWL", "SPEN", "SSEN", "NIE", "ESB")
+            self._send_json({"configured": sorted(k for k in _powercuts.load_keys() if k in ops)})
         elif self.path.startswith("/api/reservoirs"):
             if _reservoirs is None:
                 self._send_json({"status": "unavailable", "error": "reservoirs module not installed"}, 503)
@@ -8271,6 +8721,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             except FileNotFoundError:
                 self.send_error(404, "powercuts_page.html not found next to server")
+        elif self.path.split("?", 1)[0] in ("/gas-storage", "/gas_storage.html"):
+            # The gas storage view now lives on the dashboard's gas page (System flow | Gas storage);
+            # the old pop-up address opens it there.
+            self.send_response(302)
+            self.send_header("Location", "/grid_dashboard.html#gasview=gs")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif self.path.split("?", 1)[0] in ("/forecast", "/forecast_view.html"):
             # Forecast view; "?view=radar" (radar plot only) is handled by the page itself
             if FORECAST_PATH.exists():

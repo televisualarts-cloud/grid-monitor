@@ -1,6 +1,6 @@
 """Reservoir storage for the EA page: regional and national readouts plus history.
 
-Build 261024.1  (version = YYMMDD.N in UT; bump on every change to this file)
+Build 261029.2  (version = YYMMDD.N in UT; bump on every change to this file)
 Copyright (c) 2026 Andy Smith, G7IZU. Same MIT licence as grid_server.py.
 
 Standard library only, except that the monthly regional table is
@@ -26,6 +26,11 @@ Sources (all Open Government Licence v3.0 unless noted):
     reservoir-levels page (total and eight reservoirs, server-rendered text,
     updated a few times a week). Each published value is logged once, keyed by
     the date the company gives, so its history builds up from first run.
+  * South West Lakes Trust's "current reservoir levels" page (swlakestrust.org.uk;
+    no licence stated, credited on the page): a weekly table of South West Water
+    reservoirs with % full and net capacity. Used only for the reservoirs South
+    West Water's own page doesn't give (Argal, College, Crowdy, Siblyback, Upper
+    Tamar, Wistlandpound, Meldon, Fernworthy, Avon).
 
 Not available as data: Wales (Dwr Cymru and NRW publish no % full figures),
 Scotland (Scottish Water's page refuses automated requests), Northern Ireland
@@ -640,9 +645,10 @@ def _logged_history(refs, days=400):
 # the source gives, so the history survives a feed being withdrawn or a website
 # changing. A dated copy is kept as reservoir_store.bak.json (refreshed daily).
 SWW_URL = "https://www.southwestwater.co.uk/environment/water-resources/reservoir-levels"
-_SWW_TOTAL = re.compile(r"total reservoir storage for the South West Water area is at\s*"
+# South West Water's wording varies ("level is at" / "levels are at", 28 Oct 2026), so both are accepted.
+_SWW_TOTAL = re.compile(r"total reservoir storage for the South West Water area (?:is|are)(?: now)? at\s*"
                         r"([\d.]+)\s*%\s*on\s*(\d{1,2})/(\d{1,2})/(\d{4})", re.I)
-_SWW_ONE = re.compile(r"\b([A-Z][a-z]+) reservoir storage levels? is at\s*([\d.]+)\s*%"
+_SWW_ONE = re.compile(r"\b([A-Z][a-z]+) reservoir storage levels? (?:is|are)(?: now)? at\s*([\d.]+)\s*%"
                       r"\s*on\s*(\d{1,2})/(\d{1,2})/(\d{4})")
 
 
@@ -654,6 +660,7 @@ STREAM_SEARCH = "https://www.streamwaterdata.co.uk/api/search/v1/collections/all
 STREAM_REFRESH_S = 24 * 3600     # catalogue search; layers themselves are checked every build
 WEB_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) uk-grid-monitor/1.0"}
 STALE_DAYS = 45                  # a reservoir's newest value older than this is shown as stale
+HIDE_DAYS = 90                   # ... and older than this is left out (counted), while its company has current ones
 
 # key -> company; "title" is matched against Stream layer titles; region is a fallback
 # only (each reservoir's own position decides its region: Northumbrian's dataset
@@ -687,12 +694,19 @@ STREAM_LAYERS = {
 }
 # website names -> the name Stream uses (after _norm), where they differ
 NAME_ALIASES = {"STAUNTON": "STAUNTON HAROLD", "TOTALS": "TOTAL", "WHITACRE COMBINED": "WHITACRE",
+                "KENNICK, TOTTIFORD AND TRENCHFORD": "TOTTIFORD",   # Lakes Trust's name for SWW's "Tottiford"
                 "BARTLEY AND FRANKLEY": "BARTLEY AND FRANKLEY", "WEIR WOOD": "WEIRWOOD",
                 "ELAN VALLEY": "ELAN VALLEY"}
 # positions for website-only reservoirs (Stream supplies the rest)
 SITE_POS = {
     ("sww", "TOTTIFORD"): (50.622, -3.680), ("sww", "DRIFT"): (50.105, -5.588),
     ("sww", "VENFORD"): (50.533, -3.858),
+    # South West Lakes Trust reservoirs (approximate centres)
+    ("sww", "ARGAL"): (50.150, -5.130), ("sww", "COLLEGE"): (50.155, -5.120),
+    ("sww", "CROWDY"): (50.623, -4.627), ("sww", "SIBLYBACK"): (50.507, -4.497),
+    ("sww", "UPPER TAMAR"): (50.886, -4.462), ("sww", "WISTLANDPOUND"): (51.163, -3.966),
+    ("sww", "MELDON"): (50.712, -4.030), ("sww", "FERNWORTHY"): (50.639, -3.887),
+    ("sww", "AVON"): (50.472, -3.836),
     ("bw", "CHEDDAR"): (51.283, -2.777), ("bw", "CHEW VALLEY LAKE"): (51.338, -2.620),
     ("bw", "BLAGDON LAKE"): (51.330, -2.709),
 }
@@ -894,10 +908,44 @@ def _web_sww(st):
     tot = _SWW_TOTAL.search(t)
     if tot:
         n += _put(st, "sww", "Total", iso(*tot.group(2, 3, 4)), tot.group(1), "web", kind="total")
+    ones = 0
     for m in _SWW_ONE.finditer(t):
         n += _put(st, "sww", m.group(1), iso(*m.group(3, 4, 5)), m.group(2), "web")
+        ones += 1
     if not tot:
         raise ValueError("page layout changed: total not found")
+    if not ones:    # the total alone still updating would hide a wording change: report it
+        raise ValueError("page layout changed: no individual reservoir levels found")
+    return n
+
+
+SWLT_URL = "https://www.swlakestrust.org.uk/current-reservoir-levels"
+
+
+def _web_swlt(st):
+    """South West Lakes Trust weekly table: only the reservoirs South West Water's page doesn't give."""
+    h = _web(SWLT_URL)
+    t = _text(re.sub(r"<script.*?</script>|<style.*?</style>", " ", h, flags=re.S)).replace("\xa0", " ")
+    day = _dmy((re.search(r"Week ending:?\s*(.{0,40})", t, re.I) or [None, ""])[1])
+    if not day:
+        raise ValueError("page layout changed: 'Week ending' date not found")
+    sites = st["companies"].get("sww", {}).get("sites", {})
+    own = {k for k, v in sites.items() if v.get("src", {}).get("web")}      # South West Water's own page wins
+    n = rows = 0
+    for tb in _tables(h):
+        head = [c.lower() for c in (tb[0] if tb else [])]
+        if not head or "reservoir" not in head[0] or not any("level" in c for c in head):
+            continue
+        for r in tb[1:]:
+            if len(r) < 2 or not r[0] or _pct(r[1]) is None:
+                continue
+            rows += 1
+            if _norm(r[0]) in own:
+                continue
+            n += _put(st, "sww", r[0], day, _pct(r[1]), "swlt",
+                      capacity=_num((r[3] if len(r) > 3 else "").replace(",", "")))
+    if not rows:
+        raise ValueError("page layout changed: reservoir table not found")
     return n
 
 
@@ -987,6 +1035,7 @@ def _web_bristol(st):
 
 WEB_SOURCES = {
     "sww": ("South West Water website", SWW_URL, _web_sww),
+    "swlt": ("South West Lakes Trust", SWLT_URL, _web_swlt),      # after "sww": that page wins where both give a reservoir
     "st": ("Severn Trent website", ST_INDEX, _web_st),
     "nw": ("Northumbrian Water website", "https://www.nwl.co.uk/help-and-support/water/water-resources/",
            lambda st: _web_table_groups(st, "nw", "https://www.nwl.co.uk/help-and-support/water/water-resources/", "North-east")),
@@ -1044,17 +1093,20 @@ def _refresh_companies():
                     status[key] = dict(prev, ok=False, at=time.time(), error=str(e)[:200],
                                        company=co, kind="stream")
         for key, (label, url, fn) in WEB_SOURCES.items():
-            co = "nw" if key == "esw" else key
+            co = {"esw": "nw", "swlt": "sww"}.get(key, key)
+            src = "swlt" if key == "swlt" else "web"
             try:
                 n = fn(st)
-                newest = max((s.get("src", {}).get("web", "") for s in
+                newest = max((s.get("src", {}).get(src, "") for s in
                               st["companies"].get(co, {}).get("sites", {}).values()), default="")
                 status["web:" + key] = {"ok": True, "at": time.time(), "newest": newest, "company": co,
-                                        "label": label, "url": url, "new": n, "kind": "web"}
+                                        "label": label, "url": url, "new": n, "kind": "web",
+                                        "credit": label if key == "swlt" else None}
             except Exception as e:
                 prev = status.get("web:" + key, {})
                 status["web:" + key] = dict(prev, ok=False, at=time.time(), error=str(e)[:200],
-                                            company=co, label=label, url=url, kind="web")
+                                            company=co, label=label, url=url, kind="web",
+                                            credit=label if key == "swlt" else None)
         try:
             _assign_regions(st)
         except Exception:
@@ -1143,8 +1195,11 @@ def _company_payload(st):
                 totals[region] = {"pct": ser[-1][1], "date": ser[-1][0], "src": "computed",
                                   "series": ser, "computed": True,
                                   "stale": (today - date.fromisoformat(ser[-1][0])).days > STALE_DAYS}
+        current = [x for x in sites if (today - date.fromisoformat(x["date"])).days <= HIDE_DAYS]
+        hidden = len(sites) - len(current) if current else 0      # all silent: keep them (shown as old)
         out.append({"key": co, "company": cfg["name"], "region": cfg["region"],
-                    "sites": sorted(sites, key=lambda x: -x["pct"]), "totals": totals})
+                    "sites": sorted(current if current else sites, key=lambda x: -x["pct"]), "totals": totals,
+                    "hidden": hidden, "hidden_days": HIDE_DAYS})
     status = []
     for k, v in sorted(st.get("status", {}).items()):
         if k == "stream_catalogue":
