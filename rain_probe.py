@@ -1,6 +1,6 @@
 # rain_probe.py — read-only rainfall-alert DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261105.6  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261120.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Purpose: each refresh cycle, evaluate the rain signals we have (model-at-home,
@@ -436,6 +436,14 @@ class ProbeState:
     appr_cand: dict = field(default_factory=dict)      # live shadow candidate (every threat, alerted or not)
     appr_cand_seq: int = 0
     appr_quiet_until: float = 0.0                      # area shower notes stay quiet until then after a fizzle
+    # ---- radar watch (rain seen on radar heading for home; see radar_watch) ----
+    rw_ep: dict = field(default_factory=dict)          # live radar alert {id, ts, dir, eta_ts, until, kind}; {} = none
+    rw_seq: int = 0
+    rw_reads: int = 0                                  # consecutive radar frames in which rain is due within RW_ALERT_MIN
+    rw_last_ts: "float | None" = None                  # newest radar frame looked at
+    rw_hist: list = field(default_factory=list)        # [(frame ts, rain due in the next 2 h: sum of slot means)]
+    rw_quiet_until: float = 0.0                        # after an episode, no new radar alert until then
+    rw_home_wet_ts: float = 0.0                        # newest radar frame with rain at home (radar_home_view)
     # ---- steering flow (850 hPa) ----
     steer_from: "float | None" = None                  # last good 850 hPa wind-from (deg)
     steer_kmh: "float | None" = None                   # last good 850 hPa speed (km/h)
@@ -1241,6 +1249,12 @@ def radar_status():
 # flow (850 hPa, the engine's `flow`). Translation only: no growth or decay. Rates are Marshall-Palmer from the
 # tile colours, as for the sampled points; below RV_MIN_DBZ is dry. Cached per frame and home; never raises.
 RG_KM, RG_CELL     = 40, 0.5          # half-width (km) and cell size (km): 161 x 161 cells
+# Coarse surround (Andy, 18 Nov). The view moves the frame on to the current time, and the animation carries it
+# up to an hour further, so the fine grid's own edge drifts into the 40 km circle and draws a straight line across
+# it. A second, coarser cut of the SAME tiles goes with every frame and is drawn underneath: the crescent the fine
+# grid vacates shows 2 km cells instead of nothing. 100 km covers an hour's drift at 60 km/h, and costs nothing in
+# tile fetches worth counting (RainViewer tiles here are zoom 7 at 512 px, about 200 km across).
+RG_WIDE_KM, RG_WIDE_CELL = 100, 2.0   # 101 x 101 cells: 10 kB a frame against the fine grid's 26 kB
 RG_SEARCH          = 14               # motion search, 1 km cells each way per frame gap (14 km / 10 min = 84 km/h)
 RG_MIN_CELLS       = 20               # rainy 1 km cells needed in both frames to measure motion
 RG_MIN_CORR        = 0.45             # correlation peak needed to trust the measured motion
@@ -1454,12 +1468,238 @@ def radar_area_motion():
     return mo if (mo and mo.get("src") == "radar") else None
 
 
+# Radar track at home (Andy, 6 Nov): the rain the radar shows heading for home over the next 2 hours, for the
+# weather panel's rain plot (shown there where the forecasts are drier). Standard radar extrapolation: for each
+# 5-minute slot, what the newest frame has upwind of home by the distance the rain moves between the frame's time
+# and the slot, at the area motion measured on the radar (radar_grid: at least two frame pairs agreeing; never the
+# 850 hPa wind). Arrival gets less certain further ahead, so each slot reads a disc that widens with lead time
+# (RT_R0_KM radius at the frame's time, + RT_R_PER_H per hour: about 2 km across now, 15 km at 2 h) and gives its
+# MEAN rate and the share of it that is wet, not its heaviest cell. Translation only: no growth or decay. Read
+# straight from the newest frame's tiles (RT_MAX_KM upwind at most); computed once per frame.
+RT_HORIZON_S = 2 * 3600 + 1800     # slots from the frame's time: 2 h ahead of now even with a 20-30 min old frame
+RT_SLOT_S    = 300
+RT_R0_KM     = 1.0
+RT_R_PER_H   = 3.25
+RT_MAX_KM    = 160
+RT_CELL_KM   = 1.0
+RT_WET_MMH   = 0.1
+
+
+def _rg_rate_fn(host, path):
+    """rate(lat, lon) -> mm/h on a frame (Marshall-Palmer, as _rg_grid), using the newest frames' tile cache."""
+    n2 = 2 ** RV_ZOOM; memo = {}
+    def rate(la, lo):
+        yf = (1 - math.log(math.tan(math.radians(la)) + 1 / math.cos(math.radians(la))) / math.pi) / 2 * n2
+        xf = (lo + 180.0) / 360.0 * n2
+        w, h, px = _rg_tile(host, path, int(xf), int(yf))
+        r_, g_, b_, a_ = px(min(w - 1, int((xf % 1) * w)), min(h - 1, int((yf % 1) * h)))
+        if a_ == 0:
+            return 0.0
+        c = (r_, g_, b_)
+        if c not in memo:
+            dbz = _rv_dbz(r_, g_, b_)
+            memo[c] = 0.0 if dbz < RV_MIN_DBZ else (10 ** (dbz / 10.0) / 200.0) ** (1 / 1.6)
+        return memo[c]
+    return rate
+
+
+def _rg_home_track(host, fr, lat, lon, mot):
+    """{"ts", "vx", "vy", "kmh", "from_deg", "pairs", "slots": [[slot start, mean mm/h, wet share, p75 of the wet cells]]} or None."""
+    tf = fr.get("time")
+    if not tf or not mot or mot.get("src") != "radar" or mot.get("vx") is None:
+        return None
+    vx, vy = mot["vx"], mot["vy"]; kmh = math.hypot(vx, vy)
+    rate = _rg_rate_fn(host, fr["path"]); kx = 111.32 * math.cos(math.radians(lat))
+    slots = []
+    for s0 in range(int(tf // RT_SLOT_S) * RT_SLOT_S, int(tf + RT_HORIZON_S), RT_SLOT_S):
+        lead_h = max(0.0, (s0 + RT_SLOT_S / 2 - tf) / 3600.0)
+        cx, cy = -vx * lead_h, -vy * lead_h                   # where the rain over home then is now
+        r = RT_R0_KM + RT_R_PER_H * lead_h
+        if math.hypot(cx, cy) + r > RT_MAX_KM:
+            break
+        ri = int(math.ceil(r / RT_CELL_KM)); vals = []
+        for j in range(-ri, ri + 1):
+            for i in range(-ri, ri + 1):
+                if (i * i + j * j) * RT_CELL_KM ** 2 <= r * r:
+                    x, y = cx + i * RT_CELL_KM, cy + j * RT_CELL_KM
+                    vals.append(rate(lat + y / 111.32, lon + x / kx))
+        if vals:
+            wet = sorted(v for v in vals if v >= RT_WET_MMH)
+            p75 = wet[min(len(wet) - 1, int(len(wet) * .75))] if wet else 0.0       # typical rate where it rains
+            slots.append([s0, round(sum(vals) / len(vals), 2), round(len(wet) / len(vals), 2), round(p75, 2)])
+    return {"ts": tf, "vx": vx, "vy": vy, "kmh": round(kmh, 1), "from_deg": round((math.degrees(math.atan2(vx, vy)) + 180) % 360),
+            "pairs": mot.get("pairs"), "slots": slots}
+
+
+def radar_home_track(lat, lon, now):
+    """The newest frame's radar track at home (see RT_*), or None (no measured motion, stale frame, other home)."""
+    t = _rg.get("track")
+    if not t or t.get("home") != (round(lat, 3), round(lon, 3)) or now - (t.get("ts") or 0) > 40 * 60:
+        return None
+    return {k: v for k, v in t.items() if k != "home"}
+
+
 def radar_view_grid(lat, lon, now=None):
     """The radar view's grid on its own (the /api/radar-grid poll): the same as the engine's, with the
     engine's last steering flow, so a new frame reaches the view within about a minute of publication
     instead of waiting for the next engine cycle and the 5-minute EA cache."""
     return radar_grid(lat, lon, flow=_rg.get("flow"), now=now)
 
+
+
+# ───────────────── radar animation (the radar view's ▶ animate button) ─────────────────
+# The radar frames around home over the last `hours` (2 to 24), as the radar view's grids, oldest first, for the view
+# to play as a loop (Andy, 15 Nov). Frames come first from the ones already recorded: rain_recorder.py saves every
+# RainViewer frame's raw tiles (rain_rec/radar/YYYY-MM-DD/<frame time>_<z>_<x>_<y>.png, the same zoom, size and colours
+# as here), so history it has kept costs nothing to fetch and the loop can run back further than RainViewer's own 2 h.
+# A frame it doesn't have (recorder stopped, or a tile it didn't need) is fetched while RainViewer still lists it, and
+# left out otherwise, never drawn part-dry. Each frame's grid is built once and kept per home (up to RA_KEEP), so after
+# the first request only a new frame costs anything. The frame list is the one the engine and the radar poll keep
+# fresh; read here only if nothing has read it yet. Own lock: never holds the engine.
+RA_REC_DIR = os.path.join(_METER_DIR, "rain_rec", "radar")
+RA_MAX_H, RA_KEEP = 24, 160
+_ra = {"home": None, "grids": {}, "coarse": {}, "mot": {}}
+_ra_lock = threading.Lock()
+
+
+class _RaMissing(Exception):
+    pass
+
+
+def _ra_recorded(t0, t1):
+    """{frame time: day folder} for the frames the recorder has kept between t0 and t1."""
+    out, d = {}, t0 - 86400
+    while d <= t1 + 86400:
+        day = time.strftime("%Y-%m-%d", time.gmtime(d)); d += 86400
+        try:
+            names = os.listdir(os.path.join(RA_REC_DIR, day))
+        except OSError:
+            continue
+        for nm in names:
+            try:
+                ts = int(nm.split("_", 1)[0])
+            except ValueError:
+                continue
+            if t0 <= ts <= t1:
+                out[ts] = day
+    return out
+
+
+def _ra_coarse(ts, b64, n):
+    """A frame's 1 km rain-rate grid (mm/h) for motion, from its dBZ bytes; cached by frame time."""
+    g = _ra["coarse"].get(ts)
+    if g is None:
+        import base64
+        b = base64.b64decode(b64)
+        lut = [0.0 if d < 10 else (10 ** (d / 10.0) / 200.0) ** (1 / 1.6) for d in range(256)]
+        g = _rg_coarse([[lut[b[j * n + i]] for i in range(n)] for j in range(n)], int(round(1.0 / RG_CELL)))
+        _ra["coarse"][ts] = g
+    return g
+
+
+def _ra_motion(frames):
+    """Each frame's drift to the next ("mv": {"vx", "vy" km/h east / north, "src"}), measured from that pair of frames
+    the way the live view measures it (_rg_motion: correlation on 1 km cells), so the animation slides each step along
+    the drift at the time, not today's (Andy, 15 Nov). A pair more than 20 min apart is not measured. A pair with too
+    little rain or no clear match borrows the median of the measured pairs within two steps either side ("near");
+    with none, the step has no "mv" and the view cross-fades it without sliding. Measured once per pair and kept."""
+    n = 2 * int(round(RG_KM / RG_CELL)) + 1
+    meas = []
+    for a, b in zip(frames, frames[1:]):
+        key = (a["ts"], b["ts"])
+        if key not in _ra["mot"]:
+            m = None
+            if 0 < b["ts"] - a["ts"] <= 1200:
+                try:
+                    m = _rg_motion(_ra_coarse(a["ts"], a["b64"], n), _ra_coarse(b["ts"], b["b64"], n), b["ts"] - a["ts"], 1.0)
+                except Exception:
+                    m = None
+            _ra["mot"][key] = m
+        meas.append(_ra["mot"][key])
+    for k, m in enumerate(meas):
+        if m:
+            frames[k]["mv"] = {"vx": m["vx"], "vy": m["vy"], "src": "pair"}
+        elif 0 < frames[k + 1]["ts"] - frames[k]["ts"] <= 1200:
+            near = [q for q in meas[max(0, k - 2):k + 3] if q]
+            if near:
+                med = lambda v: sorted(v)[len(v) // 2]
+                frames[k]["mv"] = {"vx": med([q["vx"] for q in near]), "vy": med([q["vy"] for q in near]), "src": "near"}
+
+
+def radar_frames(lat, lon, hours=2, now=None):
+    """{"frames": [{"ts", "b64", "rec"}] oldest first, "cell_km", "km", "n", "enc": "dbz", "hours"} (cells as
+    radar_grid's; rec = built from the recorder's tiles) or {"err"}."""
+    if not RADAR_ENABLED:
+        return {"err": "radar off"}
+    now = now or time.time()
+    hours = max(1, min(RA_MAX_H, int(hours or 2)))
+    import base64
+    dbz = lambda v: 0 if v <= 0 else max(10, min(65, int(round(10 * math.log10(200 * v ** 1.6)))))
+    try:
+        with _ra_lock:
+            if _rv["maps"] is None:
+                try:
+                    _rv_newest_frame(now)
+                except Exception:
+                    pass
+            maps = _rv["maps"] or {}
+            host = maps.get("host") or "https://tilecache.rainviewer.com"
+            live = {int(f["time"]): f.get("path") for f in ((maps.get("radar") or {}).get("past") or []) if f.get("time")}
+            t1 = max(list(live) + [int(now)]); t0 = t1 - hours * 3600 + 1
+            rec = _ra_recorded(t0, t1)
+            home = (round(lat, 3), round(lon, 3))
+            if _ra["home"] != home:
+                _ra["home"], _ra["grids"], _ra["coarse"], _ra["mot"] = home, {}, {}, {}
+            out = []
+            for ts in sorted(set(rec) | {t for t in live if t >= t0}):
+                hit = _ra["grids"].get(ts)
+                if hit is None:
+                    lg = _rg.get("data")
+                    if ts in live and _rg.get("key") == (live[ts], home[0], home[1]) and lg and lg.get("b64"):
+                        hit = (lg["b64"], False, (lg.get("wide") or {}).get("b64"))   # the live grid, already built
+                    else:
+                        tiles, used = {}, {"rec": False}
+
+                        def tile(h, p, tx, ty):
+                            if (tx, ty) not in tiles:
+                                fn = os.path.join(RA_REC_DIR, rec[ts], "%d_%d_%d_%d.png" % (ts, RV_ZOOM, tx, ty)) if ts in rec else None
+                                if fn and os.path.exists(fn):
+                                    with open(fn, "rb") as fh:
+                                        tiles[(tx, ty)] = _png_rgba(fh.read())
+                                    used["rec"] = True
+                                elif ts in live and live[ts]:
+                                    tiles[(tx, ty)] = _rg_fetch_tile(h, live[ts], tx, ty, "radar_tile_anim")
+                                else:
+                                    raise _RaMissing()
+                            return tiles[(tx, ty)]
+                        try:
+                            g = _rg_grid(host, live.get(ts) or "", lat, lon, RG_KM, RG_CELL, tile_fn=tile)
+                        except _RaMissing:
+                            continue
+                        try:                                            # the surround needs tiles further out than
+                            gw = _rg_grid(host, live.get(ts) or "", lat, lon, RG_WIDE_KM, RG_WIDE_CELL, tile_fn=tile)
+                            bw = base64.b64encode(bytes(dbz(v) for r in gw for v in r)).decode("ascii")
+                        except Exception:                               # the recorder saved: that frame goes without
+                            bw = None
+                        hit = (base64.b64encode(bytes(dbz(v) for r in g for v in r)).decode("ascii"), used["rec"], bw)
+                    _ra["grids"][ts] = hit
+                fr_ = {"ts": ts, "b64": hit[0], "rec": hit[1]}
+                if len(hit) > 2 and hit[2]:
+                    fr_["b64w"] = hit[2]
+                out.append(fr_)
+            for k in sorted(_ra["grids"])[:-RA_KEEP]:
+                del _ra["grids"][k]
+            for k in [k for k in _ra["coarse"] if k not in _ra["grids"]]:
+                del _ra["coarse"][k]
+            for k in [k for k in _ra["mot"] if k[0] not in _ra["grids"]]:
+                del _ra["mot"][k]
+            _ra_motion(out)
+        if not out:
+            return {"err": "no radar frames"}
+        return {"frames": out, "cell_km": RG_CELL, "km": RG_KM, "n": 2 * int(round(RG_KM / RG_CELL)) + 1, "enc": "dbz", "hours": hours,
+                "wide_km": RG_WIDE_KM, "wide_cell_km": RG_WIDE_CELL, "wide_n": 2 * int(round(RG_WIDE_KM / RG_WIDE_CELL)) + 1}
+    except Exception as e:
+        return {"err": f"{type(e).__name__}: {str(e)[:120]}"}
 
 def _rg_coarse(g, k):
     """Each k x k block's mean, as a smaller grid (the motion is measured on 1 km cells)."""
@@ -1505,8 +1745,83 @@ def _rg_motion(a, b, dt_s, cell_km):
     return {"vx": round(fx * k, 1), "vy": round(-fy * k, 1), "corr": round(c, 2)}
 
 
+# ---------------------------------------------------------------- heads-up from the coarse surround
+# The surround reaches 100 km, about 60 km further upwind than anything else the engine looks at, so it
+# can see a front that is still well outside the 40 km plot. Translation only, as everywhere else: a band
+# 90 km out can decay or veer, so this is a WATCH, not an arrival time to rely on.
+WW_MIN_KM        = RG_KM + 4      # start beyond the fine grid, so it is genuinely new information
+WW_RING_KM       = 5              # distance rings scanned outward
+WW_SECTOR_DEG    = 60             # half-angle around the upwind direction
+WW_WET_MMH       = 0.2            # a cell counts as wet above this
+WW_MIN_KM2       = 150.0          # wet area in a ring needed to call it a band, not a stray cell
+WW_NEXT_FRAC     = 0.5            # the ring behind it must hold at least this much of that, so one blob
+WW_MIN_CLOSE_KMH = 3.0            # closing speed below this: not coming this way
+WW_MAX_ETA_MIN   = 200            # further ahead than this is not worth saying
+
+
+def _wide_watch(gw, cell_km, motion):
+    """The nearest band of rain upwind and beyond the fine grid, from the coarse surround.
+    {"dist_km", "bearing", "band", "peak_mm", "area_km2", "eta_min", "closing_kmh"} or None."""
+    if not gw or not motion or motion.get("vx") is None:
+        return None
+    vx, vy = motion["vx"], motion["vy"]
+    sp = math.hypot(vx, vy)
+    if sp < 5.0:                                   # nothing moving: nothing to warn about
+        return None
+    ux, uy = -vx / sp, -vy / sp                    # upwind unit vector
+    m = len(gw) // 2
+    far = m * cell_km - cell_km                    # stay inside the cut's own edge
+    cosmin = math.cos(math.radians(WW_SECTOR_DEG))
+    rings = {}
+    for j, row in enumerate(gw):
+        y = (m - j) * cell_km
+        for i, v in enumerate(row):
+            if v < WW_WET_MMH:
+                continue
+            x = (i - m) * cell_km
+            d = math.hypot(x, y)
+            if d < WW_MIN_KM or d > far:
+                continue
+            if (x * ux + y * uy) / d < cosmin:     # not upwind of us
+                continue
+            r = rings.setdefault(int((d - WW_MIN_KM) // WW_RING_KM), [0, 0.0, 0.0, 0.0])
+            r[0] += 1                              # cells
+            r[1] = max(r[1], v)                    # peak rate
+            r[2] += x; r[3] += y                   # for the mean bearing
+    if not rings:
+        return None
+    area = cell_km * cell_km
+    hit = None
+    for k in sorted(rings):
+        if rings[k][0] * area < WW_MIN_KM2:
+            continue
+        nxt = rings.get(k + 1)                     # the ring behind it, so one blob doesn't trigger
+        if not nxt or nxt[0] * area < WW_MIN_KM2 * WW_NEXT_FRAC:
+            continue
+        hit = k
+        break
+    if hit is None:
+        return None
+    cells, peak, sx, sy = rings[hit]
+    nx2 = rings.get(hit + 1) or [0, 0.0, 0.0, 0.0]
+    sx += nx2[2]; sy += nx2[3]; cells2 = cells + nx2[0]
+    bx, by = sx / cells2, sy / cells2
+    bd = math.hypot(bx, by) or 1.0
+    bearing = math.degrees(math.atan2(bx, by)) % 360          # of the band, from home
+    closing = -(vx * bx + vy * by) / bd                       # motion's component towards home
+    if closing < WW_MIN_CLOSE_KMH:
+        return None
+    edge = WW_MIN_KM + hit * WW_RING_KM
+    eta = edge / closing * 60.0
+    if eta > WW_MAX_ETA_MIN:
+        return None
+    return {"dist_km": round(edge, 1), "bearing": round(bearing), "band": classify_intensity(peak),
+            "peak_mm": round(peak, 2), "area_km2": round(cells * area), "closing_kmh": round(closing, 1),
+            "eta_min": int(round(eta))}
+
+
 def radar_grid(lat, lon, flow=None, now=None):
-    """{"ts": frame time, "cell_km", "n", "km", "b64": one byte per cell (mm/h x 10, max 255; rows north to south),
+    """{"ts": frame time, "cell_km", "n", "km", "enc": "dbz", "b64": one byte per cell (whole dBZ, 0 = dry; rows north to south),
     "motion": {"vx", "vy" (km/h east / north), "src": "radar" | "uncertain" | "steering", ...} or None,
     "steer": the 850 hPa wind as {"vx", "vy", "kmh", "to_deg"} when known} or {"err"}."""
     if not RADAR_ENABLED:
@@ -1532,8 +1847,17 @@ def radar_grid(lat, lon, flow=None, now=None):
                     mot = None
                 _rg["mframes"] = [(f["path"], f["time"]) for f in prev[-RG_PAIRS:] + [fr]]
                 _rg["mhome"] = (round(lat, 3), round(lon, 3))
+            try:                                                      # radar track at home (RT_*)
+                _rg["track"] = _rg_home_track(host, fr, lat, lon, mot)
+                if _rg["track"]:
+                    _rg["track"]["home"] = (round(lat, 3), round(lon, 3))
+            except Exception as e:
+                _rg["track"] = {"err": f"{type(e).__name__}: {str(e)[:80]}", "home": None}   # never served; kept for debugging
             import base64
-            raw = bytes((255 if v >= RG_HAIL_MMH * 0.999 else min(254, int(round(v * 10)))) for r in g for v in r)
+            # one byte per cell: the radar's whole dBZ (0 = dry; 10-65), so the view loses none of its resolution
+            # (Andy, 7 Nov; was mm/h x 10 capped at 25.4, hail 255). >= RG_HAIL_DBZ is the possible-hail hint.
+            dbz = lambda v: 0 if v <= 0 else max(10, min(65, int(round(10 * math.log10(200 * v ** 1.6)))))
+            raw = bytes(dbz(v) for r in g for v in r)
             m_ = len(g) // 2; hail = []
             for j_, r_ in enumerate(g):
                 for i_, v_ in enumerate(r_):
@@ -1543,8 +1867,20 @@ def radar_grid(lat, lon, flow=None, now=None):
                             hail.append((math.hypot(x_, y_), math.degrees(math.atan2(x_, y_)) % 360))
             hs = ({"n": len(hail), "near_km": round(min(hail)[0], 1), "bearing": round(min(hail)[1])} if hail else None)
             _rg["hail"] = {"ts": fr.get("time"), "cells": [(round(b_), round(d_, 1)) for d_, b_ in hail]}
-            out = {"ts": fr.get("time"), "cell_km": RG_CELL, "km": RG_KM, "n": len(g), "b64": base64.b64encode(raw).decode("ascii"),
+            try:                                                   # the coarse surround, from the same tiles
+                gw = _rg_grid(host, fr["path"], lat, lon, RG_WIDE_KM, RG_WIDE_CELL)
+                wide = {"km": RG_WIDE_KM, "cell_km": RG_WIDE_CELL, "n": len(gw),
+                        "b64": base64.b64encode(bytes(dbz(v) for r in gw for v in r)).decode("ascii")}
+                try:
+                    wide["watch"] = _wide_watch(gw, RG_WIDE_CELL, mot)
+                except Exception:
+                    wide["watch"] = None
+            except Exception:
+                wide = None                                        # never costs the frame itself
+            out = {"ts": fr.get("time"), "cell_km": RG_CELL, "km": RG_KM, "n": len(g), "enc": "dbz", "b64": base64.b64encode(raw).decode("ascii"),
                    "motion": mot, "hail": hs}
+            if wide:
+                out["wide"] = wide
             _rg["key"], _rg["data"] = key, dict(out)
             maxh_radar(fr.get("time"), _rg_max(g, RG_KM, RG_CELL), lat, lon, host, now)
         pg = _rv["pub"].get(int(fr.get("time") or 0))
@@ -1780,13 +2116,35 @@ def _range_speed(hist, now, window=MOBILE_EDGE_WINDOW_S):
     return moved / dt_hr
 
 
+# Rain moves slower than the 850 hPa wind (Andy, 16 Nov). Rain-recorder review, 30 Sep - 16 Nov: on 20
+# approach alerts timed from the steering flow, rain reached home at a median 0.6x the 850 hPa speed (middle
+# half 0.3-0.8x); the old +/-20% window around 1x held the arrival 6 times, a 0.45-0.85x window 12 times.
+STEER_ETA_FAST = 0.85          # fast edge of the window: this x the 850 hPa speed
+STEER_ETA_SLOW = 0.45          # slow edge
+STEER_ETA_HI_MAX = 150         # the slow edge is capped here (minutes)
+
+
+def _steer_eta(dist_km, kmh):
+    """Arrival window from a real 850 hPa speed: (text, lo, hi) minutes, or (None, None, None) when even the
+    fast edge is beyond ETA_MAX_MIN (the same reach as the old +/-20% window's slow edge)."""
+    if not dist_km or not kmh or kmh <= 0.5:
+        return None, None, None
+    lo = _round5(dist_km / (kmh * STEER_ETA_FAST) * 60.0)
+    hi = min(STEER_ETA_HI_MAX, max(lo, _round5(dist_km / (kmh * STEER_ETA_SLOW) * 60.0)))
+    if lo > ETA_MAX_MIN:
+        return None, None, None
+    if hi <= ETA_MIN_MIN:
+        return "within the next fifteen minutes", lo, hi
+    return f"in {lo} to {hi} minutes", lo, hi
+
+
 def _flow_eta(dist_km, flow, wind_kmh=None):
-    """Arrival window from the steering flow. A real 850 hPa speed is already steering-level,
-    so it is bracketed symmetrically; the surface fallback keeps the original surface-wind
+    """Arrival window from the steering flow. A real 850 hPa speed gives the STEER_ETA_* window (rain
+    runs slower than the 850 hPa wind); the surface fallback keeps the original surface-wind
     bracket (surface = slow edge, x ADVECT_FAST_FACTOR = fast edge). Never multiplies a real
     850 hPa speed by ADVECT_FAST_FACTOR."""
     if flow and flow.get("src") == "850hPa" and flow.get("kmh"):
-        return eta_from_speed(dist_km, flow["kmh"], measured=True)
+        return _steer_eta(dist_km, flow["kmh"])
     surf = (flow or {}).get("surface_kmh") if flow else None
     return eta_from_speed(dist_km, surf if surf is not None else wind_kmh, measured=False)
 
@@ -1985,8 +2343,8 @@ def _fallback_sentinels(disp, n=OC4_FALLBACK_MAX):
 
 # ───────────────────────── steering flow (850 hPa) ─────────────────────────
 def fetch_om_steering(home, timeout=8, now=None):
-    """One keyless Open-Meteo read of the 850 hPa wind at home for the current UTC hour.
-    Returns {"from_deg", "kmh", "sent": True} or {"err", "sent"}. Honours the shared
+    """One keyless Open-Meteo read of the 850 hPa wind AND temperature at home for the current
+    UTC hour. Returns {"from_deg", "kmh", "t850", "sent": True} or {"err", "sent"}. Honours the shared
     Open-Meteo backoff (no call while it is cooling down) and logs every attempt to
     om_debug.jsonl, like the net. Never raises."""
     now = now or time.time()
@@ -1998,7 +2356,7 @@ def fetch_om_steering(home, timeout=8, now=None):
     t0 = time.time()
     try:
         q = {"latitude": f"{home[0]:.4f}", "longitude": f"{home[1]:.4f}",
-             "hourly": "wind_speed_850hPa,wind_direction_850hPa",
+             "hourly": "wind_speed_850hPa,wind_direction_850hPa,temperature_850hPa",
              "wind_speed_unit": "kmh", "forecast_days": 1, "timezone": "GMT"}
         code, hdrs, raw, host = _om_request(q, timeout)
         base["host"] = host
@@ -2020,12 +2378,14 @@ def fetch_om_steering(home, timeout=8, now=None):
         i = times.index(key)
         spd = (h.get("wind_speed_850hPa") or [None] * len(times))[i]
         drn = (h.get("wind_direction_850hPa") or [None] * len(times))[i]
+        t85 = (h.get("temperature_850hPa") or [None] * len(times))[i]   # same call: the snow / rain signal aloft
         if spd is None or drn is None:
             _om_debug({**base, "outcome": "no_value", "http": code, "reason": "850 hPa value missing"})
             return {"err": "no 850 hPa value for this hour", "sent": True}
         _om_debug({**base, "outcome": "ok", "http": code, "headers": hdrs,
                    "elapsed_ms": round((time.time() - t0) * 1000)})
-        return {"from_deg": float(drn) % 360.0, "kmh": float(spd), "sent": True}
+        return {"from_deg": float(drn) % 360.0, "kmh": float(spd),
+                "t850": (float(t85) if t85 is not None else None), "sent": True}
     except OMBackoff:
         _om_debug({**base, "outcome": "backoff_skip", "daily": bool(now < _om_daily_until),
                    "resume_in_s": round(_om_backoff_until - now)})
@@ -2052,6 +2412,49 @@ def fetch_om_steering(home, timeout=8, now=None):
         return {"err": "fetch failed: " + str(e)[:80], "sent": False}
 
 
+# ─────────────────── precipitation type at home (Andy, 12 Nov) ───────────────────
+# Radar cannot tell snow from rain, so every radar-derived cell carries snow=False, which is
+# "unknown", not "rain": the radar watch therefore said "rain" whatever was falling. Two readings
+# together give the type: the surface wet-bulb (from the measured temperature and dew point passed
+# into run_probe) says whether falling snow survives to the ground, and the 850 hPa temperature,
+# about 1.5 km up and read hourly with the steering wind, says whether it is snow where it forms.
+# Where Open-Meteo's own rain/snow split exists it WINS -- that is real microphysics and this is an
+# inference -- so this is used only where the type is genuinely unknown. Speech is more cautious
+# than the display: a marginal call is hedged ("Possible light snow") rather than stated.
+_SFC = {"wet": None, "wet_ts": 0, "t850": None, "t850_ts": 0}
+SFC_TTL_S = 3 * 3600          # a reading older than this is not used
+ICE_CLAUSE = " It is freezing at ground level, so ice is possible."
+
+
+def _sfc_read(now=None):
+    """(wet-bulb, 850 hPa temp) at home, each None when missing or stale."""
+    now = now or time.time()
+    wet = _SFC["wet"] if _SFC["wet"] is not None and now - _SFC["wet_ts"] <= SFC_TTL_S else None
+    t850 = _SFC["t850"] if _SFC["t850"] is not None and now - _SFC["t850_ts"] <= SFC_TTL_S else None
+    return wet, t850
+
+
+def precip_type(model_snow=None, now=None):
+    """("rain"|"sleet"|"snow", hedge, ice) for precipitation arriving at home now.
+    hedge: say "possible ..." -- the two readings only marginally agree, or only one is known.
+    ice:   rain falling into a surface at or below freezing (freezing rain), worth saying on its own."""
+    if model_snow is True:
+        return "snow", False, False
+    wet, t850 = _sfc_read(now)
+    if wet is None:
+        return "rain", False, False                       # no surface reading: as before
+    ice = bool(t850 is not None and t850 > 0 and wet <= 0)
+    if t850 is None:                                      # wet-bulb alone: hedge what it implies
+        return ("snow", True, False) if wet <= 1 else ("sleet", True, False) if wet <= 2 else ("rain", False, False)
+    if t850 > 0:                                          # too mild aloft: rain, whatever the surface says
+        return "rain", False, ice
+    if t850 <= -5:                                        # snow where it forms
+        return ("snow", False, False) if wet <= 1 else ("snow", True, False) if wet <= 2 else ("rain", False, False)
+    if t850 <= -2:
+        return ("snow", wet > 0.5, False) if wet <= 1 else ("sleet", True, False) if wet <= 2 else ("rain", False, False)
+    return ("sleet", True, False) if wet <= 2 else ("rain", False, False)   # -2 to 0: snow turns to sleet
+
+
 def steering_update(state, home, now, wind_from, wind_kmh, fetch_fn=fetch_om_steering):
     """The ONE flow for the whole probe: {from_deg, kmh, src, stale, age_s, surface_kmh,
     reason}. src "850hPa" = a real steering read (re-read hourly, retried 15 min after a
@@ -2066,6 +2469,8 @@ def steering_update(state, home, now, wind_from, wind_kmh, fetch_fn=fetch_om_ste
         if r.get("kmh") is not None and r.get("from_deg") is not None:
             state.steer_from, state.steer_kmh, state.steer_ts = r["from_deg"], r["kmh"], now
             state.steer_err = None
+        if r.get("t850") is not None:                    # kept even when the wind part failed
+            _SFC["t850"], _SFC["t850_ts"] = r["t850"], now
         else:
             state.steer_err = r.get("err") or "no reading"
     if state.steer_ts is not None and (now - state.steer_ts) <= STEER_KEEP_S and state.steer_kmh:
@@ -2577,6 +2982,13 @@ TEMPLATES = {
     "fwd_onset":      ("notice", "Rain is expected within about {eta} minutes."),
     "fwd_onset_soon": ("notice", "Rain is expected within the next few minutes."),
     "settled":       ("notice",  "The rain has cleared from the area."),
+    # from the radar's coarse surround, beyond everything else the engine watches
+    # Spoken in MILES, like the speeds: the Forecast view rewrites the figure to kilometres
+    # on the way to the speech engine when km/h is the chosen unit (261120.1). Rounded to
+    # the nearest 5 miles, as it was to the nearest 5 km, because the coarse surround is
+    # sampled at 2 km and the figure should not pretend to be sharper than that.
+    "wide_watch":    ("notice",  "Rain is showing about {dist} miles to the {dir}, moving this way. "
+                                 "It could reach you in roughly {eta}."),
     "feed_stale":    ("notice",  "Weather data is out of date. Rainfall monitoring is paused for now."),
 }
 
@@ -2593,6 +3005,22 @@ RAIN_ACTIVE_KEYS = {
     "compound", "flood", "band", "confirm", "modelonly",
     "trend", "approach", "sea", "forward",
 }
+
+
+def _ww_eta_words(m):
+    """A spoken length of time that doesn't pretend to minutes an hour and a half out."""
+    if m < 75:
+        return "%d minutes" % max(5, int(round(m / 5.0)) * 5)
+    h = m / 60.0
+    if h < 1.25: return "an hour"
+    if h < 1.75: return "an hour and a half"
+    if h < 2.25: return "two hours"
+    return "%d hours" % int(round(h))
+
+
+def _compass_words(deg):
+    return ["north", "north-east", "east", "south-east",
+            "south", "south-west", "west", "north-west"][int(round((deg % 360) / 45.0)) % 8]
 
 
 def select(situation):
@@ -2677,6 +3105,16 @@ def select(situation):
             else:
                 cands.append(("approach", TEMPLATES["approach_soft"][0],
                               TEMPLATES["approach_soft"][1].format(dir=d)))
+
+    # heads-up from the radar's coarse surround: only when nothing nearer is being announced
+    # and nothing is falling at home — it is the furthest-out, least certain signal there is
+    ww = situation.get("wide")
+    if (ww and not raining and not (land and land.get("active"))
+            and not (sea and sea.get("detected"))):
+        cands.append(("wide", TEMPLATES["wide_watch"][0],
+                      TEMPLATES["wide_watch"][1].format(dist=max(5, int(round(ww["dist_km"] / 1.609344 / 5.0) * 5)),
+                                                        dir=_compass_words(ww["bearing"]),
+                                                        eta=_ww_eta_words(ww["eta_min"]))))
 
     # offshore modelled approach — with the same fizzle awareness
     if sea and sea.get("detected"):
@@ -3674,6 +4112,12 @@ def build_situational(points, home, wind_from, land, sea, now):
 # location-agnostic features per reading and its outcome (did rain reach home?) in
 # rain_threats-YYYY-MM.jsonl. Episode transitions go to rain_episodes-YYYY-MM.jsonl.
 APPR_CONE_DEG        = UPWIND_HALF_ANGLE   # +/- deg of wind-from that counts as "coming at us"
+# Being in the cone is not the same as being on course for us. A cell at the cone's edge, 60 deg
+# off the flow, passes 0.87 x its range to one side: at 20 km that is a 17 km miss. The threat is
+# the first cell to REACH here, not the nearest one pointing roughly this way (Andy, 19 Nov).
+APPR_MISS_KM         = 12.0                # closest approach beyond this: it goes past, not over
+APPR_MISS_FRAC       = 0.15                # ... widened with range: a band 40 km out is sampled
+                                           # coarsely and is wide, so allow 12 + 0.15 x range
 APPR_WET_MMH         = SIT_WET_MMH         # a cell must be at least this wet (NOT merely > 0)
 APPR_MAX_KM          = 40.0                # cells beyond this are ignored entirely
 APPR_GAUGE_MAX_AGE_S = 45 * 60             # a gauge reading older than this can't be a threat
@@ -3706,6 +4150,15 @@ APPR_RADAR_HOME_KM    = 0.4                 # home + 8 points this far out, aver
 APPR_FIZZLE_RADAR_KM  = (5, 10, 15, 20, 25) # upwind ranges checked before saying "fizzled"
 APPR_FIZZLE_RADAR_HALF = 45                 # +/- deg of the steering flow
 APPR_FIZZLE_RADAR_STEP = 15                 # bearing step across that sector
+#  - GATE (Andy, 16 Nov): an approach ALERT is only spoken when the newest radar frame shows rain
+#    toward the threat. Rain-recorder review, 30 Sep - 16 Nov: 16 of 38 approach alerts were not
+#    followed by rain at home; at alert time radar showed no rain at all 5-30 km out within +/-35
+#    deg of the threat's bearing for 8 of them (mostly gauge threats ~30 min old saying "any time
+#    now") and for none of the 22 that came true. Without a usable frame the gate is skipped.
+APPR_GATE_RADAR_KM    = (5, 10, 15, 20, 25, 30)  # ranges checked toward the threat
+APPR_GATE_RADAR_HALF  = 35                  # +/- deg of the threat's bearing
+APPR_GATE_RADAR_STEP  = 7                   # bearing step across that sector (~5 km apart at 30 km)
+APPR_GATE_RADAR_MMH   = 0.1                 # any radar rain (>= 10 dBZ is ~0.15 mm/h) counts
 _BAND_MM = {0: 0.0, 1: 1.0, 2: 3.5, 3: 7.0, 4: 12.0}   # track peak band -> representative mm/h
 
 EPISODE_LOG_ENABLED = True
@@ -3803,10 +4256,27 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
                       "mm": _BAND_MM.get(t.get("peak_band") or 0, 0.0), "snow": bool(t.get("snow"))})
     if not cells:
         return None
+    # Carry each cell along the steering flow: `along` is how far it still has to travel to
+    # its closest approach to here, `miss_km` how wide that approach is. The lead is the
+    # first to arrive, not the nearest, and anything already past or missing by more than
+    # APPR_MISS_KM is no threat to here however near or heavy it looks. Counting one used to
+    # put a shower crossing to the south on the line as rain due in minutes, and the line
+    # then jumped backwards when it tracked out of the cone.
+    _to = math.radians((wind_from + 180.0) % 360.0)
+    _ux, _uy = math.sin(_to), math.cos(_to)
+    for c in cells:
+        _br = math.radians(c["b"])
+        _x, _y = c["d"] * math.sin(_br), c["d"] * math.cos(_br)
+        _al = -(_x * _ux + _y * _uy)
+        c["along"] = round(_al, 1)
+        c["miss_km"] = round(math.hypot(-_x - _al * _ux, -_y - _al * _uy), 1)
+    cells = [c for c in cells if c["along"] > 0 and c["miss_km"] <= APPR_MISS_KM + APPR_MISS_FRAC * c["d"]]
+    if not cells:
+        return None
     n_land = sum(1 for c in cells if c["src"] == "gauge")
     n_model = sum(1 for c in cells if c["src"].startswith("sea_") or c["src"] == "ring")
     peak = max(c["mm"] for c in cells)
-    lead = min(cells, key=lambda c: c["d"])
+    lead = min(cells, key=lambda c: c["along"])
     press_falling = press_cls in ("falling", "falling_fast", "falling_storm")
     # cross-wind width of the wet POINT cells: offset of each perpendicular to the wind axis
     # through home. A band is wide across the wind; a lone shower is narrow.
@@ -3831,13 +4301,13 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
             spd, measured, speed_src = min(tk, key=lambda t: t["dist_km"])["speed_kmh"], True, "track"
     eta_txt = eta_lo = eta_hi = None
     if spd is not None:                                   # measured + gated
-        eta_txt, eta_lo, eta_hi = eta_from_speed(lead["d"], spd, measured=True)
+        eta_txt, eta_lo, eta_hi = eta_from_speed(lead["along"], spd, measured=True)
     elif flow and flow.get("kmh"):                        # steering flow (or its surface estimate)
         spd, speed_src = flow["kmh"], ("steering" if flow["src"] == "850hPa" else "surface")
-        eta_txt, eta_lo, eta_hi = _flow_eta(lead["d"], flow, wind_kmh)
+        eta_txt, eta_lo, eta_hi = _flow_eta(lead["along"], flow, wind_kmh)
     elif wind_kmh:                                        # no flow object: original wind proxy
         spd, speed_src = wind_kmh, "surface"
-        eta_txt, eta_lo, eta_hi = eta_from_speed(lead["d"], spd, measured=False)
+        eta_txt, eta_lo, eta_hi = eta_from_speed(lead["along"], spd, measured=False)
     too_far = bool(spd) and eta_txt is None
     # The lead cell was seen where it was when its reading was VALID, not now: the rain
     # has kept moving since (radar ~10-20 min, EA gauges ~60 min). Take that age off the
@@ -3855,6 +4325,7 @@ def approach_threat(*, home, gauges, wind_from, wind_kmh, tracks, vgauges, land,
     hail = any(_in_cone(b, wind_from) and GAUGE_CONFIRM_KM < d <= APPR_MAX_KM for b, d in radar_hail_cells(now)) \
         if wind_from is not None else False
     return {"cls": cls, "why": why, "edge_km": lead["d"], "bearing": lead["b"],
+            "along_km": lead["along"], "miss_km": lead["miss_km"],
             "data_age_s": (int(data_age_s) if data_age_s else 0),
             "dir": compass(lead["b"], spoken=True), "peak_mm": round(peak, 2),
             "n_cells": len(cells), "n_land": n_land, "n_model": n_model, "n_track": len(trk),
@@ -3878,7 +4349,7 @@ def _eta_age_corrected(lo, hi, age_s):
         return "any time now", 0, 0
     if hi2 <= 5:
         return "within a few minutes", lo2, hi2
-    if lo2 < ETA_MIN_MIN:
+    if hi2 <= ETA_MIN_MIN or (lo2 < ETA_MIN_MIN and hi2 - lo2 <= 15):
         return "within the next fifteen minutes", lo2, hi2
     return f"in {lo2} to {hi2} minutes", lo2, hi2
 
@@ -3939,14 +4410,15 @@ def _appr_subject(ep):
 
 def _appr_alert_phrase(th):
     noun = _appr_noun(th)
+    ice = ICE_CLAUSE if (noun == "rain" and precip_type(th.get("snow"))[2]) else ""
     d = th["dir"] or "nearby"
     hail = ", possibly with hail" if th.get("hail") else ""          # radar core >= RG_HAIL_DBZ in the cone (Andy, 5 Nov)
     if th["cls"] == "organised":
         if th["eta_text"]:
-            return f"A band of {noun} is approaching from the {d} and may arrive {th.get('eta_say') or th['eta_text']}{hail}."
-        return f"A band of {noun} is moving in from the {d}{hail}."
+            return f"A band of {noun} is approaching from the {d} and may arrive {th.get('eta_say') or th['eta_text']}{hail}.{ice}"
+        return f"A band of {noun} is moving in from the {d}{hail}.{ice}"
     what = "A wintry shower" if th.get("snow") else "A shower"
-    return f"{what} is approaching from the {d} and may reach you {th.get('eta_say') or th['eta_text'] or 'soon'}{hail}."
+    return f"{what} is approaching from the {d} and may reach you {th.get('eta_say') or th['eta_text'] or 'soon'}{hail}.{ice}"
 
 
 def _appr_confirm_phrase(ep, th):
@@ -4032,16 +4504,160 @@ def radar_home_view(home, from_deg, now=None):
     return out
 
 
+_rv_sector = {"key": None, "out": None}
+
+
+def radar_sector_mm(home, bearing, now=None):
+    """The wettest radar point (mm/h) toward `bearing`: APPR_GATE_RADAR_KM out, +/-APPR_GATE_RADAR_HALF deg,
+    on the newest RainViewer frame. None when radar is disabled, unavailable or older than
+    APPR_RADAR_MAX_AGE_S (the caller then skips the gate). Cached per frame / home / bearing (5 deg). Never raises."""
+    if not RADAR_ENABLED or not home or bearing is None:
+        return None
+    now = now or time.time()
+    try:
+        _host, fr = _rv_newest_frame(now)
+    except Exception:
+        return None
+    ft = fr.get("time")
+    if not ft or now - ft > APPR_RADAR_MAX_AGE_S:
+        return None
+    bkey = int(round(bearing / 5.0)) * 5 % 360
+    key = (ft, round(home[0], 3), round(home[1], 3), bkey)
+    if _rv_sector["key"] == key:
+        return _rv_sector["out"]
+    pts = []
+    for d in APPR_GATE_RADAR_KM:
+        for off in range(-APPR_GATE_RADAR_HALF, APPR_GATE_RADAR_HALF + 1, APPR_GATE_RADAR_STEP):
+            la, lo = offset_latlon(home[0], home[1], (bkey + off) % 360, d)
+            pts.append({"lat": la, "lon": lo})
+    r = fetch_radar_precip(pts, now)
+    if r is None:
+        return None
+    out = round(max(x.get("mm") or 0.0 for x in r), 2)
+    _rv_sector.update(key=key, out=out)
+    return out
+
+
+# ---- radar watch (Andy, 7 Nov) ---------------------------------------------------------------------------------
+# The approach engine watches gauges, sea points and probes; light rain over land (below a tipping bucket's
+# resolution) can be on the radar and heading this way while every sensor reads dry. The radar watch speaks from the
+# radar track at home (radar_home_track: the newest frame read upwind at the motion MEASURED on the radar):
+#   rain due at home within RW_ALERT_MIN (a 5-minute slot with a mean of RW_MMH or a wet share of RW_WET), seen on
+#   RW_PERSIST radar frames in a row ->
+#     "Light rain seen on radar moving in from the west. Rain may reach you at around 15:30."
+#   or, when the rain due in the next 2 h has fallen below RW_DYING of the most on a frame RW_TREND_S or more earlier,
+#     "Patchy light rain seen on radar moving in from the west. It is weakening, but may reach you at around 15:30."
+#   No alert while radar showed rain at home within RW_AFTER_WET_S.
+# The description is the typical rate where it rains (p75 of the wet cells, as classify_intensity) over the first
+# half hour of arrival, "patchy" when under half of the area is wet ("showers" when patchy and heavy). One alert per
+# episode: none while an approach episode is live, and an approach alert due while a radar episode is live is
+# dropped (that rain has been announced). An episode ends silently when rain is measured at home, or RW_TAIL_S
+# after its arrival time; then RW_QUIET_S before another.
+RW_ALERT_MIN = 60
+RW_MMH       = 0.3
+RW_WET       = 0.3
+RW_PERSIST   = 2
+RW_DYING     = 0.6
+RW_TREND_S   = 10 * 60            # compared with the most rain due on a frame at least this much older
+RW_TAIL_S    = 45 * 60
+RW_QUIET_S   = 30 * 60
+RW_AFTER_WET_S = 30 * 60          # no alert while radar showed rain at home within this (Andy, 16 Nov: 2 of the
+                                  # "may reach you in about 5 minutes" alerts came just after a shower had passed)
+
+
+def _rw_describe(slots, kind="rain", hedge=False):
+    """'Light rain', 'Patchy moderate rain', 'Heavy showers', 'Drizzle', and the snow and sleet
+    equivalents, for the slots given. `hedge` makes it "Possible ..." for a marginal type."""
+    p75 = max((x[3] if len(x) > 3 else x[1]) for x in slots)
+    wet = max(x[2] for x in slots)
+    band = classify_intensity(p75) or "light"
+    if band == "violent":
+        band = "heavy"
+    if kind == "sleet":
+        txt = ("Heavy sleet" if band == "heavy" else "Sleet") if wet >= .5 else "Patchy sleet"
+    elif kind == "snow":
+        if band in ("dry", "drizzle"):
+            band = "light"
+        txt = (f"{band.capitalize()} snow" if wet >= .5
+               else "Snow showers" if band == "heavy" else f"Patchy {band} snow")
+    elif band in ("dry", "drizzle"):
+        txt = "Patchy drizzle" if wet < .5 else "Drizzle"
+    elif wet < .5:
+        txt = "Heavy showers" if band == "heavy" else f"Patchy {band} rain"
+    else:
+        txt = f"{band.capitalize()} rain"
+    return ("Possible " + txt[0].lower() + txt[1:]) if hedge else txt
+
+
+def radar_watch(state, *, home, now, arrived, appr_live):
+    """One cycle of the radar watch. Returns [{tier, key, phrase}] (0 or 1) and mutates state."""
+    ep = state.rw_ep or {}
+    if ep and (arrived or now > ep.get("until", 0)):
+        _episode_log({"ts": now, "event": "radar_end", "ep": ep.get("id"), "cause": "arrived" if arrived else "time",
+                      "after_s": int(now - ep.get("ts", now))})
+        state.rw_ep = ep = {}
+        state.rw_quiet_until = now + RW_QUIET_S
+    t = radar_home_track(home[0], home[1], now) if home else None
+    if not t or not t.get("slots"):
+        state.rw_reads = 0
+        return []
+    new_frame = t["ts"] != state.rw_last_ts
+    if not new_frame:
+        return []
+    state.rw_last_ts = t["ts"]
+    ahead = [x for x in t["slots"] if now - RT_SLOT_S <= x[0] <= now + 2 * 3600]
+    total = round(sum(x[1] for x in ahead), 2)
+    state.rw_hist = [h for h in state.rw_hist if t["ts"] - h[0] <= 2 * 3600] + [(t["ts"], total)]
+    due = next((x for x in ahead if x[0] + RT_SLOT_S > now and x[0] <= now + RW_ALERT_MIN * 60
+                and (x[1] >= RW_MMH or x[2] >= RW_WET)), None)
+    state.rw_reads = state.rw_reads + 1 if due else 0
+    if ep or appr_live or arrived or now < state.rw_quiet_until or state.rw_reads < RW_PERSIST:
+        return []
+    if state.rw_home_wet_ts and t["ts"] - state.rw_home_wet_ts <= RW_AFTER_WET_S:
+        return []                    # rain was at home just now: the at-home voice has it
+    old = [h for h in state.rw_hist if t["ts"] - h[0] >= RW_TREND_S]
+    ref = max((h[1] for h in old), default=0)
+    dying = ref > 0 and total < RW_DYING * ref
+    arr = [x for x in ahead if due[0] <= x[0] < due[0] + 1800]
+    kind, hedge, ice = precip_type(now=now)      # radar cannot tell the type: infer it (see precip_type)
+    desc = _rw_describe(arr or [due], kind, hedge)
+    d = compass(t["from_deg"], spoken=True) or "west"
+    lo = max(0, int((due[0] - now) / 60)); hi = lo + 10
+    # Weakening rain still arrived after 3 of 4 "Most is likely to die out" alerts (16 Nov review), so a
+    # weakening track keeps its arrival time and says it is weakening.
+    when = _eta_say(lo, hi, True, now) or "soon"
+    when = ("at " + when) if when.startswith("around") else when
+    noun = ("Snow" if kind == "snow" else "Sleet" if kind == "sleet"
+            else "Drizzle" if "rizzle" in desc else "Showers" if "showers" in desc else "Rain")
+    if dying:
+        phrase = (f"{desc} seen on radar moving in from the {d}. It is weakening, but may reach you {when}."
+                  + (ICE_CLAUSE if ice else ""))
+    else:
+        phrase = (f"{desc} seen on radar moving in from the {d}. "
+                  f"{noun} may reach you {when}."
+                  + (ICE_CLAUSE if ice else ""))
+    state.rw_seq += 1
+    state.rw_ep = {"id": state.rw_seq, "ts": now, "dir": d, "eta_ts": due[0], "ptype": kind, "ice": ice,
+                   "kind": "dying" if dying else "due",
+                   "until": max(due[0], now) + RW_TAIL_S}
+    _episode_log({"ts": now, "event": "radar_alert", "ep": state.rw_seq, "phrase": phrase, "dying": dying,
+                  "ptype": kind, "hedged": hedge, "ice": ice,
+                  "frame_ts": t["ts"], "kmh": t.get("kmh"), "from_deg": t.get("from_deg"), "due_ts": due[0],
+                  "total": total, "total_before": ref or None})
+    return [{"tier": "notice", "key": "radar_alert", "phrase": phrase}]
+
+
 def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, now,
                          home=None, gauges=None, wind_from=None, wind_kmh=None,
-                         cone_from=None, steering=None, n_flagged=0, upwind_mm=None):
+                         cone_from=None, steering=None, n_flagged=0, upwind_mm=None, sector_mm=None):
     """Advance the approach episode (and its shadow candidate) one cycle. Returns
     [{tier,key,phrase}] (0 or 1 item) and mutates state. `th` is approach_threat() output
     (or None); `obs_ts` is the newest field-reading timestamp — state machine transitions
     that need 'another reading' only happen when it advances; `arrived` is True when rain
     is measured at home (the at-home voice announces that, so arrival is silent here).
     `upwind_mm` is the radar's wettest upwind point (radar_home_view) or None: while it is
-    wet, a due fizzle is held rather than spoken."""
+    wet, a due fizzle is held rather than spoken. `sector_mm` is the radar's wettest point toward the threat
+    (radar_sector_mm) or None: below APPR_GATE_RADAR_MMH a first alert is withheld (see the GATE note)."""
     out = []
     held = False
     new_read = obs_ts is not None and obs_ts > (state.appr_obs_ts or 0)
@@ -4104,6 +4720,8 @@ def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, n
             ok, why = _appr_qualifies(th, supp)
             if ok and receding:
                 ok, why = False, "receding"
+            if ok and sector_mm is not None and sector_mm < APPR_GATE_RADAR_MMH:
+                ok, why = False, "radar shows no rain toward the %s" % th["dir"]
             if ok and state.appr_present_reads < APPR_PERSIST_READS:
                 ok, why = False, "persisting (%d/%d readings)" % (state.appr_present_reads, APPR_PERSIST_READS)
             decision = "alert" if ok else "withheld: " + why
@@ -4185,7 +4803,7 @@ def run_approach_episode(state, th, *, arrived, arrived_src=None, obs_ts=None, n
 
 
 def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
-              wind_from, wind_kmh, gauges, flood_active=False, feed_stale=False,
+              wind_from, wind_kmh, gauges, temp_c=None, dew_c=None, flood_active=False, feed_stale=False,
               now=None, sample_fn=None, net_sample_fn=fetch_om_precip,
               track_sample_fn=None, landsea_fn=fetch_landsea, forward_precip=None,
               cadence_mult=1.0, sampling_mult=1.0, pressure_change_3h=None,
@@ -4194,6 +4812,8 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     Returns a diagnostic dict incl. `would_speak` (transitions this cycle) and
     `virtual_gauges` (marked, modelled). Nothing here plays a tone."""
     now = now or time.time()
+    if temp_c is not None and dew_c is not None:         # wet-bulb at home, one-third rule, for precip_type()
+        _SFC["wet"], _SFC["wet_ts"] = temp_c - (temp_c - dew_c) / 3.0, now
 
     if feed_stale:
         return {"ts": now, "feed_stale": True,
@@ -4322,6 +4942,9 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                              for p in _sit_pts]
     situational["steering"] = _steer_public(flow)
     situational["radar_grid"] = radar_grid(home[0], home[1], flow=flow, now=now)   # the view's radar overlay
+    # the coarse surround sees ~60 km further upwind than anything else here: a front still
+    # outside the plot, as a watch (translation only, so it can decay or veer on the way)
+    situational["wide_watch"] = ((situational["radar_grid"] or {}).get("wide") or {}).get("watch")
     maxh_gauges(state.gauge_hist, _maxh_plot, home[0], home[1], now)
     situational["max_hist"] = maxh_public(now)   # highest rate in the plot, radar and gauges, last 25 h
     situational["gauge_flags"] = gauge_flags
@@ -4439,9 +5062,12 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
             _rvv = radar_fn(home, _wf, now)
         except Exception:
             _rvv = None
+    if _rvv and (_rvv.get("home_mm") or 0) >= APPR_WET_MMH and _rvv.get("frame_ts"):
+        state.rw_home_wet_ts = max(state.rw_home_wet_ts or 0.0, _rvv["frame_ts"])
     situational["home_int"] = home_intensity(state, _sit_pts, _rvv, now)
     maxh_home(_rvv, _sit_pts, home[0], home[1], now)            # rain at home, for the weather panel's plot
     situational["max_hist"] = maxh_public(now)
+    situational["home_track"] = radar_home_track(home[0], home[1], now)   # radar track at home, next 2 h
     situational["far_heavier"] = far_heavier(_sit_pts)
     # Rain AT home = the nearest gauge < 5 km is wet OR the radar box at home is wet on a
     # fresh frame. The gauge alone missed heavy rain at home (22 Oct 18:05: radar 10.5 mm/h,
@@ -4478,6 +5104,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     model_only = model_raining and not (home_band not in (None, "dry"))
     situation = {"band": home_band, "trend": (trend if home_band not in (None, "dry") else "steady"), "press_cls": pcls, "vis": vis,
                  "approach": appr, "land": land, "sea": sea, "confirmed": confirmed,
+                 "wide": situational.get("wide_watch"),
                  "model_only": model_only, "flood_active": flood_active,
                  "wind_from": wind_from, "forward": forward}
     # length of the current spell of rain MEASURED at home (brief dry gaps tolerated)
@@ -4555,7 +5182,17 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
                                       obs_ts=_obs_ts, now=now, home=home, gauges=gauges,
                                       wind_from=wind_from, wind_kmh=wind_kmh, cone_from=_wf,
                                       steering=situational["steering"], n_flagged=len(_flagged),
-                                      upwind_mm=(_rvv or {}).get("upwind_mm"))
+                                      upwind_mm=(_rvv or {}).get("upwind_mm"),
+                                      sector_mm=(radar_sector_mm(home, _threat.get("bearing"), now)
+                                                 if (radar_fn and _threat and not state.appr_ep) else None))
+    if state.rw_ep and appr_speak and appr_speak[0]["key"] == "appr_alert":   # that rain was announced by the radar watch
+        _episode_log({"ts": now, "event": "appr_alert_dropped", "ep": (state.appr_ep or {}).get("id"),
+                      "radar_ep": state.rw_ep.get("id"), "phrase": appr_speak[0]["phrase"]})
+        appr_speak = []
+    rw_speak = radar_watch(state, home=home, now=now, arrived=bool(_arrived_src), appr_live=bool(state.appr_ep))
+    appr_speak = appr_speak + rw_speak
+    situational["radar_watch"] = {"reads": state.rw_reads, "episode": dict(state.rw_ep) if state.rw_ep else None,
+                                  "quiet": state.rw_quiet_until > now}
     would.extend(appr_speak)            # the nowcast channel hears it too (client de-dupes vs RAIN)
     _ep = state.appr_ep or {}
     situational["approach_episode"] = {
@@ -4563,10 +5200,14 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
         "dir": _ep.get("dir"), "alert_age_s": (int(now - _ep["alert_ts"]) if _ep.get("alert_ts") else None),
         "suppressed": bool(state.appr_supp),
         "threat": (None if not _threat else {k: _threat[k] for k in (
-            "cls", "why", "edge_km", "dir", "peak_mm", "n_cells", "width_km", "sources", "eta_text", "weakening",
-            "speed_src", "data_age_s", "eta_lo", "eta_hi", "measured", "snow", "too_far")}),   # eta_lo/hi: minutes from `ts`
+            "cls", "why", "edge_km", "along_km", "miss_km", "dir", "peak_mm", "n_cells", "width_km", "sources",
+            "eta_text", "weakening", "speed_src", "data_age_s", "eta_lo", "eta_hi", "measured", "snow",
+            "too_far")}),   # eta_lo/hi: minutes from `ts`
         "present_reads": state.appr_present_reads, "empty_reads": state.appr_empty_reads,
+        # why this threat is or is not allowed to speak — the engine already works it out every
+        # poll, and without it a quiet spell is indistinguishable from a broken one (Andy, 19 Nov)
         "qualifies": (None if not _threat else _appr_qualifies(_threat, state.appr_supp)[1]),
+        "qualifies_ok": (None if not _threat else bool(_appr_qualifies(_threat, state.appr_supp)[0])),
         "shadow_candidate": (state.appr_cand or {}).get("cand"),
     }
 
@@ -4574,7 +5215,7 @@ def run_probe(state: ProbeState, *, home, rain_mm_h, pressure_hpa, visibility_m,
     # approach EPISODE does, so the all-clear can't fire mid-episode and a fizzle this
     # cycle (already in `would`) suppresses a duplicate "settled".
     rain_active = (any(k in RAIN_ACTIVE_KEYS and k not in APPR_RETIRED_KEYS for k in now_keys)
-                   or bool(state.appr_ep))
+                   or bool(state.appr_ep) or bool(state.rw_ep))
     if rain_active:
         state.was_active = True
     elif state.was_active:

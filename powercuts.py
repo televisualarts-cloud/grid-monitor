@@ -29,7 +29,7 @@
 #
 # Python 3, stdlib only. No import of the live server.
 #
-# Build 261025.5  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261114.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 
 from __future__ import annotations
@@ -43,6 +43,17 @@ LAST_IDS_FILE = os.path.join(_DIR, "powercut_last_ids.json")   # for new/cleared
 WATCH_FILE = os.path.join(_DIR, "powercut_watch.json")         # monitored postcode areas (user list)
 HIST_PREFIX = os.path.join(_DIR, "powercuts-")                 # powercuts-YYYY-MM.jsonl
 UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
+
+# A newly raised incident is often published with an ESTIMATED customers-affected figure — in
+# effect the whole feeder or primary group — which the operator corrects down, or withdraws, at
+# its next publish. Checked over 18,587 samples (9 Sep – 14 Nov 2026): every national spike of
+# this kind (five of them, across four different operators) came from one such incident whose id
+# never appeared in another sample, while every sustained large incident was present in two or
+# more. So an incident this large and this sudden is held out of the headline totals until a
+# second sighting confirms it; it is still carried in `incidents` with unconfirmed=True, and the
+# raw figure is kept alongside as customers_off_raw.
+CONFIRM_MIN_OFF = 5000        # only an incident at least this large needs confirming
+CONFIRM_MULT = 3.0            # ...and only when it more than trebles its operator's total
 
 # Rough customers-served per operator, for a "% of customers off" context figure only
 # (denominators, not live data). Approximate, label as context.
@@ -1314,6 +1325,18 @@ def collect(keys=None):
         "incidents": nat_inc, "psr_customers": nat_psr,
         "operators_reporting": reporting, "operators_total": len(OPERATOR_ORDER),
     }
+    held = _mark_unconfirmed(all_incidents, _load_last_ids())
+    if held:
+        for op in operators:
+            h = held.get(op["dno"]) or 0
+            if h:
+                op["customers_off_raw"] = op["customers_off"]
+                op["customers_off"] = max(0, op["customers_off"] - h)
+                op["customers_unconfirmed"] = h
+        tot = sum(held.values())
+        national["customers_off_raw"] = nat_off
+        national["customers_off"] = max(0, nat_off - tot)
+        national["customers_unconfirmed"] = tot
     return {
         "generated": now,
         "generated_iso": _iso(now),
@@ -1352,6 +1375,29 @@ def _save_last_ids(d):
         pass
 
 
+def _mark_unconfirmed(incidents, prev):
+    """Flag each incident that is new this sample and big enough, and sudden enough, for its
+    customers-affected figure to be the operator's first estimate rather than a measurement.
+    Sets unconfirmed on every incident (False for the rest) and returns {dno: customers held}."""
+    prev_ids = set()
+    for ids in (prev.get("ids") or {}).values():
+        prev_ids.update(ids)
+    prev_off = prev.get("off") or {}
+    held = {}
+    for i in incidents or []:
+        i["unconfirmed"] = False
+        off = i.get("customers_off") or 0
+        if off < CONFIRM_MIN_OFF or i.get("planned"):
+            continue
+        if i.get("id") and i["id"] in prev_ids:
+            continue                                  # seen last sample: confirmed
+        if off <= CONFIRM_MULT * (prev_off.get(i.get("dno")) or 0):
+            continue                                  # not a step change for this operator
+        i["unconfirmed"] = True
+        held[i.get("dno")] = held.get(i.get("dno"), 0) + off
+    return held
+
+
 def _volt_counts(incidents):
     """Count ACTIVE incidents by voltage class (HV / LV / EHV). Feeds that don't report
     a voltage (e.g. UKPN) fall in 'unknown' — never guessed. Planned interruptions carry
@@ -1378,7 +1424,8 @@ def _worst_incident(incidents):
         return None
     return {"off": best.get("customers_off") or 0, "dno": best.get("dno"),
             "id": best.get("id"), "voltage": best.get("voltage"),
-            "category": best.get("category"), "region": best.get("region")}
+            "category": best.get("category"), "region": best.get("region"),
+            **({"unconfirmed": True} if best.get("unconfirmed") else {})}
 
 
 def log_sample(snapshot):
@@ -1415,7 +1462,8 @@ def log_sample(snapshot):
             _prev_all.update(_ids)
         _un_ids = set(i["id"] for i in snapshot["incidents"] if i.get("id") and not i.get("planned"))
         un_new = len(_un_ids - _prev_all)
-        un_off = sum((i["customers_off"] or 0) for i in snapshot["incidents"] if not i.get("planned"))
+        un_off = sum((i["customers_off"] or 0) for i in snapshot["incidents"]
+                     if not i.get("planned") and not i.get("unconfirmed"))
         row = {
             "ts": now, "iso": snapshot["generated_iso"],
             "national": {
@@ -1426,6 +1474,10 @@ def log_sample(snapshot):
                 "cleared": sum(o["cleared"] for o in per_op.values()),
                 "un_new": un_new,          # new UNPLANNED incidents this sample
                 "un_off": un_off,          # customers off in UNPLANNED incidents
+                # held back this sample as an operator's first estimate (see CONFIRM_MIN_OFF)
+                **({"off_raw": snapshot["national"]["customers_off_raw"],
+                    "unconfirmed": snapshot["national"]["customers_unconfirmed"]}
+                   if snapshot["national"].get("customers_unconfirmed") else {}),
             },
             "operators": per_op,
             # Per-sample extras for the stats panel: the single worst incident and the
@@ -1436,7 +1488,11 @@ def log_sample(snapshot):
         }
         with open(_hist_path(now), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + "\n")
-        _save_last_ids({"ts": now, "ids": cur_ids})
+        _save_last_ids({"ts": now, "ids": cur_ids,
+                        "off": {o["dno"]: (o.get("customers_off_raw")
+                                           if o.get("customers_off_raw") is not None
+                                           else o.get("customers_off")) or 0
+                                for o in snapshot["operators"]}})
         return row
     except Exception:
         return None
@@ -1511,7 +1567,7 @@ def compute_stats(snapshot, now=None):
             best = None
             for r in rows:
                 w = r.get("worst")
-                if not w or w.get("off") is None:
+                if not w or w.get("off") is None or w.get("unconfirmed"):
                     continue
                 if best is None or w["off"] > best["off"]:
                     best = dict(w); best["ts"] = r.get("ts")
@@ -1520,7 +1576,7 @@ def compute_stats(snapshot, now=None):
         worst_now = _worst_incident(incs)
 
         def fold_worst(stat):
-            if not worst_now:
+            if not worst_now or worst_now.get("unconfirmed"):
                 return stat
             if stat is None or (worst_now["off"] or 0) > (stat.get("off") or 0):
                 s = dict(worst_now); s["ts"] = now; return s

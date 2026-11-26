@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # GB Energy Monitor - data backend
-# Build 261104.4  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261122.2  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 # Copyright (c) 2026 Andy Smith, G7IZU
 #
@@ -203,7 +203,7 @@ UA = {"User-Agent": "uk-grid-monitor/1.0 (personal dashboard)"}
 # bump all three together on every change. It is emitted in the snapshot so the
 # dashboard footer can show the REAL running server build instead of a hard-coded
 # string that silently goes stale.
-SERVER_BUILD = "261104.4"
+SERVER_BUILD = "261123.1"
 
 # ---- Debug logging ----------------------------------------------------------
 # Off by default. Enable by running with --debug or setting GRIDMON_DEBUG=1.
@@ -476,7 +476,7 @@ GEN_STALE_S        = 900      # FUELINST publishes every 5 min; older than this 
 GEN_LOSS_MW        = 400.0    # an infeed drop bigger than this in one interval = flagged
 GEN_LOSS_SEVERE_MW = 800.0    # ...this much = severe (pushes risk to RED)
 GEN_HIST_KEEP_S    = 30 * 60
-_gen_hist = []               # [(ts, sync_mw, infeed_mw, {code: mw})]
+_gen_hist = []               # [(ts, sync_mw, infeed_mw, {code: mw}, publishTime)]
 
 def _update_gen_history(gen, now):
     """Track synchronous generation + total infeed (sync + interconnector imports)
@@ -493,12 +493,14 @@ def _update_gen_history(gen, now):
         elif FUEL_INERTIA_H.get(code, 0) > 0 and mw > 0:
             sync += mw
     infeed = sync + max(ic, 0.0)
-    _gen_hist.append((now, sync, infeed, per))
+    pub = gen.get("publishTime")
+    _gen_hist.append((now, sync, infeed, per, pub))
     while _gen_hist and now - _gen_hist[0][0] > GEN_HIST_KEEP_S:
         _gen_hist.pop(0)
+    _loss_verify_tick(now, infeed, per, pub)      # verdicts on earlier loss flags
     if len(_gen_hist) < 2:
         return None
-    t0, s0, i0, p0 = _gen_hist[-2]; t1, s1, i1, p1 = _gen_hist[-1]
+    t0, s0, i0, p0, pub0 = _gen_hist[-2]; t1, s1, i1, p1, pub1 = _gen_hist[-1]
     if t1 <= t0:
         return None
     d_inf = i1 - i0; d_sync = s1 - s0; dt = max(t1 - t0, 1.0)
@@ -512,7 +514,154 @@ def _update_gen_history(gen, now):
     if out["flagged"]:
         out["severe"] = loss >= GEN_LOSS_SEVERE_MW
         out["worst_fuel"] = worst[0]; out["worst_drop_mw"] = round(worst[1])
+        ev = _loss_register(loss, p0, p1, i1, pub0, pub1, now, out)
+        if ev:
+            out["event_id"] = ev["id"]
     return out
+
+
+# ---- Infeed-loss verification (false-alert trap) ----------------------------
+# A drop in FUELINST between two 5-min readings is announced at once (above). It is then
+# CHECKED against the 15 s frequency, which is the physical test: losing ~1 GW of real
+# infeed makes frequency fall sharply within seconds. Once frequency covering the whole
+# interval is in hand the event gets a verdict:
+#   confirmed - a concentrated drop (one source >= 60% of it) AND a frequency fall
+#   false     - anything else, with the most likely reason:
+#                 'glitch'   wind/solar/'other' dropped in the same reading (a partial
+#                            publish, not a trip), or output back at the next reading
+#                 'schedule' spread over several sources/interconnectors (hourly
+#                            interconnector ramps, schedule changes) - not one trip
+#                 'nofreq'   one source, but frequency did not respond
+#   unverified - no usable frequency within LOSS_VERIFY_TIMEOUT_S (no verdict shown)
+# Tuned on 21 Oct - 20 Nov 2026 logs: of 41 severe flags, 37 come out false (28 schedule,
+# 5 glitch incl. 19 Nov 10:50 & 13:40, 4 no-response) and 4 confirmed (5 Nov 09:30/09:35
+# CCGT then nuclear 1.46 GW not restored; 11 Nov 20:30 nuclear 1.3 GW; 17 Nov 23:20 IFA).
+# Frequency thresholds sit near the 90-95th percentile of ordinary 7-min windows; safety
+# first - when frequency DID move, the flag stands.
+LOSS_CONFIRM_FALL_HZ   = 0.08   # one 15 s step falling at least this much ...
+LOSS_CONFIRM_DIP_HZ    = 0.12   # ... or a 1-min mean dropping this much to the next 1-min min
+LOSS_CONCENTRATED_FRAC = 0.6    # a real trip is one source: largest drop >= this share
+LOSS_NONSYNC_MW        = 300    # wind/solar/other falling this much alongside = data glitch
+LOSS_RESTORE_FRAC      = 0.7    # this share back at the next reading = glitch
+LOSS_WIN_PRE_S         = 300    # frequency window: previous reading - 5 min ...
+LOSS_WIN_POST_S        = 60     # ... to this reading + 1 min
+LOSS_VERIFY_TIMEOUT_S  = 480    # give up (unverified) if frequency hasn't covered it by then
+LOSS_RESULT_SHOW_S     = 900    # how long the verdict flag stays on the dashboard
+_loss_events = []               # newest last; pruned after LOSS_RESULT_SHOW_S
+_loss_release = {"pending": False}   # ask the hysteresis to drop a false-alarm hold now
+_freq_recent = []               # [(epoch, hz)] raw 15 s points, last ~30 min
+
+def _pub_epoch(pub):
+    d = _parse_iso(pub or "")
+    return d.timestamp() if d else None
+
+def _loss_register(loss, p0, p1, infeed_after, pub0, pub1, now, out):
+    """Open a pending verification for a flagged drop. Never raises."""
+    try:
+        e0, e1 = _pub_epoch(pub0), _pub_epoch(pub1)
+        if e1 is None:
+            return None
+        if e0 is None or e0 >= e1:
+            e0 = e1 - 300
+        drops = {c: (p1.get(c, 0) or 0) - (p0.get(c, 0) or 0) for c in set(p0) | set(p1)}
+        contrib = {c: -d for c, d in drops.items()
+                   if d < 0 and (c.startswith("INT") or FUEL_INERTIA_H.get(c, 0) > 0)}
+        top = max(contrib.items(), key=lambda x: x[1]) if contrib else (None, 0.0)
+        nonsync = sorted(c for c in ("WIND", "SOLAR", "OTHER") if drops.get(c, 0) <= -LOSS_NONSYNC_MW)
+        ev = {"id": f"{pub1}", "pub": pub1, "status": "pending", "reason": None,
+              "mw": round(loss), "worst_fuel": top[0], "worst_mw": round(top[1]),
+              "concentrated": top[1] >= LOSS_CONCENTRATED_FRAC * loss,
+              "nonsync": nonsync, "severe": bool(out.get("severe")),
+              "win": (e0 - LOSS_WIN_PRE_S, e1 + LOSS_WIN_POST_S),
+              "infeed_after": infeed_after, "restored_frac": None,
+              "detected": now, "decided": None, "fall_hz": None, "dip_hz": None}
+        if any(x["id"] == ev["id"] for x in _loss_events):
+            return None
+        _loss_events.append(ev)
+        return ev
+    except Exception:
+        return None
+
+def _freq_window_metrics(a, b):
+    """Largest single 15 s fall and largest 1-min-mean -> next-1-min-min dip in [a, b]."""
+    w = [hz for t, hz in _freq_recent if a <= t <= b]
+    if len(w) < 8:
+        return None
+    fall = max(w[k] - w[k + 1] for k in range(len(w) - 1))
+    dip = max(sum(w[k - 4:k]) / 4.0 - min(w[k:k + 4]) for k in range(4, len(w) - 3))
+    return round(fall, 3), round(dip, 3)
+
+def _loss_verify_tick(now, infeed, per, pub):
+    """Advance pending verifications; record the restore check at the next reading."""
+    try:
+        newest = _freq_recent[-1][0] if _freq_recent else None
+        pe = _pub_epoch(pub)
+        for ev in _loss_events:
+            # restore check: first reading AFTER the event's own
+            if ev["restored_frac"] is None and pe is not None and pe > _pub_epoch(ev["pub"]):
+                ev["restored_frac"] = round((infeed - ev["infeed_after"]) / max(ev["mw"], 1), 2)
+                if ev["status"] == "false" and ev["restored_frac"] >= LOSS_RESTORE_FRAC:
+                    ev["reason"] = "glitch"
+            if ev["status"] != "pending":
+                continue
+            a, b = ev["win"]
+            covered = newest is not None and newest >= b
+            timed_out = now - ev["detected"] >= LOSS_VERIFY_TIMEOUT_S
+            if not covered and not timed_out:
+                continue
+            m = _freq_window_metrics(a, b)
+            if m is None:
+                ev["status"] = "unverified"; ev["decided"] = now
+                continue
+            ev["fall_hz"], ev["dip_hz"] = m
+            moved = m[0] >= LOSS_CONFIRM_FALL_HZ or m[1] >= LOSS_CONFIRM_DIP_HZ
+            if moved and ev["concentrated"]:
+                ev["status"] = "confirmed"
+            else:
+                ev["status"] = "false"
+                restored = (ev["restored_frac"] or 0) >= LOSS_RESTORE_FRAC
+                ev["reason"] = ("glitch" if (ev["nonsync"] or restored)
+                                else "schedule" if not ev["concentrated"] else "nofreq")
+                _loss_release["pending"] = True
+            ev["decided"] = now
+            _loss_log_verdict(ev)
+        while _loss_events and now - _loss_events[0]["detected"] > LOSS_RESULT_SHOW_S + LOSS_VERIFY_TIMEOUT_S:
+            _loss_events.pop(0)
+    except Exception:
+        pass
+
+LOSS_REASON_TEXT = {
+    "glitch": "several unrelated sources dipped in the same reading or output returned next reading: a data glitch",
+    "schedule": "spread across several sources/interconnectors: a schedule change, not one trip",
+    "nofreq": "frequency did not respond",
+}
+
+def _loss_log_verdict(ev):
+    try:
+        _data_log_write({"t": ev["pub"], "k": "lv", "status": ev["status"], "reason": ev["reason"],
+                         "mw": ev["mw"], "worst_fuel": ev["worst_fuel"], "nonsync": ev["nonsync"],
+                         "fall_hz": ev["fall_hz"], "dip_hz": ev["dip_hz"],
+                         "decided": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    except Exception:
+        pass
+
+def loss_event_current(now=None):
+    """The newest infeed-loss event still worth showing (pending, or decided within
+    LOSS_RESULT_SHOW_S), as a small JSON-safe dict; None otherwise."""
+    now = now or time.time()
+    for ev in reversed(_loss_events):
+        if ev["status"] == "unverified":
+            continue
+        if ev["status"] == "pending" or now - (ev["decided"] or now) <= LOSS_RESULT_SHOW_S:
+            pd = _parse_iso(ev["pub"] or "")
+            return {"id": ev["id"], "status": ev["status"], "reason": ev["reason"],
+                    "reason_text": LOSS_REASON_TEXT.get(ev["reason"]),
+                    "at": pd.strftime("%H:%M") if pd else None, "mw": ev["mw"],
+                    "worst_fuel": ev["worst_fuel"], "fall_hz": ev["fall_hz"], "dip_hz": ev["dip_hz"],
+                    "restored_frac": ev["restored_frac"],
+                    "decided": (datetime.fromtimestamp(ev["decided"], timezone.utc).isoformat(timespec="seconds")
+                                if ev["decided"] else None)}
+    return None
 
 def _freq_rocof(ordered, window_s=90):
     """Derived RoCoF (Hz/s) from the fine 15s frequency series: least-squares slope
@@ -582,6 +731,12 @@ _risk_state = {"level": 0, "cand": 0, "cand_since": 0.0}
 
 def _risk_hysteresis(raw, now):
     st = _risk_state; cur = st["level"]
+    if _loss_release.get("pending"):
+        # an infeed-loss flag was just judged FALSE: drop the slow-release hold it caused
+        _loss_release["pending"] = False
+        if raw < cur:
+            st["level"] = raw; st["cand"] = raw; st["cand_since"] = now
+            return raw
     if raw == cur:
         st["cand"] = raw; st["cand_since"] = now
         return cur
@@ -707,16 +862,118 @@ def _data_log_prune():
     except Exception:
         pass
 
+_freq_log_lock = threading.Lock()
+
+
+# ---- scheduled change into the next settlement boundary (Andy, 23 Nov) ---------------------
+# wall.py works out what every unit is notified (or instructed) to be doing at the next :00 or
+# :30, less what it is doing now. That figure is published, not predicted. Whether it is BIG for
+# the time of day is a different question, and nothing can answer it until the figure has been
+# logged against the frequency for some weeks — so every reading is written to the day log as a
+# "r" row beside the 15 s "f" rows, and the baseline below is built from them when there are
+# enough. Until then the caller is told there is no baseline and falls back to an absolute size.
+RAMP_TTL = 50.0                 # the wall's own cache is ~1 min; don't rebuild inside that
+RAMP_MIN_SAMPLES = 8            # fewer than this for a minute-of-hour bucket and we say nothing
+_ramp_state = {"out": None, "ts": 0.0, "logged": None}
+_ramp_base = {"at": 0.0, "by_min": None}
+
+
+def _ramp_log(r):
+    """One row a minute at most, keyed by the boundary it is counting down to."""
+    k = (r.get("at"), time.strftime("%H:%M", time.gmtime()))
+    if _ramp_state["logged"] == k:
+        return
+    _ramp_state["logged"] = k
+    _data_log_write({"t": time.time(), "k": "r", "at": r.get("at"), "in_s": r.get("in_s"),
+                     "net": r.get("net_mw"), "u": r.get("units_mw"), "ic": r.get("ic_mw")})
+
+
+def _ramp_baseline():
+    """Median and ninth decile of |scheduled change| by minute-of-hour, weekday and weekend
+    apart, from the "r" rows in the day logs. Rebuilt hourly; None until a bucket has enough."""
+    now = time.time()
+    if _ramp_base["by_min"] is not None and now - _ramp_base["at"] < 3600:
+        return _ramp_base["by_min"]
+    buckets = {}
+    try:
+        for fp in sorted(LOG_DIR.glob("grid_log-*.jsonl"))[-45:]:
+            with fp.open("r", encoding="utf-8", errors="replace") as fh:
+                for ln in fh:
+                    if '"k": "r"' not in ln and '"k":"r"' not in ln:
+                        continue
+                    try:
+                        o = json.loads(ln)
+                    except Exception:
+                        continue
+                    at, net = o.get("at"), o.get("net")
+                    if not at or net is None:
+                        continue
+                    # one reading per boundary: the LAST one before it, which is the one that
+                    # matters (a notification can still change in the half hour before it).
+                    tm = time.gmtime(o.get("t") or now)
+                    wk = "we" if tm.tm_wday >= 5 else "wd"
+                    key = (wk, str(at)[:16])          # the boundary itself: date AND time, or
+                    cur = buckets.get(key)                # every day collapses into one reading
+                    if cur is None or (o.get("in_s") or 0) < cur[0]:
+                        buckets[key] = ((o.get("in_s") or 0), abs(net))
+    except Exception:
+        return None
+    out = {}
+    agg = {}
+    for (wk, hhmm), (_, v) in buckets.items():
+        agg.setdefault((wk, hhmm[14:16]), []).append(v)  # by MINUTE-of-hour, as the idea was
+    for k, vals in agg.items():
+        if len(vals) < RAMP_MIN_SAMPLES:
+            continue
+        vals.sort()
+        med = vals[len(vals) // 2]
+        p90 = vals[min(len(vals) - 1, int(round(0.9 * (len(vals) - 1))))]
+        out["|".join(k)] = {"n": len(vals), "median": round(med), "p90": round(p90)}
+    _ramp_base["by_min"], _ramp_base["at"] = out, now
+    return out
+
+
+def _ramp_api():
+    """/api/ramp — the next boundary's scheduled change, with how it compares if it can."""
+    if _wall is None:
+        return {"error": "wall.py not installed next to grid_server.py"}
+    if not _wall._S:
+        _wall.attach(globals())
+    now = time.time()
+    if _ramp_state["out"] and now - _ramp_state["ts"] < RAMP_TTL:
+        return _ramp_state["out"]
+    try:
+        r = _wall.get_ramp()
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if isinstance(r, dict) and not r.get("error"):
+        _ramp_log(r)
+        base = _ramp_baseline() or {}
+        tm = time.gmtime(now)
+        wk = "we" if tm.tm_wday >= 5 else "wd"
+        b = base.get(wk + "|" + str(r.get("at") or "")[14:16])
+        r = dict(r)
+        r["base"] = b                       # {n, median, p90} or None while it is still learning
+        r["base_wk"] = wk
+    _ramp_state["out"], _ramp_state["ts"] = r, now
+    return r
+
+
 def log_freq_points(ordered):
-    """Append any new 15s frequency points as interleaved 'f' rows (deduped)."""
+    """Append any new 15s frequency points as interleaved 'f' rows, each once, in time order.
+    (Fixed 7 Nov: snapshot builds call this from several threads at once, and a fetch can return a window ending
+    earlier than the last one, which moved the marker back; both wrote the same readings again, ~1 in 5 rows.
+    Now one writer at a time, the marker only moves forward, and it starts from the log after a restart.)"""
     global _freq_log_last_ts
     if not ordered:
         return
-    last = _freq_log_last_ts
-    pts = ordered[-1:] if last is None else [(t, hz) for (t, hz) in ordered if t > last]
-    for t, hz in pts:
-        _data_log_write({"t": t, "k": "f", "hz": round(hz, 3)})
-    _freq_log_last_ts = ordered[-1][0]
+    with _freq_log_lock:
+        last = _freq_log_last_ts if _freq_log_last_ts is not None else (_freq_last_from_log() or (None,))[0]
+        pts = ordered[-1:] if last is None else [(t, hz) for (t, hz) in ordered if t > last]
+        for t, hz in pts:
+            _data_log_write({"t": t, "k": "f", "hz": round(hz, 3)})
+        newest = ordered[-1][0]
+        _freq_log_last_ts = newest if last is None or newest > last else last
 
 MIX_LOG_FRESH_S = 900      # only log a FUELINST batch published within this long
 
@@ -882,6 +1139,15 @@ def get_frequency():
     ordered = sorted(uniq.items())
     latest_t, latest_hz = ordered[-1]
     _freq_note_last(latest_t, latest_hz)
+    try:                                           # raw 15 s points for the loss verifier
+        _fr = []
+        for t, hz in ordered[-120:]:
+            e = _pub_epoch(t)
+            if e is not None:
+                _fr.append((e, hz))
+        _freq_recent[:] = _fr
+    except Exception:
+        pass
     # Down-sample the last window for the trace using MIN/MAX-envelope decimation:
     # within each bucket keep BOTH the lowest and highest point (in time order), not
     # a single stride sample. Plain stride sampling (tail[::stepn]) could step right
@@ -1080,6 +1346,42 @@ def get_margin():
         "ahead_delta_1h": ahead_delta,
         "horizon": [{"time": t.isoformat(), "margin_mw": m} for t, m, _ in future[:96]],
     }
+
+
+# Reliable margin (Andy, 9 Nov): NESO's derated margin and loss-of-load probability (Elexon
+# /forecast/system/loss-of-load). Each unit's capacity is scaled by its chance of being unavailable,
+# then demand is subtracted, so it is the margin that can be relied on, unlike MELNGC above (every
+# unit's declared maximum). Half-hourly from 24 h back to the end of NESO's forecast (about 17 h
+# ahead); each period's newest publication, so the past is the last forecast before it happened.
+# NESO publishes every hour or so: cached 10 minutes, the last good list kept if a fetch fails.
+_rel_cache = {"data": None, "ts": 0}
+REL_TTL = 600
+
+
+def get_reliable_margin():
+    if _rel_cache["data"] is not None and time.time() - _rel_cache["ts"] < REL_TTL:
+        return _rel_cache["data"]
+    now = datetime.now(timezone.utc)
+    f = lambda t: t.strftime("%Y-%m-%dT%H:%MZ")
+    try:
+        rows = _rows(fetch_json(f"{BMRS}/forecast/system/loss-of-load?format=json"
+                                f"&from={f(now - timedelta(hours=24))}&to={f(now + timedelta(hours=24))}"))
+    except Exception:
+        rows = None
+    if not rows:
+        _rel_cache["ts"] = time.time() - REL_TTL + 120          # retry in 2 minutes
+        return _rel_cache["data"]
+    best = {}
+    for r in rows:
+        k = r.get("startTime")
+        if k and r.get("deratedMargin") is not None and (k not in best or r["publishTime"] > best[k]["publishTime"]):
+            best[k] = r
+    pts = [{"time": k, "mw": round(best[k]["deratedMargin"]), "lolp": best[k].get("lossOfLoadProbability")}
+           for k in sorted(best)]
+    data = {"points": pts, "published": max((best[k]["publishTime"] for k in best), default=None)} if pts else None
+    if data:
+        _rel_cache.update(data=data, ts=time.time())
+    return data or _rel_cache["data"]
 
 
 # Operating reserve is derived from ~8k per-unit records, so it gets its own
@@ -2158,12 +2460,16 @@ def _uk_offset_h(dt):
     return 1 if last_sun(dt.year, 3) <= dt < last_sun(dt.year, 10) else 0
 
 
+GAS_DAY_START_H = 5      # the GB gas day runs 05:00 to 05:00 UK clock time (was taken as 06:00 until 11 Nov:
+                         # National Gas's published opening linepack matches the 05:00 reading, not 06:00)
+
+
 def _gas_day_now(now=None):
-    """Current gas day (ISO date): runs 06:00 to 06:00 UK clock time, so a UK time
-    before 06:00 belongs to the previous date's gas day."""
+    """Current gas day (ISO date): runs 05:00 to 05:00 UK clock time, so a UK time
+    before 05:00 belongs to the previous date's gas day."""
     t = now or datetime.now(timezone.utc)
     loc = t + timedelta(hours=_uk_offset_h(t))
-    return (loc - timedelta(hours=6)).date().isoformat()
+    return (loc - timedelta(hours=GAS_DAY_START_H)).date().isoformat()
 
 
 def _uk_local_to_utc(y, mo, d, hh, mm):
@@ -4679,6 +4985,123 @@ GAS_KIND_COLOUR = {
     "terminal": "#f2683c", "storage": "#f5b942", "other": "#9aa7b8",
 }
 
+# ── Entry-point capacity, for the flow diagram's pie gauges (261120.2) ──────────────────
+# What a gauge needs is a PHYSICAL maximum for the same meter the live flow comes from.
+# Most entry points do not have one published:
+#   · "Available Capacity"  (25 objects) returns nothing at all — checked over 33 days.
+#   · "Entry Capacity Baseline" publishes daily for 7 ASEPs, but it is REGISTERED COMMERCIAL
+#     capacity, not a physical limit, and it is per-ASEP while the diagram draws the
+#     sub-terminals separately (St Fergus would read ~55%, Bacton ~28%). Not used.
+#   · Easington — the ASEP Langeled lands at — publishes no baseline at all, and nothing in
+#     the 747-entry API catalogue mentions Langeled.
+# So only two denominators are honest, and only these get a gauge:
+#   1. Daily deliverability per LNG terminal and storage site (the same publications
+#      gas_probe.py already uses for Expected Available Supply). Live, physical, and 1:1
+#      with the diagram's nodes. It is a maximum for the whole gas day rather than an
+#      instantaneous ceiling — over 11-21 Nov these figures barely moved (Grain 73.3 every
+#      day; Stublach stepping 25.5 <-> 16.6, which looks like plant availability, not stock)
+#      — so a site can surge past it for a few hours: the gauge clamps and says so.
+#   2. Langeled: a fixed 80 mcm/d from the pipeline's own project paper (Hillenbrand,
+#      Kalwa, Schröder & Kvaale, "Experiences with an offshore pipeline project for the
+#      North Sea (Langeled)", TMS 2007, p.387). That paper gives 70 MSCM/d for Langeled
+#      South (Sleipner → Easington) and 80 for Langeled North; 70 is already exceeded in
+#      this install's own flow log (75.8 mcm/d), because Langeled South also takes
+#      injections at Sleipner, so 80 is the only one of the two that holds. Andy's call,
+#      20 Nov. Static — it does not update.
+# Each entry is raw site name -> (dedupe key, publicationId or None, fixed mcm/d or None).
+# The key exists because Grain's two berths share ONE published deliverability: the
+# dashboard sums a group's capacities de-duplicated by key, so Grain is not counted twice.
+GAS_CAP_SITES = {
+    "EASINGTON LANGELED":          ("langeled", None, 80.0),
+    "BACTON BBL":                  ("bbl", None, 22.0),      # bidirectional: see GAS_EXPORT_CAP
+    "BACTON IC":                   ("iuk", None, 61.0),
+    "GRAIN NTS 1":                 ("grain", "PUBOBJ2451", None),
+    "GRAIN NTS 2":                 ("grain", "PUBOBJ2451", None),
+    "MILFORD HAVEN - SOUTH HOOK":  ("southhook", "PUBOBJ2459", None),
+    "MILFORD HAVEN - DRAGON":      ("dragon", "PUBOBJ2460", None),
+    "HUMBLY GROVE":                ("humbly", "PUBOBJ2449", None),
+    "HORNSEA":                     ("hornsea", "PUBOBJ2450", None),
+    "HATFIELD MOOR":               ("hatfield", "PUBOBJ2453", None),
+    "HOLE HOUSE FARM":             ("holehouse", "PUBOBJ2454", None),
+    "ALDBROUGH":                   ("aldbrough", "PUBOBJ2455", None),
+    "HOLFORD":                     ("holford", "PUBOBJ2456", None),
+    "HILLTOP":                     ("hilltop", "PUBOBJ2457", None),
+    "STUBLACH":                    ("stublach", "PUBOBJ2458", None),
+}
+GAS_CAP_KWH_PER_M3 = 10.97      # ~39.5 MJ/m3 typical NTS calorific value (kWh -> m3); as gas_probe.py
+GAS_CAP_TTL = 6 * 3600          # deliverability is a once-a-day publication
+_gas_cap_cache = {"data": None, "ts": 0}
+# How each figure is described in the gauge's tooltip.
+GAS_CAP_WORD = {
+    "deliverability": "today's published deliverability",
+    "design": "pipeline design capacity (2007 project paper)",
+}
+
+
+# Export-side capacities (261122.3). The National Gas feed carries none: Moffat's "Available
+# Capacity" object has published nothing in 60 days, the Exit Capacity availability, constraint
+# and daily-price subcategories are empty, and what remains there is CMP auction clearing and
+# oversubscription data, which is commercial rather than physical. These three come from the
+# operators' own winter documents instead, and like Langeled's 80 they are static.
+#  * Moffat: Gas Networks Ireland's Winter Outlook 2025/26 gives a technical capacity of
+#    39 mscm/d = 433.4 GWh/d at their 40 MJ/scm. National Gas meters in mcm at about
+#    39.5 MJ/m3, so on the basis the diagram's own figures use that is 433.4 / 10.97 = 39.5
+#    mcm/d. The distinction matters: this install's log peaked at 39.6, which looked like a
+#    breach of "39" and is in fact the pipe running at its limit. GNI raised it from 35 before
+#    winter 2025/26 and say a further revision is being finalised, so it wants re-checking.
+#    Moffat serves the whole island; Northern Ireland's own entry from it (Twynholm) is capped
+#    at 88.35 GWh/d, about 8 mcm/d, against an NI severe-winter peak of 118 GWh/d.
+#  * BBL and IUK: National Gas's own Gas Winter Outlook 2026 states 22 and 61 mcm/d. Both are
+#    bidirectional and the document gives no separate export figure, so the same number governs
+#    the supply side when they are importing — which is why they are in GAS_CAP_SITES too.
+GAS_EXPORT_CAP = {
+    "Moffat":     (39.5, "Gas Networks Ireland Winter Outlook 2025/26 (39 mscm/d at 40 MJ/scm); under revision"),
+    "Bacton BBL": (22.0, "National Gas Gas Winter Outlook 2026; bidirectional"),
+    "Bacton INT": (61.0, "National Gas Gas Winter Outlook 2026; bidirectional"),
+    "Bacton IUK": (61.0, "National Gas Gas Winter Outlook 2026; bidirectional"),
+}
+
+
+def _gas_capacity():
+    """{raw site name: {key, mcm_d, basis}} for the entry points that have an honest
+    capacity. Deliverability is fetched once every GAS_CAP_TTL; the static figures are
+    always present, so a failed fetch degrades to Langeled alone rather than to nothing."""
+    c = _gas_cap_cache
+    if c["data"] is not None and time.time() - c["ts"] < GAS_CAP_TTL:
+        return c["data"]
+    out = {}
+    for raw, (key, _pid, fixed) in GAS_CAP_SITES.items():
+        if fixed:
+            out[raw] = {"key": key, "mcm_d": round(fixed, 1), "basis": "design"}
+    ids = sorted({pid for (_k, pid, _f) in GAS_CAP_SITES.values() if pid})
+    try:
+        # A 3-day window, not just today: on the gas day's first hours a site's
+        # deliverability has often not been republished yet, and asking for today alone
+        # comes back with an empty publications list for every site.
+        today = datetime.now(timezone.utc).date()
+        d = post_json(f"{GAS_BASE}/publications/gasday",
+                      {"fromDate": (today - timedelta(days=3)).isoformat(),
+                       "toDate": today.isoformat(),
+                       "publicationIds": ids, "latestValue": "Y"}, timeout=30)
+        kwh = {}
+        for pub in d or []:
+            pid = pub.get("publicationId")
+            for r in pub.get("publications") or []:
+                v = _gas_num(r.get("value"))
+                if v is not None:
+                    kwh[pid] = v           # newest row with a value wins
+        for raw, (key, pid, fixed) in GAS_CAP_SITES.items():
+            if fixed or not pid or pid not in kwh:
+                continue
+            mcm = kwh[pid] / GAS_CAP_KWH_PER_M3 / 1e6
+            if mcm > 0.05:                 # a declared zero is "nothing available", not a gauge
+                out[raw] = {"key": key, "mcm_d": round(mcm, 1), "basis": "deliverability"}
+    except Exception:
+        pass                               # keep the static figures; try again next TTL
+    c["data"] = out
+    c["ts"] = time.time()
+    return out
+
 
 def _gas_num(v):
     try:
@@ -4686,6 +5109,131 @@ def _gas_num(v):
         return f if f == f else None
     except (TypeError, ValueError):
         return None
+
+
+# ── Demand reference levels, for the flow diagram's demand gauge (261120.3) ────────────
+# The demand side has no capacity to gauge against: LDZ offtake, power stations and
+# industrial demand are national CATEGORIES, not metered points; storage injection
+# capacity is published nowhere; Moffat's Available Capacity returns nothing over 33 days;
+# and the Exit Capacity publications are CMP auction prices and oversubscription volumes,
+# which are commercial, not physical. What National Gas does publish daily, for today's
+# own date, is what demand WOULD be on a 1-in-20 cold day — a real denominator for the
+# demand total, answering how much headroom is left before a peak day.
+# These three INCLUDE interconnector exports and storage injection, which is what the
+# diagram's demand total is (PUBOBJ1585/1584 are the excluding-both variants — wrong here).
+GAS_DEMAND_REF = {"cold": "PUBOB2066",    # Demand - Cold   (1-in-20 peak for this date)
+                  "snd":  "PUBOB2535",    # Demand, NTS, SND (seasonal normal)
+                  "warm": "PUBOB2067",    # Demand - Warm
+                  # The numerator has to be a gas-day TOTAL as well (261121.1). The
+                  # instantaneous demand the diagram shows is a flow RATE quoted in mcm/d —
+                  # "if this held for 24 hours" — and dividing it by a day's volume made the
+                  # gauge swing with the time of day rather than with demand. Checked against
+                  # this install's own log: the instantaneous total, integrated over a gas
+                  # day, matches National Gas's published daily actual to within 0.7% over
+                  # ten days, but a single sample ranged 67%-99% of the cold-day figure on
+                  # 20 Nov, a day that came out at 84%. So the gauge takes the hourly-revised
+                  # forecast of today's total instead, which lands within 1-2 mcm of the
+                  # eventual actual, with the once-a-day forecast as a fallback.
+                  "today":   "PUBOB28",   # Demand Forecast, NTS, hourly update
+                  "today_d": "PUBOB623"}  # Demand Forecast, NTS (daily) — fallback
+GAS_DEMAND_REF_TTL = 1800                 # the hourly forecast is revised through the day
+_gas_demand_ref_cache = {"data": None, "ts": 0}
+
+# Domestic (LDZ) demand, for the gauge on the flow diagram's LDZ Offtake row (261122.2).
+# Numerator: National Gas's own forecast for each of the thirteen Local Distribution Zones,
+# summed — a gas-day total, like the cold-day reference, and NOT the instantaneous rate the
+# diagram prints beside it. Checked 16-20 Nov against the published LDZ actual: the sum runs
+# 2-3% high (187.5 actual against 191.5 forecast, 174.6 against 178.2), consistent, so it is
+# a forecast rather than a restatement.
+# Denominator: the highest LDZ day in the published record, from the same series the actuals
+# come from. Andy's choice, 22 Nov, over the Winter Outlook's 1-in-20 NDM peak of 315 mcm/d:
+# NDM is not the same set of customers as LDZ offtake, and a figure taken from a different
+# publication with a different definition is the kind of denominator that quietly lies. The
+# record peak over 2024-11 to date is 275.9 mcm on 5 Jan 2026 — the same day GB demand as a
+# whole peaked at 407.5. It is re-read once a day, so a new record raises the bar by itself.
+GAS_LDZ_FC = ["PUBOB609", "PUBOB610", "PUBOB611", "PUBOB612", "PUBOB613", "PUBOB614", "PUBOB615",
+              "PUBOB616", "PUBOB617", "PUBOB618", "PUBOB619", "PUBOB620", "PUBOB621"]
+GAS_LDZ_ACTUAL = "PUBOBJ1015"     # NTS Volume Offtaken, LDZ Offtake Total (mscm, D+1)
+GAS_LDZ_PEAK_TTL = 24 * 3600      # a record is not broken twice in a day
+GAS_LDZ_PEAK_FROM = "2024-11-01"  # as far back as the record is fetched for the peak
+_gas_ldz_peak_cache = {"data": None, "ts": 0}
+
+
+def _gas_ldz_peak():
+    """(mcm, gas day) of the highest LDZ offtake day on record, or (None, None)."""
+    c = _gas_ldz_peak_cache
+    if c["data"] is not None and time.time() - c["ts"] < GAS_LDZ_PEAK_TTL:
+        return c["data"]
+    best = (None, None)
+    try:
+        d = post_json(f"{GAS_BASE}/publications/gasday",
+                      {"fromDate": GAS_LDZ_PEAK_FROM,
+                       "toDate": datetime.now(timezone.utc).date().isoformat(),
+                       "publicationIds": [GAS_LDZ_ACTUAL], "latestValue": "N"}, timeout=60)
+        for pub in d or []:
+            for r in pub.get("publications") or []:
+                v = _gas_num(r.get("value"))
+                day = str(r.get("applicableFor") or "")[:10]
+                if v is not None and day and (best[0] is None or v > best[0]):
+                    best = (round(v, 1), day)
+    except Exception:
+        if c["data"] is not None:
+            return c["data"]            # keep the last good peak rather than dropping the gauge
+    c["data"] = best
+    c["ts"] = time.time()
+    return best
+
+
+def _gas_demand_ref():
+    """{today, cold, snd, warm} as gas-day totals in mcm for today, or None. All four are
+    whole-day volumes on the same basis, including interconnector exports and storage
+    injection. A 3-day window for the same reason as the deliverability fetch: asking for
+    today alone can come back empty."""
+    c = _gas_demand_ref_cache
+    if c["data"] is not None and time.time() - c["ts"] < GAS_DEMAND_REF_TTL:
+        return c["data"]
+    out = None
+    try:
+        today = datetime.now(timezone.utc).date()
+        d = post_json(f"{GAS_BASE}/publications/gasday",
+                      {"fromDate": (today - timedelta(days=3)).isoformat(),
+                       "toDate": today.isoformat(),
+                       "publicationIds": sorted(GAS_DEMAND_REF.values()) + GAS_LDZ_FC,
+                       "latestValue": "Y"}, timeout=40)
+        by_id = {}
+        for pub in d or []:
+            pid = pub.get("publicationId")
+            for r in pub.get("publications") or []:
+                v = _gas_num(r.get("value"))
+                if v is not None:
+                    by_id[pid] = (v, str(r.get("applicableFor") or "")[:10])
+        ldz = {p: by_id[p] for p in GAS_LDZ_FC if p in by_id}
+        got = {k: by_id[p] for k, p in GAS_DEMAND_REF.items() if p in by_id}
+        # Everything has to be for the SAME gas day. Each of these is published per date and
+        # the window is three days wide, so without this the gauge could divide today's
+        # forecast by yesterday's cold-day figure the moment one of them lagged.
+        if "cold" in got:
+            day = got["cold"][1]
+            got = {k: v for k, v in got.items() if v[1] == day}
+            num = got.get("today") or got.get("today_d")
+            if num:
+                out = {k: round(v, 1) for k, (v, _d) in got.items() if k != "today_d"}
+                out["today"] = round(num[0], 1)
+                out["today_src"] = "hourly" if "today" in got else "daily"
+                out["day"] = day
+                # Domestic: all thirteen zones must be for this same gas day, or the sum is
+                # part today and part yesterday and reads low for no visible reason.
+                same = [v for v in ldz.values() if v[1] == day]
+                if len(same) == len(GAS_LDZ_FC):
+                    out["ldz_today"] = round(sum(v[0] for v in same), 1)
+                    pk, pkd = _gas_ldz_peak()
+                    if pk:
+                        out["ldz_peak"], out["ldz_peak_day"] = pk, pkd
+    except Exception:
+        pass
+    c["data"] = out
+    c["ts"] = time.time()
+    return out
 
 
 def _gas_latest(site):
@@ -4709,6 +5257,8 @@ def get_gas():
         d = fetch_json(f"{GAS_BASE}/instantaneousflow/sites", timeout=30)
         out["published"] = d.get("publishedTime")
         out["gas_day"] = d.get("currentGasDay")
+        caps = _gas_capacity()           # entry-point capacities for the flow diagram's gauges
+        out["demand_ref"] = _gas_demand_ref()   # 1-in-20 cold / seasonal normal / warm, mcm/d
         groups = d.get("instantaneousFlow") or []
         for grp in groups:
             desc = (grp.get("description") or "").lower()
@@ -4720,10 +5270,13 @@ def get_gas():
                         continue
                     raw = s.get("siteName") or ""
                     kind, label = GAS_SITE_KIND.get(raw, ("terminal", raw.title()))
-                    out["supply_sources"].append({
-                        "raw": raw, "label": label, "kind": kind,
-                        "colour": GAS_KIND_COLOUR.get(kind, GAS_KIND_COLOUR["other"]),
-                        "mcm_d": val, "at": at})
+                    rec = {"raw": raw, "label": label, "kind": kind,
+                           "colour": GAS_KIND_COLOUR.get(kind, GAS_KIND_COLOUR["other"]),
+                           "mcm_d": val, "at": at}
+                    cap = caps.get(raw.upper())
+                    if cap:
+                        rec["cap"] = cap          # {key, mcm_d, basis} — the pie gauge's denominator
+                    out["supply_sources"].append(rec)
             elif desc == "total supply" or "total supply" in desc:
                 for s in sites:
                     val, at = _gas_latest(s)
@@ -4743,9 +5296,12 @@ def get_gas():
                     val, at = _gas_latest(s)
                     if val is None:
                         continue
-                    out["exports"].append({
-                        "label": (s.get("siteName") or "").replace(" Export", ""),
-                        "mcm_d": val, "at": at})
+                    lbl = (s.get("siteName") or "").replace(" Export", "")
+                    rec = {"label": lbl, "mcm_d": val, "at": at}
+                    xc = GAS_EXPORT_CAP.get(lbl)
+                    if xc:
+                        rec["cap"] = {"mcm_d": xc[0], "basis": "design", "note": xc[1]}
+                    out["exports"].append(rec)
             elif desc == "total demand" or "total demand" in desc:
                 for s in sites:
                     val, at = _gas_latest(s)
@@ -4767,6 +5323,7 @@ def get_gas():
         local_hist = _log_gas_history(
             out["linepack"], out["supply_total"], out["demand_total"],
             out.get("linepack_at"))
+        _log_gas_flows(out)                 # the monthly flow log: totals and every source / category
         # 1-hour change of linepack and total demand from the same log (the wall's header readout)
         out["linepack_delta_1h"] = _delta_1h(local_hist, "lp", out.get("linepack_at"), out["linepack"])
         out["demand_delta_1h"] = _delta_1h(local_hist, "d", out.get("linepack_at"), out["demand_total"])
@@ -4840,6 +5397,209 @@ def get_gas():
         out["error"] = f"{type(e).__name__}: {e}"
     c["data"] = out
     c["ts"] = time.time()
+    return out
+
+
+# ---- Gas flow log (monthly) and daily totals per gas day --------------------
+# Flow log (Andy, 11 Nov): gas_history.json only keeps 48 h of linepack and the two totals. Every
+# published reading (about every 12 minutes) is now also appended to gas_flows-YYYY-MM.jsonl with
+# the totals AND each supply source, demand category and export, so hourly or per-source history
+# can be drawn later. One line per published time; nothing is pruned. Never raises.
+#   {"t": published time, "lp": linepack mcm, "s": supply, "d": demand (mcm/d rates),
+#    "src": {site: mcm/d}, "dem": {category: mcm/d}, "ex": {route: mcm/d}}
+_gas_flow_lock = threading.Lock()
+_gas_flow_last_t = None
+
+
+def _gas_flow_log_path(t_iso):
+    return Path(__file__).with_name(f"gas_flows-{t_iso[:7]}.jsonl")
+
+
+def _log_gas_flows(out):
+    global _gas_flow_last_t
+    try:
+        t = out.get("linepack_at") or out.get("published")
+        if not t or out.get("supply_total") is None or out.get("demand_total") is None:
+            return
+        with _gas_flow_lock:
+            p = _gas_flow_log_path(t)
+            if _gas_flow_last_t is None and p.exists():        # after a restart: carry on from the file
+                try:
+                    with open(p, "rb") as f:
+                        f.seek(max(0, p.stat().st_size - 8192))
+                        tail = f.read().decode("utf-8", "replace").strip().splitlines()
+                    _gas_flow_last_t = json.loads(tail[-1]).get("t") if tail else ""
+                except Exception:
+                    _gas_flow_last_t = ""
+            if _gas_flow_last_t and t <= _gas_flow_last_t:
+                return                                          # this reading is already logged
+            r1 = lambda v: None if v is None else round(v, 2)
+            row = {"t": t, "lp": r1(out.get("linepack")), "s": r1(out["supply_total"]), "d": r1(out["demand_total"]),
+                   "src": {x.get("raw") or x.get("label"): r1(x.get("mcm_d")) for x in out.get("supply_sources") or []},
+                   "dem": {x.get("label"): r1(x.get("mcm_d")) for x in out.get("demand_categories") or []},
+                   "ex": {x.get("label"): r1(x.get("mcm_d")) for x in out.get("exports") or []}}
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, separators=(",", ":")) + "\n")
+            _gas_flow_last_t = t
+    except Exception:
+        pass
+
+
+# Daily totals (Andy, 11 Nov): what was supplied to and taken off the NTS in each gas day, for the gas
+# page's Supply history view. National Gas publishes actuals the next day at about 12:00-12:20:
+#   PUBOB637   Demand Actual, NTS, D+1 (mscm): all offtakes, exports and storage injection included
+#   PUBOBJ627  System Entry Volume, subterminals   PUBOBJ628  interconnectors
+#   PUBOBJ629  LNG importation                     PUBOBJ630  storage withdrawal   (all mscm, D+1)
+# Checked 28 Oct - 10 Nov 2026: supplied - demand matched the published change in linepack within
+# about 2 mcm every day. Two quirks handled here:
+#   * the demand item shows part-filled values at 10:20 and 11:20 (e.g. 2.7, then 25.5, before 256.0 at
+#     12:20), so a row generated before 12:00 UK time on the day after is ignored;
+#   * supply can be revised after its first figure (terminals by a few mcm; LNG once from 17 to 33). Only
+#     the terminals row is re-flagged from "L" to "A" when final, so a day is marked provisional (prov)
+#     while the terminals row is still "L", or when supplied - demand is more than 5 mcm away from the
+#     published change in linepack (PUBOB693 opening, PUBOB694 closing), which shows a figure is missing.
+# A gas day runs 05:00 to 05:00 UK time (the published opening linepack matches the 05:00 reading).
+# Until the actuals arrive, yesterday is estimated by integrating our own 12-minute log (within 2 % of
+# the actuals on the day checked), marked "est"; today so far comes from the same log.
+GAS_DAILY_IDS = {"PUBOB637": "demand", "PUBOBJ627": "terminals", "PUBOBJ628": "ic",
+                 "PUBOBJ629": "lng", "PUBOBJ630": "storage", "PUBOB693": "open", "PUBOB694": "close"}
+GAS_DAILY_CHECK_MCM = 5.0
+GAS_DAILY_TTL = 900
+GAS_DAILY_FETCH_DAYS = 31    # always fetched, whatever span is asked for, so one cache serves every span
+_gas_daily_cache = {"data": None, "ts": 0}
+_gas_daily_lock = threading.Lock()
+
+
+def _gas_day_bounds(day):
+    """(start, end) epoch seconds of gas day `day` (ISO date): 05:00 UK clock to 05:00 the next day."""
+    y, mo, d = (int(x) for x in day.split("-"))
+    a = _uk_local_to_utc(y, mo, d, GAS_DAY_START_H, 0)
+    n = datetime(y, mo, d) + timedelta(days=1)
+    b = _uk_local_to_utc(n.year, n.month, n.day, GAS_DAY_START_H, 0)
+    return a.timestamp(), b.timestamp()
+
+
+def _gas_log_integral(a, b):
+    """Supply and demand (mcm) between epochs a and b from the 12-minute log (rates in mcm/d, joined
+    by straight lines; a gap of over an hour is left out). Returns (supplied, demand, hours covered)."""
+    try:
+        store = json.loads(GAS_LOG.read_text()) if GAS_LOG.exists() else {}
+    except Exception:
+        store = {}
+    pts = []
+    for k, v in store.items():
+        try:
+            if v.get("s") is None or v.get("d") is None:
+                continue
+            pts.append((datetime.fromisoformat(k.replace("Z", "+00:00")).timestamp(), v["s"], v["d"]))
+        except Exception:
+            continue
+    pts.sort()
+    s = d = cov = 0.0
+    for (t0, s0, d0), (t1, s1, d1) in zip(pts, pts[1:]):
+        lo, hi = max(t0, a), min(t1, b)
+        if hi <= lo or t1 - t0 > 3600:
+            continue
+        f0, f1 = (lo - t0) / (t1 - t0), (hi - t0) / (t1 - t0)
+        w = (hi - lo) / 86400.0
+        s += (s0 + (s1 - s0) * (f0 + f1) / 2) * w
+        d += (d0 + (d1 - d0) * (f0 + f1) / 2) * w
+        cov += hi - lo
+    return s, d, cov / 3600.0
+
+
+def _gas_daily_actuals(days=GAS_DAILY_FETCH_DAYS):
+    """{day: {"demand", "terminals", "ic", "lng", "storage", "open", "close", "prov"}} from National Gas,
+    newest values."""
+    today = datetime.now(timezone.utc).date()
+    d = post_json(f"{GAS_BASE}/publications/gasday", {
+        "fromDate": (today - timedelta(days=days + 2)).isoformat(), "toDate": today.isoformat(),
+        "publicationIds": list(GAS_DAILY_IDS), "latestValue": "N"}, timeout=40)
+    best = {}                                    # (day, key) -> (generated, value, flag)
+    for pub in d:
+        key = GAS_DAILY_IDS.get(pub.get("publicationId"))
+        if not key:
+            continue
+        for r in pub.get("publications") or []:
+            try:
+                day = str(r["applicableFor"])[:10]
+                gen = datetime.fromisoformat(str(r["generatedTimeStamp"]).replace("Z", "+00:00"))
+                if gen.tzinfo is None:           # the feed gives +01:00 in British Summer Time, so put every
+                    gen = gen.replace(tzinfo=timezone.utc)   # row on UTC before the UK-local test below
+                gen = gen.astimezone(timezone.utc)
+                v = float(r["value"])
+            except Exception:
+                continue
+            if key == "demand":                  # part-filled values come out before noon on the day after
+                loc = gen + timedelta(hours=_uk_offset_h(gen))
+                nxt = (datetime.fromisoformat(day) + timedelta(days=1)).date()
+                if loc.date() < nxt or (loc.date() == nxt and loc.hour < 12):
+                    continue
+            cur = best.get((day, key))
+            if cur is None or gen > cur[0]:
+                best[(day, key)] = (gen, v, str(r.get("qualityIndicator") or ""))
+    out = {}
+    for (day, key), (_, v, flag) in best.items():
+        o = out.setdefault(day, {"prov": False})
+        o[key] = v
+        if key == "terminals" and flag.upper() == "L":
+            o["prov"] = True
+    return out
+
+
+def get_gas_daily(days=7):
+    """Supplied and demand per gas day (mcm) for the last `days` complete gas days, oldest first, plus
+    today so far. src: "ng" National Gas actual, "est" own-log estimate, None when neither exists."""
+    days = max(1, min(31, int(days)))
+    c = _gas_daily_cache
+    with _gas_daily_lock:
+        act, err = (c["data"] or {}), None
+        if not c["data"] or time.time() - c["ts"] > GAS_DAILY_TTL:
+            try:
+                act = _gas_daily_actuals()
+                c["data"], c["ts"] = act, time.time()
+            except Exception as e:               # keep the last good figures; say so
+                err = f"{type(e).__name__}: {e}"
+                c["ts"] = time.time() - GAS_DAILY_TTL + 120     # try again in 2 minutes
+    now = datetime.now(timezone.utc)
+    today = _gas_day_now(now)
+    r1 = lambda v: round(v, 1)
+    rows = []
+    for k in range(days, 0, -1):
+        day = (datetime.fromisoformat(today) - timedelta(days=k)).date().isoformat()
+        a = act.get(day) or {}
+        parts = [a.get(x) for x in ("terminals", "ic", "lng", "storage")]
+        row = {"day": day, "supplied": None, "demand": None, "src": None, "prov": False}
+        if a.get("demand") is not None and all(p is not None for p in parts):
+            row.update(supplied=r1(sum(parts)), demand=r1(a["demand"]), diff=r1(sum(parts) - a["demand"]),
+                       src="ng", prov=bool(a.get("prov")),
+                       parts={"terminals": r1(parts[0] + parts[1]), "lng": r1(parts[2]), "storage": r1(parts[3])})
+            if a.get("open") is not None and a.get("close") is not None:
+                row["lp_change"] = r1(a["close"] - a["open"])
+                row["lp_close"] = r1(a["close"])
+                if abs(sum(parts) - a["demand"] - (a["close"] - a["open"])) > GAS_DAILY_CHECK_MCM:
+                    row["prov"] = True           # the figures don't balance: one is not final yet
+        else:
+            try:
+                ga, gb = _gas_day_bounds(day)
+                s, d, cov = _gas_log_integral(ga, gb)
+                if cov >= 23.0:                  # a full day of our own readings, or nothing
+                    row.update(supplied=r1(s * 24 / cov), demand=r1(d * 24 / cov),
+                               diff=r1((s - d) * 24 / cov), src="est")
+            except Exception:
+                pass
+        rows.append(row)
+    out = {"days": rows, "today": None, "unit": "mcm", "error": err,
+           "source": "National Gas published actuals (D+1); estimates and today from the live 12-minute readings",
+           "generated": now.isoformat()}
+    try:
+        ga, _ = _gas_day_bounds(today)
+        s, d, cov = _gas_log_integral(ga, now.timestamp())
+        if cov > 0.2:
+            out["today"] = {"day": today, "supplied": r1(s), "demand": r1(d), "diff": r1(s - d), "hours": round(cov, 1),
+                            "since": round((now.timestamp() - ga) / 3600.0, 1)}
+    except Exception:
+        pass
     return out
 
 
@@ -5852,6 +6612,7 @@ def get_ea(lat=None, lon=None, dist=None, rain_only=False, cadence_mult=1.0, sam
                 visibility_m=_cond.get("visibility_m"),
                 wind_from=_hm.get("dir_deg"),
                 wind_kmh=(_spd * 3.6) if _spd is not None else None,
+                temp_c=_cond.get("temp"), dew_c=_cond.get("dew_point"),   # the wet-bulb for the probe's snow / ice calls
                 gauges=_gauges_for_alerts(out.get("rainfall") or []),
                 flood_active=False,          # floods come from a separate endpoint
                 feed_stale=bool(_w.get("stale")),
@@ -6251,7 +7012,10 @@ def _openmeteo_home_fc(lat, lon, timeout=12):
     such): 15-minute precipitation with its snow share (minutely_15; skipped if the instance can't
     serve it) and hourly temperature, dew point, precipitation and snow share. Precipitation is mm/h;
     snow share = snowfall water equivalent (cm / 7 x 10 mm, Open-Meteo's rule) / precipitation.
-    Returns {source, m15: [[t, mm_h, snow]], hourly: [[t, temp, dew, mm_h, snow]]} or None."""
+    The 850 hPa temperature comes with it (Andy, 12 Nov): about 1.5 km up, it says whether the
+    precipitation is snow aloft at all, which the surface wet-bulb alone cannot. A self-hosted
+    instance that hasn't synced it is filled from public Open-Meteo like the other variables.
+    Returns {source, m15: [[t, mm_h, snow]], hourly: [[t, temp, dew, mm_h, snow, t850]]} or None."""
     if _rain_probe is None or not hasattr(_rain_probe, "om_get_json"):
         return None
     key = (round(lat, 2), round(lon, 2))
@@ -6259,7 +7023,7 @@ def _openmeteo_home_fc(lat, lon, timeout=12):
     if c and time.time() - c["ts"] < OM_HOMEFC_TTL:
         return c["data"]
     base = {"latitude": lat, "longitude": lon, "timeformat": "unixtime", "timezone": "GMT", "forecast_days": 2,
-            "hourly": "temperature_2m,dew_point_2m,precipitation,snowfall"}
+            "hourly": "temperature_2m,dew_point_2m,precipitation,snowfall,temperature_850hPa"}
     now = time.time()
     snow_of = lambda mm, cm: (round(min(1.0, (cm or 0) * 10 / 7 / mm), 2) if mm and mm > 0 else 0.0)
     try:
@@ -6274,7 +7038,8 @@ def _openmeteo_home_fc(lat, lon, timeout=12):
         filled = []
         if om_host == "local":
             h0, m0 = (d or {}).get("hourly") or {}, (d or {}).get("minutely_15") or {}
-            need_h = [v for v in ("dew_point_2m", "snowfall") if not any(x is not None for x in (h0.get(v) or []))]
+            need_h = [v for v in ("dew_point_2m", "snowfall", "temperature_850hPa")
+                      if not any(x is not None for x in (h0.get(v) or []))]
             need_m = "snowfall" if m0.get("time") and not any(x is not None for x in (m0.get("snowfall") or [])) else None
             if need_h or need_m:
                 try:
@@ -6291,7 +7056,8 @@ def _openmeteo_home_fc(lat, lon, timeout=12):
                         for v in need:
                             vals = src.get(v) or []
                             dst[v] = [vals[at[t]] if t in at and at[t] < len(vals) else None for t in dst.get("time") or []]
-                    filled = [{"dew_point_2m": "dew point", "snowfall": "snow"}[v] for v in need_h] + (["15-min snow"] if need_m else [])
+                    filled = [{"dew_point_2m": "dew point", "snowfall": "snow",
+                               "temperature_850hPa": "850 hPa temp"}[v] for v in need_h] + (["15-min snow"] if need_m else [])
                 except Exception as e:
                     dbg("open-meteo home forecast public fill failed:", _ea_errstr(e))
         h = (d or {}).get("hourly") or {}
@@ -6300,7 +7066,8 @@ def _openmeteo_home_fc(lat, lon, timeout=12):
             if now - 7200 <= t <= now + 13 * 3600:
                 mm = (h.get("precipitation") or [None] * (i + 1))[i]
                 hourly.append([t, (h.get("temperature_2m") or [None] * (i + 1))[i], (h.get("dew_point_2m") or [None] * (i + 1))[i],
-                               mm, snow_of(mm, (h.get("snowfall") or [0] * (i + 1))[i])])
+                               mm, snow_of(mm, (h.get("snowfall") or [0] * (i + 1))[i]),
+                               (h.get("temperature_850hPa") or [None] * (i + 1))[i]])
         m = (d or {}).get("minutely_15") or {}
         m15 = []
         for i, t in enumerate(m.get("time") or []):
@@ -6839,6 +7606,45 @@ def _gas_alerts():
                 add("notice", "EU gas storage below 5-year range",
                     f"EU {e['full']:.1f}% on {_gas_day_label(e.get('gas_day'))}; 5-year range "
                     f"{e['band_lo']:.1f}–{e.get('band_hi') or 0:.1f}%.", "STORE")
+            # Where each country's storage is heading (gas_storage._forecast_country / _fc_alerts):
+            # warning levels at 30% (withdrawal rate falling, watch), 11% (strategic reserve,
+            # alert) and 5% (near empty, alarm), dated legal minimums (Germany 30% on 1 Feb) and,
+            # once the winter's low has passed, the EU refill target. A watch is a notice; an
+            # alert or alarm a warning. Titles unchanged so the alert history still matches up.
+            try:
+                def _fc_txt(c, a):
+                    n, f = c["name"], c["forecast"]
+                    if a["kind"] == "legal":
+                        return (f"{n} {a['at'][0]:.0f}% on {_gas_day_label(a['date'])} "
+                                f"(band {a['at'][1]:.0f}–{a['at'][2]:.0f}%) vs {a['level']:.0f}% {a['label']}")
+                    if a["kind"] == "refill":
+                        return (f"{n} refill peaks ~{a['peak'][0]:.0f}% by {_gas_day_label(a['date'])} "
+                                f"vs the {a['level']:.0f}% EU target")
+                    if a["basis"] == "now":
+                        return f"{n} under {a['level']:.0f}% ({a['label']}) now, {f['now_pct']:.0f}%"
+                    return (f"{n} {'could be ' if a['basis'] == 'band' else ''}under {a['level']:.0f}% "
+                            f"({a['label']}) by {_gas_day_label(a['date'])}")
+                rank = {"watch": 1, "alert": 2, "alarm": 3}
+                low = []
+                for c in (eu.get("countries") or []):
+                    f = c.get("forecast") or {}
+                    act = [a for a in (f.get("alerts") or []) if a.get("active") and a.get("tier")]
+                    if act and f.get("state") in rank:
+                        low.append((c, act[0]))
+                low.sort(key=lambda x: (-x[1]["tier"], x[1]["days"]))
+                if low:
+                    worst = low[0][0]["forecast"]["state"]
+                    f0 = low[0][0]["forecast"]
+                    add("warning" if worst in ("alert", "alarm") else "notice",
+                        "Gas storage forecast to run low" if worst in ("alert", "alarm") else "Gas storage heading low",
+                        "; ".join(_fc_txt(c, a) for c, a in low[:4]) + ". Forecast from six past winters"
+                        + (f"; {low[0][0]['name']} minimum {f0['min_pct']:.0f}% (band {f0['min_lo']:.0f}–{f0['min_hi']:.0f}%)"
+                           if not f0.get("filling") else "") + "."
+                        + (" Extrapolated: this winter began below anything in the record, so the "
+                           "level is far less certain than the date." if f0.get("out_of_range") else ""),
+                        "STORE")
+            except Exception:
+                pass
             if uk and uk.get("stock_day"):
                 try:
                     age = (datetime.now(timezone.utc).date() - datetime.fromisoformat(uk["stock_day"][:10]).date()).days
@@ -6942,10 +7748,18 @@ def build_alerts(snap):
                     f"{arrow.capitalize()} ~{rocof*60:+.2f} Hz/min.", tag="SLEW"))
         # (d) sudden infeed loss — from the SAME detector the panel flashes
         gl = sr.get("gen_loss")
+        le = sr.get("loss_event") or {}
         if gl and gl.get("flagged"):
             src = f" ({gl.get('worst_fuel')})" if gl.get("worst_fuel") else ""
             alerts.append(_a("critical" if gl.get("severe") else "warning", "Sudden infeed loss",
-                f"Infeed down {gl.get('d_infeed_mw')} MW in ~{int((gl.get('interval_s') or 0)/60)} min{src}. Possible trip.", tag="RISK"))
+                f"Infeed down {gl.get('d_infeed_mw')} MW in ~{int((gl.get('interval_s') or 0)/60)} min{src}. Possible trip; checking frequency response.", tag="RISK"))
+        if le.get("status") == "false":
+            # small follow-up so an announced infeed-loss alarm is visibly withdrawn
+            fz = (f" Largest 15 s fall {le['fall_hz']:.3f} Hz." if le.get("fall_hz") is not None else "")
+            alerts.append(_a("notice", "False alert",
+                f"Infeed-loss alarm at {le.get('at')} ({le.get('mw')} MW"
+                + (f", {le.get('worst_fuel')}" if le.get("worst_fuel") else "") + ") withdrawn: "
+                + (le.get("reason_text") or "not confirmed") + "." + fz, tag="RISK"))
 
     # ---- 2. Reserve vs largest infeed (N-1 security), coupled to frequency --
     r = snap.get("reserve")
@@ -7428,7 +8242,12 @@ def _read_freq_rows(path, lo=None, hi=None):
             rows.append((ep, r["hz"]))
     except Exception:
         pass
-    return rows
+    # once per time, in time order (logs written before the 7 Nov fix hold some readings twice and out of order)
+    seen = set(); out = []
+    for ep, hz in sorted(rows, key=lambda x: x[0]):
+        if ep not in seen:
+            seen.add(ep); out.append((ep, hz))
+    return out
 
 def get_freq_history(days=30, buckets=8000):
     """Historical grid frequency from the rolling 15-second data log, down-sampled to
@@ -7901,7 +8720,7 @@ SNAP_SOURCES = [
     ("warnings", "get_warnings"), ("carbon", "get_carbon"),
     ("weather", "get_weather"), ("reserve", "get_operating_reserve"),
     ("solar", "get_solar"), ("price", "get_price"),
-    ("battery", "get_battery"),
+    ("battery", "get_battery"), ("reliable_margin", "get_reliable_margin"),
 ]
 
 
@@ -8116,6 +8935,8 @@ def build_snapshot():
         _gl = _update_gen_history(snap.get("generation"), time.time())
         snap["system_risk"] = compute_system_risk(snap.get("generation"),
                                                   snap.get("frequency"), _gl)
+        if snap["system_risk"] is not None:
+            snap["system_risk"]["loss_event"] = loss_event_current()
     except Exception as e:
         snap["system_risk"] = None
         snap["errors"].append("system_risk: " + str(e))
@@ -8150,6 +8971,57 @@ _cache = {"snap": None, "ts": 0}
 CACHE_TTL = 55  # seconds
 
 
+# ---------------------------------------------------------------- regional flows (Andy, 6 Nov)
+# The wall page's flow model works out each region's net position (generation - demand, MW, + = exporting), the
+# transfer between each pair of regions ("a>b", + = from a to b) and the north -> south totals between the greater
+# regions (Scotland | North | Midlands | South). It posts them after each model run; the server keeps about 3 h in
+# memory (one entry per model run, whichever wall page sent it) so the dashboard can show them and both can show the
+# change over the last hour. Modelled, not measured. Nothing is kept across a restart.
+_regions = {"hist": [], "last_t": None}
+_regions_lock = threading.Lock()
+REGIONS_KEEP_S = 3 * 3600
+REGIONS_STALE_S = 15 * 60
+
+
+def _regions_post(body):
+    try:
+        t = str(body["t"])[:40]
+        net = {str(k)[:60]: float(v) for k, v in dict(body["net"]).items()}
+        tr = {str(k)[:130]: float(v) for k, v in dict(body.get("tr") or {}).items()}
+        grp = [float(v) for v in list(body.get("grp") or [])[:3]]
+    except Exception:
+        return {"ok": False, "error": "need t and net"}
+    if len(net) > 30 or len(tr) > 120 or any(abs(v) > 60000 for v in list(net.values()) + list(tr.values()) + grp):
+        return {"ok": False, "error": "out of range"}
+    now = time.time()
+    with _regions_lock:
+        if t != _regions["last_t"]:
+            _regions["last_t"] = t
+            _regions["hist"].append((now, net, tr, grp))
+            _regions["hist"] = [e for e in _regions["hist"] if now - e[0] <= REGIONS_KEEP_S]
+    return _regions_get()
+
+
+def _regions_get():
+    """{"ok", "ts", "age_s", "net", "tr", "grp", "d_net", "d_tr", "d_grp" (change since about an hour before; absent
+    until the server has an hour of them)} or {"ok": False} when no wall page has sent figures in REGIONS_STALE_S."""
+    with _regions_lock:
+        h = list(_regions["hist"])
+    if not h or time.time() - h[-1][0] > REGIONS_STALE_S:
+        return {"ok": False, "error": "no recent model run (the regional figures come from an open wall page)"}
+    ts, net, tr, grp = h[-1]
+    out = {"ok": True, "ts": round(ts), "age_s": round(time.time() - ts), "net": net, "tr": tr, "grp": grp,
+           "src": "wall flow model (modelled)"}
+    old = [e for e in h if abs(ts - 3600 - e[0]) <= 600]
+    if old:
+        o = min(old, key=lambda e: abs(ts - 3600 - e[0]))
+        out["d_net"] = {k: round(v - o[1][k]) for k, v in net.items() if k in o[1]}
+        out["d_tr"] = {k: round(v - o[2][k]) for k, v in tr.items() if k in o[2]}
+        out["d_grp"] = [round(a - b) for a, b in zip(grp, o[3])] if len(o[3]) == len(grp) else None
+        out["d_mins"] = round((ts - o[0]) / 60)
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -8176,6 +9048,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _wall_api(self):
+        if self.path.split("?", 1)[0] == "/api/wall-regions":
+            self._send_json(_regions_get()); return
         """/api/wall, /api/wall-network, /api/wall-sites, /api/wall-dnolines?kv=, /api/wall-local, /api/wall-history?node=N."""
         if _wall is None:
             self._send_json({"error": "wall.py not installed next to grid_server.py"}, 503)
@@ -8219,7 +9093,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.path.startswith("/api/wall-b6"):
+            if self.path.startswith("/api/wall-regions"):
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > 20000:
+                    self._send_json({"ok": False}, 400); return
+                try:
+                    body = json.loads((self.rfile.read(n) if n else b"{}").decode("utf-8") or "{}")
+                except Exception:
+                    body = {}
+                self._send_json(_regions_post(body))
+            elif self.path.startswith("/api/wall-b6"):
                 # the wall page's modelled Scotland -> England transfer, checked later against NESO's metered one
                 n = int(self.headers.get("Content-Length") or 0)
                 if _wall is None or not hasattr(_wall, "post_b6") or n > 20000:
@@ -8446,6 +9329,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_gas_storage.get_gas_storage(demand_mcm_d=dem))
             except Exception as e:
                 self._send_json({"status": "error", "error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/gas-daily"):
+            # Supplied and demand per gas day (Supply history view). Before "/api/gas", as gas-probe is.
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._send_json(get_gas_daily(qs.get("days", ["7"])[0]))
+            except Exception as e:
+                self._send_json({"error": f"{type(e).__name__}: {e}", "days": []}, 500)
         elif self.path.startswith("/api/gas-probe"):
             # Gas alarm ladder: latest signals + recent spoken events (voiced by the dashboard).
             # Served from the background sampler's cache, so the endpoint is instant.
@@ -8518,6 +9408,20 @@ class Handler(BaseHTTPRequestHandler):
                         _RAIN_PROBE_LOCK.release()
                 else:
                     self._send_json(dict((_rain_probe._rg.get("data") or {"err": "busy"}), busy=True))
+            except Exception as e:
+                self._send_json({"err": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/radar-frames"):
+            # the radar view's animation: the last `hours` (2-24) of radar frames as grids, oldest first, from the
+            # rain recorder's saved tiles where it has them, else RainViewer. Built on the
+            # rain probe's own animation lock, never the engine's, so a first request (13 frames) can't stall it.
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                lat = float(qs.get("lat", [EA_DEFAULT_LAT])[0]); lon = float(qs.get("lon", [EA_DEFAULT_LON])[0])
+                if _rain_probe is None or not hasattr(_rain_probe, "radar_frames"):
+                    self._send_json({"err": "radar unavailable"})
+                else:
+                    hours = int(float(qs.get("hours", ["2"])[0] or 2))
+                    self._send_json(_rain_probe.radar_frames(lat, lon, hours=hours))
             except Exception as e:
                 self._send_json({"err": f"{type(e).__name__}: {e}"}, 500)
         elif self.path.startswith("/api/freq-raw"):
@@ -8669,6 +9573,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_windcuts.snapshot())
             except Exception as e:
                 self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+        elif self.path.startswith("/api/ramp"):
+            self._send_json(_ramp_api())
         elif self.path.startswith("/api/wall"):
             self._wall_api()
         elif self.path.split("?", 1)[0] in ("/wall", "/grid_wall.html"):

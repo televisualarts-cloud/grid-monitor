@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- UK & Ireland Power Cuts page — build 261105.4  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
+<!-- UK & Ireland Power Cuts page — build 261125.1  (version = YYMMDD.N in UT; bump on every change to this file). Change history: CHANGELOG.md -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -37,6 +37,7 @@
   .panel h2{font-size:12px;letter-spacing:.6px;color:var(--dim);text-transform:uppercase;margin-bottom:8px}
   .big{font-size:26px;font-weight:600}
   #natoff{transition:font-size .25s ease, color .25s ease}
+  #natheld{display:block;color:var(--warn,#f5b942);font-size:10.5px;line-height:1.3;margin-top:2px}
   .natsplit{display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;font-size:12px}
   .natsplit .nr{color:var(--dim)}
   .natsplit .nr b{color:var(--ink);font-variant-numeric:tabular-nums}
@@ -169,6 +170,27 @@
   #wcRegions{display:inline-flex;gap:4px;flex-wrap:wrap}
   #wcRegions button, .wc-seg button{font-size:11px;padding:3px 7px}
   .wc-note{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.45}
+/* This page's palette names differ from the dashboard's, so the line borrows them here rather
+   than inheriting variables that do not exist (--crit, --line2, --ink-faint, --mono). */
+.hdr-trig{--crit:var(--bad); --line2:var(--line); --ink-faint:var(--dim);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* What set the alarm off (Andy, 23 Nov). The dashboard's alarm engine writes gbAlarmTrig;
+   every window that is open shows the same one line in its own bar for up to five minutes,
+   flashing while it is new. One line, never wrapped: it is a label, not a report. */
+.hdr-trig{display:none;align-items:center;gap:8px;margin-left:auto;cursor:pointer;flex:0 1 auto;min-width:0;
+  font-family:var(--mono);font-size:11px;padding:5px 12px;border-radius:999px;
+  border:1px solid var(--line2);background:var(--panel);color:var(--ink);letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hdr-trig.on{display:flex}
+.hdr-trig b{font-weight:600}
+.hdr-trig .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hdr-trig .ago{color:var(--ink-faint);flex:none}
+.hdr-trig.notice{border-color:var(--accent)}
+.hdr-trig.warn{border-color:var(--warn)} .hdr-trig.warn b{color:var(--warn)}
+.hdr-trig.crit{border-color:var(--crit)} .hdr-trig.crit b{color:var(--crit)}
+.hdr-trig.flash{animation:trigFlash 1s ease-in-out 0s 6}
+@keyframes trigFlash{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 2px currentColor}}
+@media (prefers-reduced-motion:reduce){.hdr-trig.flash{animation:none}}
 </style>
 <script>
 /* ---- Light / dark theme (Andy, 5 Nov 2026) — the same block in every page; keep them identical ----
@@ -267,7 +289,7 @@
       <div class="panel">
         <h2>National now</h2>
         <div class="kpis">
-          <div class="kpi"><span class="big" id="natoff">–</span><small>customers off</small></div>
+          <div class="kpi"><span class="big" id="natoff">–</span><small>customers off<span id="natheld"></span></small></div>
           <div class="kpi"><span class="big" id="natinc">–</span><small>active incidents</small></div>
           <div class="kpi"><span class="big" id="natpred">–</span><small>predicted off</small></div>
           <div class="kpi"><span class="big" id="natpsr">–</span><small>PSR affected*</small></div>
@@ -366,9 +388,6 @@
         </h2>
         <div class="win" id="winsel" style="margin:2px 0 8px"></div>
         <canvas id="totals" height="150"></canvas>
-        <div class="legend evkey">Strip under each plot: grid events from the dashboard's alert log —
-          <span class="dot" style="background:#ff5d5d"></span> critical / severe
-          <span class="dot" style="background:#ffb454"></span> warning. Hover for details.</div>
       </div>
       <div class="panel" style="margin-top:14px">
         <h2>Rate — cuts/hr · restorations/hr · net</h2>
@@ -390,6 +409,13 @@
   <div class="card">
     <h2>Wind vs power cuts <span class="muted">— learned response</span></h2>
     <div class="wc-tools"><span class="muted">Region:</span> <span id="wcRegions"></span></div>
+    <div class="wc-tools"><span class="muted">Gust:</span>
+      <span class="win wc-seg" id="wcGust">
+        <button class="btn on" data-g="kt">kt</button>
+        <button class="btn" data-g="mph">mph</button>
+        <button class="btn" data-g="kmh">km/h</button>
+      </span>
+    </div>
     <div class="wc-tools"><span class="muted">Response:</span>
       <span class="win wc-seg" id="wcMetric">
         <button class="btn on" data-m="faults">new faults/hr</button>
@@ -416,8 +442,8 @@
     <div class="legend opkey" id="opkey"></div>
     <div class="wc-note">Stacked bands: the top edge is the national total. Largest operator over the window
       at the bottom. A band stops where that operator's feed was down — nothing is filled in; hover shows
-      "no data". SPEN publishes no customer counts, so it has no band. Strip under the plot: grid events
-      (red critical/severe, amber warning). Window and stepped/raw follow the main page.</div>
+      "no data". SPEN publishes no customer counts, so it has no band. Window and stepped/raw follow the
+      main page.</div>
     <div class="row" style="margin-top:12px;justify-content:flex-end">
       <button class="btn" id="opClose">Close</button>
     </div>
@@ -1113,7 +1139,7 @@ function renderNear(incs){
     var i=x.i, et=pcWhenShort(i.etr);
     return '<div class="nr '+(i.planned?"pl":"un")+'"><span class="d">'+(x.d<1?"<1":x.d.toFixed(1))+" km "+PC_ABBR[Math.round(x.b/45)%8]+
       '</span><span>'+(i.planned?"planned":"unplanned")+" · "+i.dno+
-      (i.customers_off?(" · "+fmt(i.customers_off)+" off"):"")+(et?(' · <span class="muted">'+(i.planned?"until ":"est. back ")+et+"</span>"):"")+"</span></div>";
+      (i.customers_off?(" · "+fmt(i.customers_off)+" off"+(i.unconfirmed?" (est.)":"")):"")+(et?(' · <span class="muted">'+(i.planned?"until ":"est. back ")+et+"</span>"):"")+"</span></div>";
   }).join("")+more;
 }
 function fmt(n){ return (n==null?"–":Number(n).toLocaleString()); }
@@ -1174,6 +1200,15 @@ function render(d){
   var natOff=sumOf("customers_off");
   $("natoff").textContent  = fmt(natOff);
   styleNatOff(natOff);
+  // A newly raised incident this large is usually first published with an estimated customer
+  // count, which the operator then corrects or withdraws, so it is kept out of the totals until
+  // a second sighting. Say so rather than quietly dropping it.
+  var held=counted.reduce(function(s,o){return s+(o.customers_unconfirmed||0);},0);
+  var hb=$("natheld");
+  if(hb){ hb.textContent = held? "+ "+fmt(held)+" reported, not yet confirmed" : "";
+    hb.title = held? "A new incident is often published with an estimated customer count — in effect the whole "
+      +"feeder — which the operator corrects down or withdraws at its next update. Figures this large and this "
+      +"sudden are held out of the totals until a second reading confirms them, usually within five minutes." : ""; }
   $("natinc").textContent  = fmt(sumOf("incidents"));
   $("natpred").textContent = fmt(sumOf("customers_predicted"));
   $("natpsr").textContent  = fmt(sumOf("psr_customers"));
@@ -1424,7 +1459,11 @@ function mapTipHtml(h, others){
       '; possibly closed by '+esc(i.dno)+' but still listed, not confirmed. Not counted in any total.</span>');
   if(i.overdue && i.customers_off!=null) L.push('<span class="mt-d">listed with '+fmt(i.customers_off)+" customers off</span>");
   else if(i.customers_off!=null) L.push("<b>"+fmt(i.customers_off)+"</b> customers off"+
+      (i.unconfirmed? ' <span class="mt-d">(est. — not yet in the totals)</span>':"")+
       (i.customers_predicted!=null? ' <span class="mt-d">('+fmt(i.customers_predicted)+" predicted)</span>":""));
+  if(i.unconfirmed) L.push('<span class="mt-d">just raised: '+esc(i.dno)+"'s first customer count for an "
+      +"incident this size is usually an estimate of the whole feeder, corrected or withdrawn at its next "
+      +"update, so it is held out of the totals until a second reading confirms it.</span>");
   else if(i.count_pending) L.push('<span class="mt-d">customer count not yet confirmed by '+esc(i.dno)+
       (i.customers_predicted!=null? " · "+fmt(i.customers_predicted)+(i.planned?" planned":" predicted"):"")+"</span>");
   else L.push('<span class="mt-d">no customer count published'+(i.sectors? " · "+i.sectors+" postcode sector"+(i.sectors>1?"s":""):"")+"</span>");
@@ -1721,56 +1760,12 @@ var OP_COL = {NGED:"#5ec8ff", UKPN:"#b48cff", NPg:"#57d38c", ENWL:"#ffd166",
 function opOff(r,d){ var o=(r.operators||{})[d];            // null = no reading this sample
   if(!o || !(o.status==="ok"||o.status==="stale") || o.off==null) return null; return o.off; }
 
-// Grid events: raised->cleared spans from the server's alert journal (/api/alert-history),
-// warning level and above, feed-data notices excluded. Re-read every 5 minutes.
-var gridEvents = [];            // {t0, t1, level, tag, titles[], active}
-var EV_LEVEL_RANK = {severe:3, critical:3, warning:2};
-function evCol(e){ return EV_LEVEL_RANK[e.level]>=3 ? "#ff5d5d" : "#ffb454"; }
-function loadEvents(){
-  fetch("/api/alert-history?limit=5000").then(function(r){ return r.ok?r.json():null; }).then(function(d){
-    if(!d || !d.events) return;
-    var now=Date.now()/1000, open={}, spans=[];
-    function tsOf(iso){ var v=Date.parse(iso); return isNaN(v)? null : v/1000; }
-    d.events.slice().sort(function(a,b){ return (a.time||"")<(b.time||"")?-1:1; }).forEach(function(e){
-      if(!EV_LEVEL_RANK[e.level] || e.tag==="DATA" || e.tag==="OK") return;
-      var key=e.level+"|"+e.title, t=tsOf(e.time); if(t==null) return;
-      if(e.event==="raised") open[key]={t0:t, level:e.level, tag:e.tag, title:e.title};
-      else if(e.event==="cleared"){ var t0=open[key]? open[key].t0 : tsOf(e.raised);
-        delete open[key]; if(t0!=null) spans.push({t0:t0, t1:t, level:e.level, tag:e.tag, title:e.title}); }
-    });
-    Object.keys(open).forEach(function(k){ var o=open[k];
-      spans.push({t0:o.t0, t1:now, level:o.level, tag:o.tag, title:o.title, active:true}); });
-    // merge overlapping spans of the same kind (tag + level) so a flapping alert is one mark
-    spans.sort(function(a,b){ return a.t0-b.t0; });
-    var merged=[], lastBy={};
-    spans.forEach(function(sp){ var k=sp.tag+"|"+sp.level, m=lastBy[k];
-      if(m && sp.t0<=m.t1+60){ m.t1=Math.max(m.t1,sp.t1); m.active=m.active||sp.active;
-        if(m.titles.indexOf(sp.title)<0) m.titles.push(sp.title); }
-      else { m={t0:sp.t0, t1:sp.t1, level:sp.level, tag:sp.tag, titles:[sp.title], active:!!sp.active};
-        merged.push(m); lastBy[k]=m; } });
-    gridEvents=merged;
-    if(last) drawPlots(last.history||[]);
-  }).catch(function(){});
-}
-// Events in this plot's window. Past EV_MAX marks, warnings are dropped (critical only).
-var EV_MAX = 40;
-function eventsIn(c){ var L=gridEvents.filter(function(e){ return e.t1>=c.t0 && e.t0<=c.t1; }), thin=false;
-  if(L.length>EV_MAX){ L=L.filter(function(e){ return EV_LEVEL_RANK[e.level]>=3; }); thin=true; }
-  return {list:L, thin:thin}; }
-// the strip: a 5px lane just under the plot area; warnings first so critical sits on top
-function drawEventStrip(g,c,E){ var x=g.x, y=c.h-c.B+2;
-  x.fillStyle="#141d28"; x.fillRect(c.L,y,c.w-c.L-c.R,5);
-  E.list.slice().sort(function(a,b){ return EV_LEVEL_RANK[a.level]-EV_LEVEL_RANK[b.level]; }).forEach(function(e){
-    var a=Math.max(c.L,PX(c,e.t0)), b=Math.min(c.w-c.R,PX(c,e.t1)); if(b-a<3){ var m=(a+b)/2; a=m-1.5; b=m+1.5; }
-    x.fillStyle=evCol(e); x.fillRect(a,y,b-a,5); });
-  if(E.thin){ x.fillStyle="#54637a"; x.textAlign="right"; x.fillText("events: critical only",c.w-c.R-22,c.T+9); x.textAlign="left"; } }
-// events under pointer time t (±2px), shaded faintly up the plot; returns readout rows
-function eventsAt(g,c,E,t){ var tol=2*(c.t1-c.t0)/((c.w-c.L-c.R)||1), rows=[], x=g.x;
-  E.list.forEach(function(e){ if(t>=e.t0-tol && t<=e.t1+tol){
-    var a=Math.max(c.L,PX(c,e.t0)), b=Math.min(c.w-c.R,PX(c,e.t1)); if(b-a<3){ var m=(a+b)/2; a=m-1.5; b=m+1.5; }
-    x.fillStyle=evCol(e)==="#ff5d5d"?"rgba(255,93,93,.08)":"rgba(255,180,84,.08)"; x.fillRect(a,c.T,b-a,c.h-c.B-c.T);
-    e.titles.slice(0,2).forEach(function(ti){ rows.push([evCol(e), "⚑ "+clip(ti,48)+(e.active?" (active)":"")]); }); } });
-  return rows.slice(0,3); }
+/* The grid-event strip under these plots is gone (Andy, 25 Nov): it drew raised-to-cleared spans
+   from the dashboard's alert journal in a lane under each plot, and in practice the marks almost
+   never lined up with anything happening in the cuts themselves — a frequency or margin alert and a
+   storm taking out feeders are mostly unrelated events sharing an axis. Removed with it: loadEvents
+   and its 5-minute /api/alert-history poll, eventsIn / drawEventStrip / eventsAt, and the hover rows
+   they contributed. */
 // Hover: pointer x (CSS px) over each plot, or null. The plot redraws with a crosshair
 // and a readout box of the SAMPLE under the pointer (never an interpolated value).
 var plotHover = {totals:null, rate:null, opBig:null};
@@ -1895,11 +1890,10 @@ function drawTotals(cv,hist,byOp){
     x.fillStyle="#5ec8ff"; x.fillText("customers off"+(smoothPlots?" · stepped":""),c.L+4,c.T+9);
     x.fillStyle="#ffb454"; x.fillText("active incidents",c.L+4,c.T+21);
   }
-  var E=eventsIn(c); drawEventStrip(g,c,E);
   var hx=plotHover[cv.id];
   if(hx!=null && hx>=c.L && hx<=c.w-c.R){
     var t=c.t0+(hx-c.L)/(c.w-c.L-c.R)*(c.t1-c.t0), k=hoverIdx(ts,t,smoothPlots), px=PX(c,ts[k]);
-    var evRows=eventsAt(g,c,E,t), rows=[["#9fb0c4",fmtUTfull(ts[k],c.t1-c.t0)]];
+    var rows=[["#9fb0c4",fmtUTfull(ts[k],c.t1-c.t0)]];
     if(byOp){
       hoverDot(g,px,PY(c,top[k],0,mOff),"#e6edf5");
       rows.push(["#e6edf5",fmt(off[k])+" customers off · "+fmt(inc[k])+" incidents"]);
@@ -1913,7 +1907,7 @@ function drawTotals(cv,hist,byOp){
       hoverDot(g,px,PY(c,off[k],0,mOff),"#5ec8ff"); hoverDot(g,px,PY(c,inc[k],0,mInc),"#ffb454");
       rows.push(["#5ec8ff",fmt(off[k])+" customers off"],["#ffb454",fmt(inc[k])+" active incidents"]);
     }
-    hoverBox(g,c,px,rows.concat(evRows));
+    hoverBox(g,c,px,rows);
   }
 }
 // key under the plot, shown only in by-operator mode; lists operators with a band this window
@@ -1948,16 +1942,15 @@ function drawRate(cv,hist){
   lineC(g,c,ts,clr,lo,hi,"#57d38c");
   lineC(g,c,ts,net,lo,hi,"#5ec8ff");
   x.fillStyle="#54637a"; x.fillText(smoothPlots?"per hour · 1h rolling":"per hour",c.L+4,c.T+9);
-  var E=eventsIn(c); drawEventStrip(g,c,E);
   var hx=plotHover.rate;
   if(hx!=null && hx>=c.L && hx<=c.w-c.R){
     var t=c.t0+(hx-c.L)/(c.w-c.L-c.R)*(c.t1-c.t0), k=hoverIdx(ts,t,false), px=PX(c,ts[k]);
     hoverDot(g,px,PY(c,news[k],lo,hi),"#ff5d5d"); hoverDot(g,px,PY(c,clr[k],lo,hi),"#57d38c");
     hoverDot(g,px,PY(c,net[k],lo,hi),"#5ec8ff");
-    var r1=function(v){ return Math.round(v).toLocaleString(); }, evRows=eventsAt(g,c,E,t);
+    var r1=function(v){ return Math.round(v).toLocaleString(); };
     hoverBox(g,c,px,[["#9fb0c4",fmtUTfull(ts[k],c.t1-c.t0)+(smoothPlots?" · 1h rolling":" · per sample")],
       ["#ff5d5d",r1(news[k])+" new cuts/hr"],["#57d38c",r1(clr[k])+" restorations/hr"],
-      ["#5ec8ff",(net[k]>0?"+":"")+r1(net[k])+" net/hr "+(net[k]>0?"(worsening)":net[k]<0?"(recovering)":"(steady)")]].concat(evRows));
+      ["#5ec8ff",(net[k]>0?"+":"")+r1(net[k])+" net/hr "+(net[k]>0?"(worsening)":net[k]<0?"(recovering)":"(steady)")]]);
   }
 }
 
@@ -2199,6 +2192,13 @@ waLoad();
 
 // ===== wind vs power-cuts correlation ========================================
 var wc=null, wcRegion="ALL", wcMetric="faults";
+/* Gust unit (Andy, 18 Nov). METAR publishes knots and the curve is binned in knots, so kt
+   stays the default and the bins are untouched — only the labels and the live readings are
+   converted. Its own setting: the weather page's mph/km-h switch does not reach this page. */
+var GU_K={kt:1, mph:1.150779, kmh:1.852};
+var wcGU=(function(){ try{ var v=localStorage.getItem("gbGustUnit"); return GU_K[v]?v:"kt"; }catch(e){ return "kt"; } })();
+function guU(){ return wcGU==="kmh"?"km/h":wcGU; }
+function guV(kt){ return kt==null?null:kt*GU_K[wcGU]; }
 function loadWind(){
   fetch("/api/windcuts").then(function(r){return r.ok?r.json():null;})
     .then(function(d){ if(!d||d.error) return; wc=d; renderWind(); }).catch(function(){});
@@ -2237,7 +2237,7 @@ function renderWind(){
 }
 function updateWcPred(el){
   if(!el) return; var e=wcEntry(); if(!e){ el.textContent="no data"; return; }
-  var g=(e.wind||{}).gust_kt, p=(e.predict||{})[wcMetric], gs=(g==null?"–":Math.round(g)+" kt");
+  var g=(e.wind||{}).gust_kt, p=(e.predict||{})[wcMetric], gs=(g==null?"–":Math.round(guV(g))+" "+guU());
   if(!p||p.expected==null){ el.innerHTML="current gust <b>"+gs+"</b> · <span class=\"muted\">model still learning</span>"; return; }
   el.innerHTML="at <b>"+gs+"</b> gust → ≈ <b>"+(+p.expected).toFixed(1)+"</b> "+wcUnit()+
     ' <span class="muted">('+(+p.lo).toFixed(1)+"–"+(+p.hi).toFixed(1)+", n="+p.n+", "+p.conf+")</span>";
@@ -2265,12 +2265,14 @@ function drawWcCurve(cv, small){
     x.font="12.67px sans-serif";        // y-axis values: a further 1 pt
     x.fillStyle="#6b7a90"; x.textAlign="right"; x.fillText(nfmt(v), L-4, yy); x.font="11.33px sans-serif"; }
   x.textBaseline="alphabetic"; x.textAlign="center";
-  var step=(gmax>60?20:10);
-  for(var gg=0; gg<=gmax; gg+=step){ var xx=PXx(gg);
+  // ticks are chosen as round numbers in the DISPLAY unit and mapped back onto the
+  // knot scale the bins are built on, so switching unit never gives 23s and 46s
+  var gmaxU=guV(gmax), step=(gmaxU>120?40:(gmaxU>60?20:10));
+  for(var gg=0; gg<=gmaxU; gg+=step){ var xx=PXx(gg/GU_K[wcGU]);
     x.strokeStyle="#141d28"; x.beginPath(); x.moveTo(xx,T); x.lineTo(xx,H-B); x.stroke();
     x.fillStyle="#54637a"; x.fillText(gg, xx, H-B+14); }
   // axis title centred below the tick labels (it used to sit on top of the last one)
-  x.fillStyle="#7f8fa6"; x.fillText("gust (kt)", L+(g.w-L-R)/2, H-3); x.textAlign="left";
+  x.fillStyle="#7f8fa6"; x.fillText("gust ("+guU()+")", L+(g.w-L-R)/2, H-3); x.textAlign="left";
   // baseline (calm background)
   var by=PYy(cur.baseline||0); x.strokeStyle="#3a4b5f"; x.setLineDash([4,3]);
   x.beginPath(); x.moveTo(L,by); x.lineTo(g.w-R,by); x.stroke(); x.setLineDash([]);
@@ -2291,7 +2293,7 @@ function drawWcCurve(cv, small){
     x.beginPath(); x.moveTo(lx,T); x.lineTo(lx,H-B); x.stroke(); x.setLineDash([]);
     var pp=(e.predict||{})[wcMetric];
     if(pp&&pp.expected!=null){ x.beginPath(); x.arc(lx,PYy(Math.min(pp.expected,ymax)),3.5,0,7); x.fillStyle="#ffb454"; x.fill(); }
-    if(!small){ x.fillStyle="#ffb454"; x.textAlign="center"; x.fillText("now "+Math.round(lg)+"kt", Math.min(Math.max(lx,L+18),g.w-R-18), T+9); x.textAlign="left"; }
+    if(!small){ x.fillStyle="#ffb454"; x.textAlign="center"; x.fillText("now "+Math.round(guV(lg))+" "+guU(), Math.min(Math.max(lx,L+18),g.w-R-18), T+9); x.textAlign="left"; }
   }
   if(!small){ x.save(); x.font="12.67px sans-serif"; x.translate(13,H/2); x.rotate(-Math.PI/2); x.fillStyle="#7f8fa6"; x.textAlign="center"; x.fillText(wcUnit(),0,0); x.restore(); }
 }
@@ -2301,6 +2303,13 @@ function drawWcCurve(cv, small){
     if(on){ if(!wc) loadWind(); else renderWind(); } });
   var en=$("wcEnlarge"); if(en) en.addEventListener("click",function(){ $("wcModal").classList.add("show"); renderWind(); });
   var cl=$("wcClose"); if(cl) cl.addEventListener("click",function(){ $("wcModal").classList.remove("show"); });
+  var gu=$("wcGust");
+  if(gu){ Array.prototype.forEach.call(gu.children,function(b){b.classList.toggle("on",b.getAttribute("data-g")===wcGU);});
+    gu.addEventListener("click",function(e){
+      var u=e.target.getAttribute&&e.target.getAttribute("data-g"); if(!u||!GU_K[u]) return; wcGU=u;
+      try{ localStorage.setItem("gbGustUnit",u); }catch(_){}
+      Array.prototype.forEach.call(gu.children,function(b){b.classList.toggle("on",b.getAttribute("data-g")===u);});
+      renderWind(); }); }
   var mm=$("wcMetric"); if(mm) mm.addEventListener("click",function(e){
     var m=e.target.getAttribute&&e.target.getAttribute("data-m"); if(!m) return; wcMetric=m;
     Array.prototype.forEach.call(mm.children,function(b){b.classList.toggle("on",b.getAttribute("data-m")===m);});
@@ -2311,9 +2320,65 @@ function drawWcCurve(cv, small){
 load();
 loadWind();
 setInterval(load, 60000);       // refresh view every 60s (server samples every ~5 min)
-loadEvents(); setInterval(loadEvents, 300000);   // grid-event strip: alert journal every 5 min
 setInterval(loadWind, 60000);   // wind/correlation refresh
 window.addEventListener("resize",function(){ if(last) render(last); if(wc) renderWind(); });
+</script>
+<script>
+/* "What set the alarm off" receiver. The alarms run in the dashboard; this window shows the
+   same line, through localStorage + the storage event (the path the theme already uses), for
+   up to five minutes. window.gbTrig.mount(bar) puts it in a bar; gbTrig.go is what clicking
+   it should do in THIS window, if anything. */
+window.gbTrig=(function(){
+  var KEY="gbAlarmTrig", MS=5*60*1000, els=[], cur=null, t1=null, t2=null;
+  function esc(v){return String(v==null?"":v).replace(/[&<>"]/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+  function paint(){
+    for(var i=0;i<els.length;i++){ var e=els[i];
+      if(!cur){ e.className="hdr-trig"; e.innerHTML=""; continue; }
+      var m=Math.floor((Date.now()-cur.ts)/60000);
+      e.className="hdr-trig on "+(cur.tier||"notice")+((Date.now()-cur.ts<6000)?" flash":"");
+      e.innerHTML='<b>'+esc(cur.cat)+'</b><span class="tx">'+esc(cur.text)+'</span>'+
+                  '<span class="ago">'+(m<1?"now":m+" min")+'</span>';
+    }
+  }
+  function clear(share){ cur=null;
+    if(t1){clearTimeout(t1);t1=null;} if(t2){clearInterval(t2);t2=null;} paint();
+    if(share){ try{ localStorage.setItem(KEY, JSON.stringify({clear:Date.now()})); }catch(e){} } }
+  function set(o){ cur=o; paint();
+    if(t1) clearTimeout(t1);
+    t1=setTimeout(function(){clear(false);}, Math.max(1000, MS-(Date.now()-o.ts)));
+    if(!t2) t2=setInterval(paint, 30000); }
+  function read(){ try{ var v=localStorage.getItem(KEY); if(!v) return; var o=JSON.parse(v);
+    if(o && !o.clear && o.ts && Date.now()-o.ts<MS) set(o); }catch(e){} }
+  addEventListener("storage", function(e){
+    if(e.key!==KEY || !e.newValue) return;
+    var o=null; try{ o=JSON.parse(e.newValue); }catch(_){ return; }
+    if(!o) return;
+    if(o.clear){ clear(false); return; }
+    if(o.ts && Date.now()-o.ts<MS) set(o);
+  });
+  var api={ go:null,
+    mount:function(bar, before){
+      if(!bar) return null;
+      var e=bar.querySelector(".hdr-trig[data-trig]");
+      if(!e){ e=document.createElement("div"); e.className="hdr-trig"; e.setAttribute("data-trig","1");
+        e.title="What set the alarm off \u2014 click to clear";
+        if(before && before.parentNode===bar) bar.insertBefore(e, before); else bar.appendChild(e);
+        e.addEventListener("click", function(){ var g=cur&&cur.go; clear(true);
+          if(api.go){ try{ api.go(g); }catch(_){} } }); }
+      if(els.indexOf(e)<0) els.push(e);
+      els=els.filter(function(x){ return x.isConnected; });
+      read(); paint(); return e; },
+    clear:clear, current:function(){ return cur; } };
+  return api;
+})();
+
+gbTrig.go=function(g){ /* this window IS the power-cuts page; anything else has no page here */ };
+(function(){ var bar=document.querySelector("div.top");   // html itself can carry class="top" when
+  // the page is opened on its own — their own CSS scopes to div.top for the same reason
+  // before the buttons, in the gap the flex spacer opens up — appended at the end it was
+  // pushed off the right edge of the bar.
+  if(bar) gbTrig.mount(bar, bar.querySelector("#waOpen")||bar.querySelector(".btn")); })();
 </script>
 </body>
 </html>

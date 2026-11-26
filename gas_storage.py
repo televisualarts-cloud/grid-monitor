@@ -1,7 +1,7 @@
 """Gas storage: UK storage and LNG stock, per-site flows and estimated fill, and
 European storage from GIE AGSI+.
 
-Build 261028.3  (version = YYMMDD.N in UT; bump on every change to this file)
+Build 261114.4  (version = YYMMDD.N in UT; bump on every change to this file)
 Copyright (c) 2026 Andy Smith, G7IZU. Same MIT licence as grid_server.py.
 
 Standard library only.
@@ -70,7 +70,10 @@ NG_SLOTS_UK = ((12, 45), (16, 15))   # after the D+1 publications
 GIE_SPACING_S = 1.2
 GIE_SLOTS_BRU = ((19, 40), (23, 10))  # after GIE's 19:30 and 23:00 updates
 GIE_EU_FROM = "2020-10-01"    # enough for a 5-year band over the last 12 months
-GIE_COUNTRY_DAYS = 400
+GIE_COUNTRY_FROM = "2020-10-01"   # the same span per country: six winters for the forecast's analogues
+GIE_COUNTRY_DAYS = 400            # ...fetched in chunks this size, newest first, resuming after a stop
+GIE_BACKFILL_S = 90               # time budget for one backfill pass
+GIE_BACKFILL_EVERY_S = 120        # ...and the gap between passes, so it finishes in minutes, not days
 LOOP_S = 300
 STALE_GIE_DAYS = 5            # GIE site figure unchanged this long while National Gas shows flow -> stale
 
@@ -93,6 +96,22 @@ SITES = [
 STOCK_ID = "PUBOBJ330"
 DEMAND_ID = "PUBOBJ1030"      # Demand Actual, NTS, D+1 (Energy), kWh per gas day
 LNG_STOCK, LNG_IN, LNG_OUT = "PUBOBJ336", "PUBOBJ337", "PUBOBJ338"
+# Per-terminal tank inflow ("Inflow, <terminal>, LNG Importation"). Published 15:56 daily in kWh.
+# These are NET like the aggregate pair: on a day a terminal's tanks gain, the gain is reported
+# as inflow with outflow 0, and vice versa, so a cargo day's figure is the cargo less that day's
+# send-out. Checked over 135 days (1 Jul - 12 Nov 2026): the per-terminal and aggregate sets agree
+# exactly, (sum terminal in - sum terminal out) == (aggregate in - aggregate out) to 0.1 GWh every
+# day, and stock[D] - stock[D-1] == in[D] - out[D]. Rows carry the same D+1 dating as the
+# aggregate, so the gas day reported is the row's date minus one.
+LNG_TERMINALS = [("grain", "Isle of Grain", "PUBOBJ2403", "PUBOBJ2415"),
+                 ("shook", "South Hook", "PUBOBJ2411", "PUBOBJ2423"),
+                 ("dragon", "Dragon", "PUBOBJ2412", "PUBOBJ2424")]
+CARGO_IDS = [t[2] for t in LNG_TERMINALS] + [t[3] for t in LNG_TERMINALS]
+CARGO_FETCH_DAYS = 71         # the window shown, the window before it for the trend, and a lead-in
+CARGO_WINDOW_DAYS = 31        # gas days shown on the arrivals strip
+CARGO_JOIN_GWH = 20.0         # consecutive days above this are one unloading episode
+CARGO_KEEP_GWH = 100.0        # an episode totalling less than this is tank accounting, not a ship
+CARGO_TYPICAL_GWH = 1000.0    # a cargo, roughly; used only to flag an episode as probably several
 FLOW_IDS = [s[2] for s in SITES] + [s[3] for s in SITES] + [STOCK_ID, LNG_STOCK, LNG_IN, LNG_OUT, DEMAND_ID]
 _demand_tried = 0.0
 DELIV_IDS = [s[4] for s in SITES]
@@ -182,6 +201,7 @@ def _load():
     except Exception:
         pass
     _store = {"ng": {}, "ng_t": 0, "ng_from": None, "deliv": {}, "deliv_t": 0,
+              "cargo": {}, "cargo_t": 0,
               "gie": {"eu": {}, "cty": {}, "site": {}, "t": 0, "status": None, "err": None},
               "key": {"status": None, "checked": None}}
     return _store
@@ -192,6 +212,10 @@ def _save():
     cut = _add_days(_gas_day_today(), -NG_KEEP_DAYS)
     for ser in s["ng"].values():
         for d in [d for d in ser if d < cut]:
+            del ser[d]
+    ccut = _add_days(_gas_day_today(), -(CARGO_FETCH_DAYS + 5))
+    for ser in (s.get("cargo") or {}).values():
+        for d in [d for d in ser if d < ccut]:
             del ser[d]
     tmp = STORE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(s, separators=(",", ":")))
@@ -269,10 +293,18 @@ def _ng_fetch(ids, fr, to, into, spacing=NG_SPACING_S):
 def _refresh_ng(force=False):
     s = _store
     today = _gas_day_today()
+    # Per-terminal LNG inflow runs on its own 6-hourly clock rather than the main refresh's
+    # publication slots, so a restart picks it up straight away instead of waiting for the next one.
+    got = False
+    if force or time.time() - s.get("cargo_t", 0) > 6 * 3600:
+        s.setdefault("cargo", {})
+        _ng_fetch(CARGO_IDS, _add_days(today, -CARGO_FETCH_DAYS), _add_days(today, 1), s["cargo"])
+        s["cargo_t"] = time.time()
+        got = True
     due = force or not s["ng_t"] or s["ng_t"] < _last_slot_ep(NG_SLOTS_UK, _uk_offset_h(datetime.now(timezone.utc))) \
         or time.time() - s["ng_t"] > 6 * 3600
     if not due:
-        return False
+        return got
     target = _add_days(today, -NG_BACKFILL_DAYS)
     if not s.get("ng_from") or s["ng_from"] > target:
         # first run: backfill newest-first in year-long chunks, saving progress after each
@@ -334,17 +366,58 @@ def _keep(rows):
     return out
 
 
+def _gie_backfill(key, g, today):
+    """Older country history, back to GIE_COUNTRY_FROM, so each country has the same six winters as
+    the EU series and the forecast can use its own analogue years. Runs on its own clock rather than
+    GIE's publication slots: there is nothing to wait for, the data is years old, and a new install
+    should not sit for half a day with no forecast. Fetched newest-first in chunks within a time
+    budget, with the oldest date already asked for held in cty_from (not inferred from the data, so a
+    country that simply published nothing in a window is not retried forever) and saved after each
+    chunk, so a rate-limit stop or a restart resumes where it left off. Returns True if it fetched."""
+    if time.time() - (g.get("bf_t") or 0) < GIE_BACKFILL_EVERY_S:
+        return False
+    done = g.setdefault("cty_from", {})
+    todo = [c for c, _n in COUNTRIES
+            if (done.get(c) or (min(g["cty"][c]) if g["cty"].get(c) else None) or "9") > GIE_COUNTRY_FROM]
+    if not todo:
+        return False
+    g["bf_t"] = time.time()
+    t_end = time.time() + GIE_BACKFILL_S
+    got = False
+    for code in todo:
+        while time.time() < t_end:
+            ser = g["cty"].setdefault(code, {})
+            edge = done.get(code) or (min(ser) if ser else today)
+            if edge <= GIE_COUNTRY_FROM:
+                break
+            to = _add_days(edge, -1)
+            fr = max(GIE_COUNTRY_FROM, _add_days(to, -GIE_COUNTRY_DAYS))
+            ser.update(_keep(_gie({"country": code, "from": fr, "to": to}, key)))
+            done[code] = fr
+            got = True
+            _save()
+    return got
+
+
 def _refresh_gie(force=False):
     g = _store["gie"]
     key = _gie_key()
     if not key:
         g["status"], g["err"] = "no_key", None
         return False
+    back = False
+    try:
+        back = _gie_backfill(key, g, date.today().isoformat())
+    except GieKeyError as e:
+        g["status"], g["err"] = "bad_key", str(e)
+        return False
+    except Exception as e:
+        g["status"], g["err"] = "error", f"{type(e).__name__}: {e}"
     slot = _last_slot_ep(GIE_SLOTS_BRU, _uk_offset_h(datetime.now(timezone.utc)) + 1)
     retry = g["status"] in ("error", "bad_key", "no_key", None) and time.time() - g["t"] > 1800
     due = force or not g["t"] or g["t"] < slot or retry or time.time() - g["t"] > 12 * 3600
     if not due:
-        return False
+        return back
     today = date.today().isoformat()
     try:
         last = max(g["eu"]) if g["eu"] else None
@@ -522,6 +595,26 @@ def _build_uk():
            "outflow_day": _add_days(out_day, -1) if out_day else None}
     if lng["stock_gwh"] and lng["outflow_gwh"]:
         lng["days_at_sendout"] = round(lng["stock_gwh"] / lng["outflow_gwh"], 1)
+    lng["terminals"] = _lng_terminals(_gas_day_today())
+    lng["window_days"] = CARGO_WINDOW_DAYS
+    # Tank stock over the same window as the strip, oldest first, for the box's sparkline. The
+    # rows carry the same D+1 dating as the rest of the LNG set, so each is shifted back a day.
+    ser = sorted((_add_days(d, -1), v / 1e6) for d, v in lst.items())[-CARGO_WINDOW_DAYS:]
+    if len(ser) >= 7:
+        lng["stock_series"] = [round(v, 1) for _, v in ser]
+        lng["stock_from"] = ser[0][0]
+        lng["stock_to"] = ser[-1][0]
+    # The aggregate "last cargo" is the UK-wide net for that gas day, so it nets a terminal taking
+    # a cargo against the others drawing their tanks down and understates the cargo. Prefer the
+    # terminal's own tank gain when the per-terminal series is in.
+    best = None
+    for t in lng["terminals"]:
+        if t["cargoes"] and (best is None or t["cargoes"][-1]["end"] > best[1]["end"]):
+            best = (t, t["cargoes"][-1])
+    if best:
+        lng["last_cargo"] = {"day": best[1]["end"], "gwh": best[1]["gwh"],
+                             "terminal": best[0]["name"], "days": best[1]["days"],
+                             "start": best[1]["start"]}
     deliv_tot = sum(r["deliv_gwh_d"] or 0 for r in sites if r.get("state") == "est")
     dem = ng.get(DEMAND_ID) or {}
     dd = sorted(dem)[-365:]
@@ -538,6 +631,71 @@ def _build_uk():
 
 
 # ---------------------------------------------------------------- EU
+def _lng_terminals(today):
+    """Per-terminal unloading episodes, with days unloading this window and the window before.
+
+    A row dated D reports gas day D-1, so every date is shifted back a day. Consecutive gas days on
+    which a terminal's tanks gained more than CARGO_JOIN_GWH form one episode, and an episode is
+    kept only if its total passes CARGO_KEEP_GWH: joining on a low bar keeps a thin unloading day
+    with its own episode, while the total throws out tank accounting and boil-off.
+
+    The published figure is NET of that day's send-out (National Gas nets a terminal's inflow and
+    outflow against each other), so it reads under the cargo itself. "gross" adds back the
+    terminal's typical send-out over those days, taken from the days either side; it is an estimate
+    and the UI says so. There is no ship record in this feed, so an episode is days of unloading,
+    not a count of ships: two cargoes back to back look like one long episode.
+    """
+    cargo = _store.get("cargo") or {}
+    end = None
+    for _k, _n, pid, _o in LNG_TERMINALS:
+        for d in (cargo.get(pid) or {}):
+            gd = _add_days(d, -1)
+            if end is None or gd > end:
+                end = gd
+    if end is None:
+        return []
+    first = _add_days(end, -(CARGO_WINDOW_DAYS - 1))              # oldest gas day on the strip
+    pfirst = _add_days(end, -(2 * CARGO_WINDOW_DAYS - 1))         # oldest of the window before it
+    out = []
+    for key, name, pid, opid in LNG_TERMINALS:
+        ser = {_add_days(d, -1): v / 1e6 for d, v in (cargo.get(pid) or {}).items()}
+        osr = {_add_days(d, -1): v / 1e6 for d, v in (cargo.get(opid) or {}).items()}
+        eps, cur = [], []
+        for d in sorted(ser):
+            if ser[d] > CARGO_JOIN_GWH:
+                if cur and _add_days(cur[-1][0], 1) != d:
+                    eps.append(cur); cur = []
+                cur.append((d, ser[d]))
+            elif cur:
+                eps.append(cur); cur = []
+        if cur:
+            eps.append(cur)
+        eps = [e for e in eps if sum(v for _, v in e) > CARGO_KEEP_GWH]
+        rows, days, prev, win_gwh, prev_gwh = [], 0, 0, 0.0, 0.0
+        for e in eps:
+            net = sum(v for _, v in e)
+            # send-out over the episode, from the days either side of it: a terminal's send-out
+            # swings with the season, so the window's own median would read far too low in winter
+            near = []
+            for k in range(1, 4):
+                for d in (_add_days(e[0][0], -k), _add_days(e[-1][0], k)):
+                    v = osr.get(d)
+                    if v and v > 1:
+                        near.append(v)
+            near.sort()
+            gross = net + (near[len(near) // 2] if near else 0.0) * len(e)
+            if e[-1][0] >= first:
+                days += len(e); win_gwh += net
+                rows.append({"start": e[0][0], "end": e[-1][0], "days": len(e), "gwh": round(net),
+                             "gross": round(gross), "multi": gross >= 1.6 * CARGO_TYPICAL_GWH})
+            elif e[-1][0] >= pfirst:
+                prev += len(e); prev_gwh += net
+        out.append({"key": key, "name": name, "cargoes": rows, "days": days, "prev_days": prev,
+                    "gwh": round(win_gwh), "prev_gwh": round(prev_gwh),
+                    "last_day": rows[-1]["end"] if rows else None})
+    return out
+
+
 def _gie_row(r):
     st, w = _f(r.get("gasInStorage")), _f(r.get("workingGasVolume"))
     inj, wd, cons = _f(r.get("injection")), _f(r.get("withdrawal")), _f(r.get("consumption"))
@@ -546,6 +704,134 @@ def _gie_row(r):
             "cons_twh_y": cons,
             "days": round(st / (cons / 365), 1) if st and cons else None,
             "status": r.get("status")}
+
+
+# ---------------------------------------------------------------- storage forecast
+# Where each country's storage is heading, from its own past winters. For every one of the last
+# FC_SEASONS seasons, the day-by-day change in % full from this same calendar date onward is
+# replayed from today's level: that carries the real shape of a winter, including the spring
+# refill, rather than a straight line. Each analogue's withdrawals (not its injections) are scaled
+# by how this season's drawdown so far compares with the same stretch of that year, so a cold or
+# mild start is carried forward. The median of the analogues is the central line and their spread
+# is the band, padded by FC_PAD * sqrt(days/130) — fitted on a 36 country-year backtest of
+# forecasts made on 12 November, which gives 89-100% coverage of what actually happened at every
+# horizon from a week to five months, a median error of 10 days on the date of the minimum and
+# 9.4 points on its level. Near dates are tight, distant ones are not: that is the honest shape.
+FC_SEASONS = 6                # analogue winters
+FC_HORIZON = 400              # days projected, far enough to pass the spring minimum
+FC_PAD = 10.0                 # band padding in points at 130 days, scaled by sqrt(days/130)
+FC_EMPTY_PCT = 0.5            # at or below this the store is called exhausted
+FC_FLAT_PCT = 1.0             # the bottom is flat for weeks, so the date is the earliest within this
+FC_WATCH_D = 93               # below FC_LOW_PCT inside this many days: watch
+FC_ALARM_D = 31               # ...inside this many days: alarm
+FC_LOW_PCT = 5.0              # the level that raises them
+
+
+def _fc_pct(ser, d):
+    """% full on a date, tolerating a gap of a day or two either side."""
+    for k in range(0, 4):
+        for dd in (_add_days(d, -k), _add_days(d, k)):
+            r = ser.get(dd)
+            if r and _f(r.get("full")) is not None:
+                return _f(r.get("full"))
+    return None
+
+
+def _forecast_country(ser, today):
+    """Project one country's % full forward. None when there is too little history."""
+    now = _fc_pct(ser, today)
+    if now is None:
+        return None
+    t = date.fromisoformat(today)
+    oct1 = date(t.year if t.month >= 10 else t.year - 1, 10, 1).isoformat()
+    sofar = (_fc_pct(ser, oct1) or now) - now          # this season's drawdown so far, in points
+    trajs = []
+    for y in range(t.year - FC_SEASONS, t.year):
+        try:
+            a = t.replace(year=y)
+        except ValueError:                             # 29 Feb
+            a = date(y, 2, 28)
+        base = _fc_pct(ser, a.isoformat())
+        if base is None:
+            continue
+        ao = date(y if t.month >= 10 else y - 1, 10, 1).isoformat()
+        asofar = (_fc_pct(ser, ao) or base) - base
+        pace = max(0.6, min(1.6, sofar / asofar)) if asofar > 1 else 1.0
+        v, prev, out, raw = now, base, [], []
+        for k in range(1, FC_HORIZON + 1):
+            cur = _fc_pct(ser, (a + timedelta(days=k)).isoformat())
+            if cur is None:
+                out.append(v)
+                raw.append(raw[-1] if raw else base)
+                continue
+            inc = cur - prev
+            prev = cur
+            v = max(0.0, v + (inc * pace if inc < 0 else inc))
+            out.append(v)
+            raw.append(cur)
+        if len(out) == FC_HORIZON:
+            # the same winter scaled instead of shifted: today's level times that winter's own
+            # proportion of its starting level. The two agree while today's level is inside the
+            # range of past starts and part company outside it, which is the honest signal that
+            # the projection is being extrapolated rather than interpolated.
+            trajs.append((y, round(pace, 2), out, base, [now * (r / base) for r in raw]))
+    if len(trajs) < 2:
+        return None
+    n = len(trajs)
+    starts = [tr[3] for tr in trajs]
+    r_lo, r_hi = min(starts), max(starts)
+    # Below every start in the record there is nothing to interpolate between: a drawdown measured
+    # in points from a much fuller store, subtracted from today's, runs the projection to the floor
+    # by construction. The central line is left alone - it still backtests best where the model is
+    # inside its range - but the band is widened to span the scaled reading too, so the figure is
+    # shown as uncertain rather than confidently near zero.
+    out_below = now < r_lo - 0.01
+    med = lambda col: (col[n // 2] if n % 2 else (col[n // 2 - 1] + col[n // 2]) / 2)
+    mid, lo, hi, alt = [], [], [], []
+    for k in range(FC_HORIZON):
+        col = sorted(tr[2][k] for tr in trajs)
+        pcol = sorted(tr[4][k] for tr in trajs)
+        pad = FC_PAD * math.sqrt((k + 1) / 130.0)
+        mid.append(round(med(col), 2))
+        alt.append(med(pcol))
+        pool = col + (pcol if out_below else [])
+        lo.append(round(max(0.0, min(pool) - pad), 2))
+        hi.append(round(min(100.0, max(pool) + pad), 2))
+    day = lambda k: _add_days(today, k + 1)
+    vmin = min(mid)
+    # The bottom is flat for weeks, so the date of the minimum is not a single day. Take the
+    # earliest day within FC_FLAT_PCT of it and carry the whole window for the tooltip.
+    flat = [k for k in range(FC_HORIZON) if mid[k] <= vmin + FC_FLAT_PCT]
+    kmin, kmin_last = flat[0], flat[-1]
+    # Storage already filling: the projection only goes up from here, so there is no minimum
+    # ahead to report and the useful number is where the refill gets to.
+    vmax = max(mid)
+    kpk = next(k for k in range(FC_HORIZON) if mid[k] >= vmax - FC_FLAT_PCT)
+    filling = kmin <= 6 and vmax > now + 2
+    ex = next((k for k in range(FC_HORIZON) if mid[k] <= FC_EMPTY_PCT), None)
+    exw = next((k for k in range(FC_HORIZON) if lo[k] <= FC_EMPTY_PCT), None)
+    low = next((k for k in range(FC_HORIZON) if mid[k] < FC_LOW_PCT), None)
+    state = ("alarm" if low is not None and low < FC_ALARM_D else
+             "watch" if low is not None and low < FC_WATCH_D else "ok")
+    pts = [k for k in range(FC_HORIZON) if k < 31 or k % 7 == 0 or k in (kmin, kpk)]
+    return {
+        "filling": filling,
+        "min_pct": mid[kmin], "min_date": day(kmin), "min_date_last": day(kmin_last),
+        "min_flat_days": kmin_last - kmin + 1,
+        "min_lo": lo[kmin], "min_hi": hi[kmin],
+        "peak_pct": mid[kpk], "peak_date": day(kpk),
+        "exhaust": day(ex) if ex is not None else None,
+        "exhaust_worst": day(exw) if exw is not None else None,
+        "low_date": day(low) if low is not None else None,
+        "low_days": low if low is not None else None,
+        "state": state,
+        "out_of_range": out_below,
+        "range_lo": round(r_lo, 1), "range_hi": round(r_hi, 1),
+        "alt_min_pct": round(min(alt), 1),
+        "analogues": [[tr[0], tr[1]] for tr in trajs],
+        "from": today, "now_pct": round(now, 2),
+        "series": [[day(k), mid[k], lo[k], hi[k]] for k in pts],
+    }
 
 
 def _same_day(ser, d, years):
@@ -588,11 +874,33 @@ def _build_eu():
         cd = max(ser)
         row = _gie_row(ser[cd])
         row.update({"code": code, "name": name, "gas_day": cd, "ly": _same_day(ser, cd, 1)})
+        fc = _fc_cached(code, ser, cd)
+        if fc:
+            row["forecast"] = fc
         countries.append(row)
     countries.sort(key=lambda r: -(r["full"] or 0))
     age = (date.fromisoformat(_gas_day_today()) - date.fromisoformat(last)).days
     base.update({"eu": cur, "trend": trend, "countries": countries, "stale": age > 3})
     return base
+
+
+_fc_cache = {}
+
+
+def _fc_cached(code, ser, gas_day):
+    """One forecast per country per gas day: the projection only moves when the data does. The key
+    carries how much history there is as well as the day, so a forecast worked out before the
+    backfill had finished - too little history, so None - is not held until tomorrow."""
+    key = (gas_day, len(ser))
+    hit = _fc_cache.get(code)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        fc = _forecast_country(ser, gas_day)
+    except Exception:
+        fc = None
+    _fc_cache[code] = (key, fc)
+    return fc
 
 
 # ---------------------------------------------------------------- build / loop

@@ -39,6 +39,7 @@ dno_lines.tmp
 dno_lines/
 b6_log.json
 gsp_log.json
+bnd_log.json
 etys_ratings.json
 etys_boundaries.json
 
@@ -55,6 +56,7 @@ rain_threats-*.jsonl
 powercuts-*.jsonl
 powercut_last_ids.json
 gas_probe-*.jsonl
+gas_flows-*.jsonl
 windcuts-*.jsonl
 windcuts_state.json
 windcuts_binstats.json

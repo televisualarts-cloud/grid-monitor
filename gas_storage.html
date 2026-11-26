@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gas storage · GB Energy Monitor</title>
+<!-- GB Energy Monitor · gas storage pop-up · HTML build 261028.2 · change history: CHANGELOG.md -->
+<style>
+:root{
+  --bg:#0a0e14; --bg2:#0e141d; --panel:#111925; --panel2:#0c121b;
+  --line:#1d2836; --line2:#28394d;
+  --ink:#e6edf5; --ink-dim:#8595a8; --ink-faint:#6b7a8f;
+  --ok:#39d98a; --warn:#f5b942; --crit:#ff5c6c;
+  --accent:#3fb6c9; --store:#f5b942; --lower:#f5a06b; --higher:#6fb6ff;
+  --mono:"Cascadia Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --disp:"Space Grotesk",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--disp);-webkit-font-smoothing:antialiased}
+button{font:inherit}
+.bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 20px;background:var(--panel2);border-bottom:1px solid var(--line)}
+.bar h1{margin:0;font-size:19px;font-weight:600}
+.bar .sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+.bar .sp{margin-left:auto}
+.pill{font-family:var(--mono);font-size:12px;padding:6px 13px;border-radius:999px;border:1px solid var(--line2);
+  background:var(--panel);color:var(--ink);cursor:pointer;white-space:nowrap}
+.pill:hover{border-color:var(--accent)}
+.chip{font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid var(--line2);color:var(--ink-dim)}
+.chip.ok{color:var(--ok);border-color:rgba(57,217,138,.45)}
+.chip.bad{color:var(--crit);border-color:rgba(255,92,108,.5)}
+.chip.wait{color:var(--warn);border-color:rgba(245,185,66,.45)}
+.x{width:34px;height:30px;border-radius:7px;border:1px solid var(--line2);background:var(--panel);color:var(--ink-dim);cursor:pointer}
+.wrap{max-width:1320px;margin:0 auto;padding:18px 20px 40px;display:flex;flex-direction:column;gap:18px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:13px;padding:14px 16px}
+.sec-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.sec-title{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)}
+.sec-title .note{text-transform:none;letter-spacing:0;color:var(--ink-faint);margin-left:8px}
+.src{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:10px 0 14px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 14px}
+.kpi .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)}
+.kpi .big{font-family:var(--mono);font-size:24px;margin-top:3px}
+.kpi .sub{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-top:2px;line-height:1.4}
+.flowbox{position:relative;width:100%;aspect-ratio:1300/600;min-height:320px}
+.flowbox iframe{position:absolute;inset:0;width:100%;height:100%;border:0;border-radius:12px;background:var(--bg)}
+.tabs{display:flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden}
+.tabs button{border:0;background:var(--panel);color:var(--ink);font-family:var(--mono);font-size:12px;padding:6px 15px;cursor:pointer}
+.tabs button.on{background:var(--accent);color:#0a0e14}
+.trend{display:grid;grid-template-columns:minmax(0,2.3fr) minmax(0,1fr);gap:16px}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 6px 4px}
+.chart .lg{display:flex;flex-wrap:wrap;gap:14px;padding:0 10px 4px;font-family:var(--mono);font-size:11px;color:var(--ink-dim)}
+.chart svg{width:100%;height:auto;display:block}
+.side{display:flex;flex-direction:column;gap:12px}
+.rows{display:flex;flex-direction:column;gap:8px;font-family:var(--mono);font-size:12px}
+.rows div{display:flex;justify-content:space-between;gap:10px}
+.rows span:first-child{color:var(--ink-dim)}
+.flag{border-radius:10px;padding:11px 14px;font-size:13px;line-height:1.45}
+.flag.low{background:#1c1710;border:1px solid #5a4620;color:#f5c56b}
+.flag.high{background:#0f1a24;border:1px solid #23435e;color:#9cc9f0}
+.nb{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px 24px;font-family:var(--mono);font-size:12px}
+.nb .t{display:flex;justify-content:space-between;gap:8px}
+.track{position:relative;height:8px;border-radius:2px;background:var(--line);margin-top:6px}
+.track .f{height:100%;border-radius:2px;background:var(--accent)}
+.track .ly{position:absolute;top:-4px;width:2px;height:16px;background:var(--ink)}
+.track.est{background:repeating-linear-gradient(135deg,#1d2836 0 4px,#111925 4px 8px)}
+.note-s{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);line-height:1.6;margin-top:10px}
+table.cty{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+table.cty th{font-weight:400;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim);
+  text-align:right;padding:0 8px 8px;border-bottom:1px solid var(--line)}
+table.cty th:first-child,table.cty th.bar{text-align:left}
+table.cty td{padding:7px 8px;border-bottom:1px solid #16202c;text-align:right;white-space:nowrap}
+table.cty td:first-child{text-align:left;font-family:var(--disp);font-size:13px}
+table.cty td.bar{width:46%;text-align:left}
+table.cty td.bar .track{margin-top:0;height:10px;min-width:260px}
+table.cty tr.eu td{padding:14px 8px;font-size:16px}
+table.cty tr.eu td:first-child{font-size:18px;font-weight:600}
+table.cty tr.eu .track{height:30px;border-radius:6px}
+table.cty tr.eu .track .f{border-radius:6px}
+table.cty tr.eu .track .ly{top:-4px;height:38px;width:3px}
+.lower{color:var(--lower)} .higher{color:var(--higher)} .in{color:var(--ok)} .out{color:var(--lower)} .dim{color:var(--ink-dim)}
+.msg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;font-size:14px;line-height:1.5;color:var(--ink-dim)}
+.msg .pill{margin-top:10px}
+.attrib{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);line-height:1.6}
+.modal-back{position:fixed;inset:0;z-index:20;background:rgba(5,8,12,.72);display:none;align-items:center;justify-content:center;padding:16px}
+.modal-back.show{display:flex}
+.modal{width:min(520px,100%);background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:20px 22px}
+.modal h3{margin:0 0 8px;font-size:17px}
+.modal p{font-size:13px;line-height:1.5;color:var(--ink-dim);margin:8px 0}
+.modal label{display:block;font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-top:12px}
+.modal input{width:100%;margin-top:6px;padding:9px 11px;border-radius:8px;border:1px solid var(--line2);background:var(--bg2);color:var(--ink);font-family:var(--mono);font-size:13px}
+.modal a{color:var(--accent);font-size:13px}
+.km-msg{min-height:20px;font-family:var(--mono);font-size:12px;margin-top:10px}
+.km-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.km-btns .link{margin-right:auto;background:none;border:0;color:var(--ink-dim);text-decoration:underline;cursor:pointer;font-size:12px;padding:0}
+.pri{background:var(--accent);color:#0a0e14;border-color:var(--accent)}
+@media (max-width:980px){
+  .trend{grid-template-columns:minmax(0,1fr)}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .nb{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .col-stock{display:none}
+  table.cty td.bar{width:36%}
+  table.cty td.bar .track{min-width:110px}
+}
+@media (max-width:560px){ .wrap{padding:12px 10px 30px} .kpis{grid-template-columns:minmax(0,1fr)} .bar{padding:10px 12px} }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>🛢 Gas storage</h1>
+  <span class="sub">UK sites · LNG tanks · Europe</span>
+  <span class="sp"></span>
+  <span class="chip" id="keyChip">GIE key …</span>
+  <button class="pill" id="keyBtn" type="button">⚙ GIE key</button>
+  <button class="x" id="closeBtn" type="button" title="Close (Esc)" aria-label="Close">✕</button>
+</div>
+
+<main class="wrap">
+  <section class="card" aria-labelledby="ukT">
+    <div class="sec-head"><div class="sec-title" id="ukT">UK · storage and LNG <span class="note">National Gas · live flows, daily site figures</span></div></div>
+    <div class="kpis" id="ukKpis"></div>
+    <div class="flowbox"><iframe id="flowFrame" title="Gas system flow with UK storage" src="/grid_dashboard.html#embed=gasflow"></iframe></div>
+    <div class="note-s">Open "◂ Storage &amp; LNG" on the diagram for each storage site. Site fill is estimated from National Gas daily injection and withdrawal per site, held within published capacities (GIE where the site reports, else Ofgem, January 2025); a range, not a measurement. Rough's storage is paused and its live flow is counted as production.</div>
+  </section>
+
+  <section class="card" aria-labelledby="euT">
+    <div class="sec-head">
+      <div class="sec-title" id="euT">Europe · gas storage</div>
+      <div class="tabs" role="tablist" aria-label="Europe view">
+        <button role="tab" type="button" data-v="trend" class="on" aria-selected="true">Trend</button>
+        <button role="tab" type="button" data-v="cty" aria-selected="false">By country</button>
+      </div>
+      <div class="src" id="euSrc"></div>
+    </div>
+    <div id="euBody"><div class="msg">Loading…</div></div>
+  </section>
+
+  <div class="attrib" id="attrib">Sources: National Gas Transmission operational data (storage stock, per-site flows, LNG tanks, deliverability; public REST API) · GIE AGSI+ (Europe, daily, updated about 19:30 and 23:00 Brussels time) · Ofgem GB gas storage table (capacities, correct as at 20 January 2025).</div>
+</main>
+
+<div class="modal-back" id="keyModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="kmT">
+    <h3 id="kmT">GIE AGSI+ API key</h3>
+    <p>Europe's storage figures come from Gas Infrastructure Europe (GIE). A free account on their site gives a personal API key.</p>
+    <label for="kmIn">API key</label>
+    <input id="kmIn" type="password" autocomplete="off" spellcheck="false">
+    <p>Saved on this computer only, in <code>powercut_keys.json</code> next to the server alongside the electricity operator keys, and sent only to GIE. Leave the box empty to keep the saved key.</p>
+    <a href="https://agsi.gie.eu/" target="_blank" rel="noopener">Get a key at agsi.gie.eu ↗</a>
+    <div class="km-msg" id="kmMsg"></div>
+    <div class="km-btns">
+      <button class="link" id="kmRemove" type="button">Remove saved key</button>
+      <button class="pill" id="kmCancel" type="button">Cancel</button>
+      <button class="pill pri" id="kmSave" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const day=d=>{const t=new Date(String(d)+"T12:00:00Z"); return isNaN(t)?String(d||""):t.getUTCDate()+" "+MON[t.getUTCMonth()];};
+const f1=v=>v==null?"—":Number(v).toFixed(1);
+const sgn=(v,dp)=>v==null?"—":(v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(dp==null?1:dp);
+let D=null, KEY=null, VIEW="trend";
+try{ VIEW=localStorage.getItem("gbGsView")||"trend"; }catch(_){}
+
+/* ---------------- key status ---------------- */
+function keyChip(){
+  const c=$("#keyChip"), k=KEY||{};
+  c.className="chip";
+  if(!k.has_key){ c.textContent="no GIE key"; return; }
+  if(k.status==="ok"){ c.classList.add("ok"); c.textContent="✓ key entered"; }
+  else if(k.status==="bad_key"){ c.classList.add("bad"); c.textContent="key rejected"; }
+  else { c.classList.add("wait"); c.textContent="key saved · not yet checked"; }
+}
+async function loadKey(){
+  try{ KEY=await (await fetch("/api/gie-key",{cache:"no-store"})).json(); }catch(_){ KEY=null; }
+  keyChip();
+}
+function openKey(){
+  $("#kmIn").value=""; $("#kmIn").placeholder=(KEY&&KEY.has_key)?"•••••• saved — leave empty to keep":"paste your GIE API key";
+  const st=KEY&&KEY.has_key?(KEY.status==="ok"?["ok","✓ key entered"]:KEY.status==="bad_key"?["bad","GIE rejected the saved key"]:["wait","key saved, not yet checked"]):["",""];
+  kmMsg(st[0],st[1]); $("#kmRemove").hidden=!(KEY&&KEY.has_key);
+  $("#keyModal").classList.add("show"); setTimeout(()=>$("#kmIn").focus(),30);
+}
+function closeKey(){ $("#keyModal").classList.remove("show"); }
+function kmMsg(cls,t){ const m=$("#kmMsg"); m.textContent=t||""; m.style.color=cls==="ok"?"var(--ok)":cls==="bad"?"var(--crit)":cls==="wait"?"var(--warn)":"var(--ink-dim)"; }
+async function saveKey(val){
+  kmMsg("","checking with GIE…"); $("#kmSave").disabled=true;
+  try{
+    const j=await (await fetch("/api/gie-key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:val})})).json();
+    KEY={has_key:j.has_key,status:j.status}; keyChip();
+    if(!j.has_key){ kmMsg("","key removed"); setTimeout(closeKey,700); }
+    else if(j.status==="ok"){ kmMsg("ok","✓ key entered"); setTimeout(()=>{closeKey(); load(true);},900); }
+    else if(j.status==="bad_key") kmMsg("bad","GIE rejected this key — check it and save again");
+    else kmMsg("wait","saved — GIE didn't answer in time; it will be checked at the next update");
+  }catch(e){ kmMsg("bad","could not save: "+e.message); }
+  $("#kmSave").disabled=false;
+}
+$("#keyBtn").onclick=openKey; $("#kmCancel").onclick=closeKey;
+$("#kmSave").onclick=()=>{ const v=$("#kmIn").value.trim(); if(!v&&KEY&&KEY.has_key){ closeKey(); return; } saveKey(v); };
+$("#kmRemove").onclick=()=>saveKey("");
+$("#kmIn").addEventListener("keydown",e=>{ if(e.key==="Enter") $("#kmSave").click(); });
+$("#keyModal").addEventListener("click",e=>{ if(e.target===$("#keyModal")) closeKey(); });
+
+/* ---------------- UK KPIs ---------------- */
+function renderUK(){
+  const uk=D&&D.uk, dg=D&&D.days_of_gas, box=$("#ukKpis");
+  if(!uk){
+    box.innerHTML=`<div class="kpi" style="grid-column:1/-1"><div class="sub">${D&&D.status==="building"?"Building the storage history — the first start takes about 5 minutes.":"UK storage figures not available"+(D&&D.error?": "+esc(D.error):"")}</div></div>`;
+    return;
+  }
+  const twh=v=>(v/1000).toFixed(2), ln=uk.lng||{};
+  box.innerHTML=
+    `<div class="kpi"><div class="lab">GB storage</div><div class="big" style="color:var(--store)">≈${uk.pct}% full</div>
+       <div class="sub">${twh(uk.stock_gwh)} of ${twh(uk.cap_gwh)} TWh · ${uk.rough_paused?"Rough paused":"incl. Rough"} · gas day ${day(uk.stock_day)}</div></div>`+
+    `<div class="kpi"><div class="lab">Days of gas at today's demand</div><div class="big">${dg?dg.total_days.toFixed(1):"—"}</div>
+       <div class="sub">${dg?`if all other supply stopped, at today's demand ${f1(dg.demand_mcm_d)} mcm/d (storage ${dg.storage_days.toFixed(1)} · LNG tanks ${dg.lng_days.toFixed(1)})`:"needs the live demand figure"}</div></div>`+
+    `<div class="kpi"><div class="lab">LNG tanks · all terminals</div><div class="big" style="color:var(--accent)">${ln.stock_gwh!=null?twh(ln.stock_gwh)+" TWh":"—"}</div>
+       <div class="sub">${ln.days_at_sendout!=null?"~"+Math.round(ln.days_at_sendout)+" d at the "+day(ln.outflow_day)+" send-out · ":""}tankers unloaded ${day(ln.inflow_day)}: ${ln.inflow_gwh!=null?Math.round(ln.inflow_gwh)+" GWh":"—"}${ln.last_cargo?" · last cargo "+day(ln.last_cargo.day):""}</div></div>`+
+    `<div class="kpi"><div class="lab">Storage can deliver</div><div class="big">${f1(uk.deliv_mcm_d)}<span style="font-size:13px;color:var(--ink-dim)"> mcm/d</span></div>
+       <div class="sub">declared maximum withdrawal, all operating sites${dg&&dg.storage_share_of_demand!=null?" · "+Math.round(100*dg.storage_share_of_demand)+"% of today's demand":""}</div></div>`;
+}
+
+/* ---------------- Europe ---------------- */
+function euSrc(eu){
+  const s=$("#euSrc");
+  if(!eu||!eu.eu){ s.textContent="GIE AGSI+"; return; }
+  s.innerHTML="GIE AGSI+ · gas day "+day(eu.eu.gas_day)+(eu.stale?' · <span style="color:var(--warn)">not updated for over 3 days</span>':"")+
+    (eu.status==="error"?' · <span style="color:var(--warn)">last update failed</span>':"");
+}
+function euMessage(eu){
+  if(!KEY||!KEY.has_key) return `<div class="msg">Europe's storage figures need a free GIE AGSI+ key. The UK figures above don't — they come from National Gas.<br><button class="pill" type="button" onclick="openKey()">⚙ Enter GIE key</button></div>`;
+  if(eu&&eu.status==="bad_key"&&!eu.eu) return `<div class="msg">GIE rejected the saved key, so Europe's figures can't be fetched.<br><button class="pill" type="button" onclick="openKey()">⚙ Check GIE key</button></div>`;
+  if(!eu||!eu.eu) return `<div class="msg">${eu&&eu.status==="error"?"Europe storage unavailable: "+esc(eu.error||"GIE did not answer"):"Fetching Europe's storage history from GIE…"}</div>`;
+  return null;
+}
+function chartSVG(trend){
+  const W=900,H=290,L=46,R=12,T=14,B=26, n=trend.length;
+  const X=i=>L+i/(n-1)*(W-L-R), Y=p=>T+(100-p)/100*(H-T-B);
+  const pts=(k)=>trend.map((r,i)=>r[k]==null?null:[X(i),Y(r[k])]);
+  const line=a=>{let d="",pen=false; a.forEach(p=>{ if(!p){pen=false;return;} d+=(pen?"L":"M")+p[0].toFixed(1)+","+p[1].toFixed(1); pen=true; }); return d;};
+  const hi=pts(3), lo=pts(2);
+  let band=""; const idx=trend.map((r,i)=>i).filter(i=>hi[i]&&lo[i]);
+  if(idx.length){ band="M"+idx.map(i=>hi[i][0].toFixed(1)+","+hi[i][1].toFixed(1)).join("L")+"L"+idx.slice().reverse().map(i=>lo[i][0].toFixed(1)+","+lo[i][1].toFixed(1)).join("L")+"Z"; }
+  let g="";
+  [0,25,50,75,100].forEach(p=>{ g+=`<line x1="${L}" x2="${W-R}" y1="${Y(p)}" y2="${Y(p)}" stroke="#1d2836"/><text x="${L-6}" y="${Y(p)+3.5}" fill="#8595a8" font-size="10" text-anchor="end" font-family="var(--mono)">${p}%</text>`; });
+  // 90% target window: any time 1 Oct - 1 Dec (EU rule as amended 2025, with flexibility)
+  let tgt="", runs=[], st=null;
+  trend.forEach((r,i)=>{ const md=r[0].slice(5); const inW=md>="10-01"&&md<="12-01"; if(inW&&st==null) st=i; if((!inW||i===n-1)&&st!=null){ runs.push([st,inW?i:i-1]); st=null; } });
+  runs.forEach(([a,b])=>{ tgt+=`<line x1="${X(a)}" x2="${X(Math.max(b,a+1))}" y1="${Y(90)}" y2="${Y(90)}" stroke="#f5b942" stroke-width="2" stroke-dasharray="2 3"/>`; });
+  if(runs.length){ const lr=runs[runs.length-1]; tgt+=`<text x="${Math.min(X(lr[0]),W-R-110)}" y="${Y(90)-6}" fill="#f5b942" font-size="10" font-family="var(--mono)">90% target window</text>`; }
+  let ticks="";
+  trend.forEach((r,i)=>{ if(r[0].slice(8)==="01") ticks+=`<text x="${X(i)}" y="${H-8}" fill="#8595a8" font-size="10" text-anchor="middle" font-family="var(--mono)">${MON[+r[0].slice(5,7)-1]}</text>`; });
+  const cur=pts(1), lastI=cur.map((p,i)=>p?i:-1).filter(i=>i>=0).pop();
+  const dot=lastI!=null?`<circle cx="${cur[lastI][0]}" cy="${cur[lastI][1]}" r="4.5" fill="#3fb6c9" stroke="#111925" stroke-width="2"/>`:"";
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="EU gas storage percent full over the last 12 months against the previous five years">${g}
+    <path d="${band}" fill="#28394d" opacity=".85"/><path d="${line(pts(4))}" fill="none" stroke="#8595a8" stroke-width="1.5" stroke-dasharray="4 4"/>
+    ${tgt}<path d="${line(cur)}" fill="none" stroke="#3fb6c9" stroke-width="2.5" stroke-linejoin="round"/>${dot}${ticks}</svg>`;
+}
+function trendView(eu){
+  const e=eu.eu, uk=D&&D.uk, dg=D&&D.days_of_gas;
+  const cty=Object.fromEntries((eu.countries||[]).map(c=>[c.code,c]));
+  const yrs=e.band_lo!=null?" (" + (Number(e.gas_day.slice(0,4))-5)+"–"+(Number(e.gas_day.slice(0,4))-1)+")":"";
+  let flag="";
+  if(e.full!=null&&e.band_lo!=null&&e.full<e.band_lo) flag=`<div class="flag low">Below the 5-year range for ${day(e.gas_day)}: lower than any of the previous five years${yrs}.</div>`;
+  else if(e.full!=null&&e.band_hi!=null&&e.full>e.band_hi) flag=`<div class="flag high">Above the 5-year range for ${day(e.gas_day)}: higher than any of the previous five years${yrs}.</div>`;
+  const nbItem=(name,pct,days,ly,est,col)=>`<div><div class="t"><span>${esc(name)}</span><span${est?' style="color:var(--store)"':""}>${pct==null?"—":(est?"≈":"")+Number(pct).toFixed(est?0:1)+"%"} · ${days==null?"—":days}</span></div>
+     <div class="track${est?" est":""}"><div class="f" style="width:${Math.max(0,Math.min(100,pct||0))}%;background:${col||"var(--accent)"}"></div>${ly!=null?`<div class="ly" style="left:${Math.min(ly,99.6)}%"></div>`:""}</div></div>`;
+  const nbs=[nbItem("GB (est.)",uk?uk.pct:null,uk&&uk.avg_use_days!=null?uk.avg_use_days.toFixed(1)+" d*":null,null,true,"var(--store)")]
+    .concat(["NL","BE","FR","DE"].filter(c=>cty[c]).map(c=>nbItem(cty[c].name,cty[c].full,cty[c].days!=null?Math.round(cty[c].days)+" d":null,cty[c].ly)));
+  return `<div class="trend">
+    <div class="chart"><div class="lg"><span><span style="display:inline-block;width:18px;height:3px;background:#3fb6c9;vertical-align:middle"></span> last 12 months</span>
+      <span><span style="display:inline-block;width:18px;border-top:2px dashed #8595a8;vertical-align:middle"></span> 5-year average</span>
+      <span><span style="display:inline-block;width:14px;height:10px;background:#28394d;vertical-align:middle"></span> 5-year range</span></div>${chartSVG(eu.trend||[])}</div>
+    <div class="side">
+      <div class="kpi"><div class="lab">EU storage</div><div class="big" style="color:var(--accent);font-size:34px">${f1(e.full)}%</div>
+        <div class="sub">${f1(e.stock_twh)} of ${f1(e.wgv_twh)} TWh · gas day ${day(e.gas_day)}</div></div>
+      <div class="kpi"><div class="lab">Days of storage at average use</div><div class="big">${e.days!=null?Math.round(e.days)+" days":"—"}</div>
+        <div class="sub">if all inflows stopped, at average daily use (yearly use ÷ 365); fewer in a cold spell</div></div>
+      <div class="kpi rows">
+        <div><span>net flow</span><span class="${e.net_gwh_d>=0?"in":"out"}">${e.net_gwh_d==null?"—":sgn(e.net_gwh_d,0)+" GWh/d "+(e.net_gwh_d>=0?"in":"out")}</span></div>
+        <div><span>same day last year</span><span>${f1(e.ly)}%</span></div>
+        <div><span>5-year range</span><span>${f1(e.band_lo)}–${f1(e.band_hi)}%</span></div>
+        <div><span>5-year average</span><span>${f1(e.band_mean)}%</span></div>
+      </div>${flag}
+    </div></div>
+    <div class="kpi" style="margin-top:14px"><div class="lab" style="margin-bottom:10px">Neighbours · % full · days of storage <span class="dim" style="text-transform:none;letter-spacing:0">▏ = same day last year</span></div><div class="nb">${nbs.join("")}</div>
+    <div class="note-s">Days = stock ÷ average daily use. * GB: National Gas storage stock (Rough paused) ÷ 12-month average NTS demand, which includes exports to Ireland and the continent, so GB's own figure is a little higher. Others: GIE stock ÷ the country's average daily use. The UK figures GIE holds cover only three of the sites, so GB comes from National Gas.</div></div>`;
+}
+function countryView(eu){
+  const uk=D&&D.uk, dg=D&&D.days_of_gas, e=eu.eu;
+  const rows=(eu.countries||[]).map(c=>({...c}));
+  if(uk) rows.push({name:"GB (est.)",full:uk.pct,ly:null,days:uk.avg_use_days,stock_twh:uk.stock_gwh/1000,net_gwh_d:null,gb:true});
+  rows.sort((a,b)=>(b.full||0)-(a.full||0));
+  rows.unshift({name:"Europe (EU)",full:e.full,ly:e.ly,days:e.days,stock_twh:e.stock_twh,net_gwh_d:e.net_gwh_d,eu:true});
+  const tr=r=>{
+    const diff=r.full!=null&&r.ly!=null?r.full-r.ly:null;
+    return `<tr${r.eu?' class="eu"':""}><td>${esc(r.name)}</td>
+      <td class="bar"><div class="track${r.gb?" est":""}"><div class="f" style="width:${Math.max(0,Math.min(100,r.full||0))}%;background:${r.gb?"var(--store)":"var(--accent)"}"></div>${r.ly!=null?`<div class="ly" style="left:${Math.min(r.ly,99.6)}%"></div>`:""}</div></td>
+      <td>${r.full==null?"—":(r.gb?"≈"+Math.round(r.full):Number(r.full).toFixed(1))+"%"}</td>
+      <td class="${diff==null?"dim":diff<0?"lower":"higher"}">${diff==null?"—":sgn(diff)}</td>
+      <td>${r.days==null?"—":(r.gb?Number(r.days).toFixed(1)+" d*":Math.round(r.days)+" d")}</td>
+      <td class="col-stock dim">${r.stock_twh==null?"—":Number(r.stock_twh).toFixed(1)}</td>
+      <td class="${r.net_gwh_d==null?"dim":r.net_gwh_d>=0?"in":"out"}">${r.net_gwh_d==null?"—":sgn(r.net_gwh_d,0)+(r.net_gwh_d>=0?" in":" out")}</td></tr>`;
+  };
+  return `<div style="overflow-x:auto"><table class="cty"><thead><tr><th>Country</th><th class="bar">% full · ▏ same day last year</th><th>% full</th><th>vs last year</th><th>days at avg use</th><th class="col-stock">stock TWh</th><th>net GWh/d</th></tr></thead>
+    <tbody>${rows.map(tr).join("")}</tbody></table></div>
+    <div class="note-s">Days at average use = storage ÷ the country's average daily use, as if every inflow stopped (GB*: National Gas stock ÷ 12-month average NTS demand, incl. exports). Countries that store gas for their neighbours (Austria, Hungary, Czechia, Slovakia) show long cover. GB % is estimated (National Gas stock ÷ site capacities; Rough paused) and has no GIE comparison.</div>`;
+}
+function renderEU(){
+  const eu=D&&D.eu; euSrc(eu);
+  const m=euMessage(eu); if(m){ $("#euBody").innerHTML=m; return; }
+  $("#euBody").innerHTML=VIEW==="cty"?countryView(eu):trendView(eu);
+}
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
+  VIEW=b.dataset.v; try{ localStorage.setItem("gbGsView",VIEW); }catch(_){}
+  document.querySelectorAll(".tabs button").forEach(x=>{ x.classList.toggle("on",x===b); x.setAttribute("aria-selected",x===b); });
+  renderEU();
+});
+document.querySelectorAll(".tabs button").forEach(x=>{ const on=x.dataset.v===VIEW; x.classList.toggle("on",on); x.setAttribute("aria-selected",on); });
+
+/* ---------------- load / refresh ---------------- */
+async function load(reloadFlow){
+  try{ D=await (await fetch("/api/gas-storage",{cache:"no-store"})).json(); }catch(e){ D={status:"error",error:e.message}; }
+  await loadKey();
+  renderUK(); renderEU();
+  if(reloadFlow){ try{ $("#flowFrame").contentWindow.location.reload(); }catch(_){} }
+}
+load(false);
+setInterval(()=>load(false),600000);
+
+/* ---------------- closing (inside the dashboard's overlay) ---------------- */
+const inFrame=window.parent&&window.parent!==window;
+if(!inFrame) $("#closeBtn").hidden=true;
+const askClose=()=>{ if(inFrame) window.parent.postMessage({gbGasStorage:"close"},location.origin); };
+$("#closeBtn").onclick=askClose;
+addEventListener("keydown",e=>{ if(e.key!=="Escape") return; if($("#keyModal").classList.contains("show")) closeKey(); else askClose(); });
+addEventListener("message",e=>{ if(e.origin===location.origin&&e.data&&e.data.gbGasStorage==="refresh") load(false); });
+</script>
+</body>
+</html>

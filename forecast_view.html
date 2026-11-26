@@ -3,7 +3,7 @@
   GB Energy Monitor — Forecast view
   Live plan of the rain engine around your location. Served by grid_server.py at /forecast;
   /forecast?view=radar shows the radar plot only (embedded in the Environment Agency page).
-  Build 261105.15  (version = YYMMDD.N in UT; bump on every change to this file)
+  Build 261123.1  (version = YYMMDD.N in UT; bump on every change to this file)
   Change history: CHANGELOG.md
   Copyright (c) 2026 Andy Smith, G7IZU
 
@@ -97,6 +97,23 @@
   html.embed .grid{display:block}
   html.embed .card{background:transparent;border:0;border-radius:0;padding:0}
   html.embed canvas{display:block;width:100vw;height:100vh;margin:0}   /* drawn at the frame's shape: see fitEmbed() */
+/* What set the alarm off (Andy, 23 Nov). The dashboard's alarm engine writes gbAlarmTrig;
+   every window that is open shows the same one line in its own bar for up to five minutes,
+   flashing while it is new. One line, never wrapped: it is a label, not a report. */
+.hdr-trig{display:none;align-items:center;gap:8px;margin-left:auto;cursor:pointer;flex:0 1 auto;min-width:0;
+  font-family:var(--mono);font-size:11px;padding:5px 12px;border-radius:999px;
+  border:1px solid var(--line2);background:var(--panel);color:var(--ink);letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hdr-trig.on{display:flex}
+.hdr-trig b{font-weight:600}
+.hdr-trig .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.hdr-trig .ago{color:var(--ink-faint);flex:none}
+.hdr-trig.notice{border-color:var(--accent)}
+.hdr-trig.warn{border-color:var(--warn)} .hdr-trig.warn b{color:var(--warn)}
+.hdr-trig.crit{border-color:var(--crit)} .hdr-trig.crit b{color:var(--crit)}
+.hdr-trig.flash{animation:trigFlash 1s ease-in-out 0s 6}
+@keyframes trigFlash{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 2px currentColor}}
+@media (prefers-reduced-motion:reduce){.hdr-trig.flash{animation:none}}
 </style><script>
 /* ---- Light / dark theme (Andy, 5 Nov 2026) — the same block in every page; keep them identical ----
    Dark is the design. Light is made from it: every colour the page uses (stylesheets, inline styles, SVG fill /
@@ -234,6 +251,8 @@ let timer=null, last=null;
 // saved location; else this page's own saved settings. Nothing is hard-coded.
 const Q=new URLSearchParams(location.search);
 const EMBED=Q.get('view')==='radar';
+// on the transmission wall (this page in a frame of the wall's page): plot axis labels 2 pt larger (Andy, 7 Nov)
+const AXW=(()=>{ try{ return window.top!==window && /\/wall\b|grid_wall/.test(window.top.location.pathname) ? 8/3 : 0; }catch(e){ return 0; } })();
 if(EMBED) document.documentElement.classList.add('embed');   // radar only; refresh once a minute
 try{ const s=JSON.parse(localStorage.getItem('forecastView')||'{}');
   ['base','lat','lon','dist','every'].forEach(k=>{ if(s[k]!=null) $(k).value=s[k]; }); }catch(e){}
@@ -262,7 +281,8 @@ async function pullRadar(){
   if(!SIT||!hasLoc()) return;
   const base=$('base').value.replace(/\/$/,'');
   try{ const j=await (await fetch(`${base}/api/radar-grid?lat=${$('lat').value}&lon=${$('lon').value}`,{cache:'no-store'})).json();
-    if(j&&j.b64&&j.ts&&(!SIT.radar_grid||!SIT.radar_grid.ts||j.ts>=SIT.radar_grid.ts)){ SIT.radar_grid=j; draw(); } }catch(e){}
+    if(j&&j.b64&&j.ts&&(!SIT.radar_grid||!SIT.radar_grid.ts||j.ts>=SIT.radar_grid.ts)){ SIT.radar_grid=j; draw();
+      if(ANIM.on&&ANIM.frames&&ANIM.frames.length&&j.ts>ANIM.frames[ANIM.frames.length-1].ts) animLoad(); } }catch(e){}
 }
 function setStatus(t,err){ const s=$('status'); s.textContent=t; s.classList.toggle('err',!!err); }
 function start(){ saveCfg(); if(timer) clearInterval(timer); if(rtimer) clearInterval(rtimer); pull();
@@ -283,41 +303,303 @@ let COND=null; // home conditions (OpenWeather: temp, humidity) for the snow / r
    moves it only when there is too little rain to measure. The key gives the radar motion and the 850 hPa wind side
    by side. Translation only, no growth or decay.
    Clicking the key switches between "moved to now" and the frame as measured. Snow: radar can't tell snow from
-   rain, so the colours follow the wet-bulb temperature at home (OpenWeather temperature and humidity): at or below
-   1 C snow colours (blues), 1-2 C sleet (pinks), above that rain (green to red). */
+   rain, so the colours follow the wet-bulb temperature at home (OpenWeather temperature and humidity) together with
+   the 850 hPa temperature (see precipKind): snow colours (blues), sleet (pinks), rain (green to red). */
 // weather-app convention (Andy, 31 Oct): rain green -> yellow -> red -> magenta, sleet pinks, snow blues to white
 const RR_STEPS=[[0.1,'#1f7a3a'],[0.5,'#2fa84f'],[1,'#5fd35b'],[2,'#c6e23a'],[4,'#f5d33a'],[8,'#f59a2a'],[16,'#e5322d'],[32,'#b3127a']];
 const SL_STEPS=[[0.1,'#7a2f5f'],[0.5,'#a8407f'],[1,'#cf5a9f'],[2,'#e57ab7'],[4,'#f29acb'],[8,'#f8bcdc'],[16,'#fcdcec'],[32,'#ffffff']];
 const SN_STEPS=[[0.1,'#1b3f8f'],[0.5,'#2557c4'],[1,'#3b7be8'],[2,'#5f9cf5'],[4,'#88bbfa'],[8,'#b3d4fd'],[16,'#d9eaff'],[32,'#ffffff']];
-let RG=null, RGK=null, RG_PROJ=true; try{ RG_PROJ=localStorage.getItem('fvRadarProj')!=='0'; }catch(e){}
+/* ---- background map (Andy, 18 Nov) ----------------------------------------
+   A switchable map under the radar. The tiles are fetched by the browser itself, as
+   images, so the request carries a real browser's User-Agent and Referer and uses the
+   browser's own cache — which is what OpenStreetMap's tile policy asks for, and what lets
+   Stadia serve a page on localhost without a key. Nothing is written to disk and nothing
+   is pre-fetched: only the tiles the plot is showing.
+     off      nothing, as before
+     osm      OpenStreetMap standard — no key, works wherever the page is opened from
+     dark     Stadia Alidade Smooth Dark — muted, made to sit under data
+     light    Stadia Alidade Smooth — its light counterpart
+     toner    Stamen Toner Lite (via Stadia) — coast and roads only, no colour to fight
+     sat      Stadia Alidade Satellite — aerial imagery
+   The Stadia four are keyless only while the page is served from localhost; opened from
+   another machine on the LAN they answer 401, and the plot says so and falls back to off. */
+const BG_MAPS=[
+  {k:'off',   lab:'off'},
+  {k:'osm',   lab:'OSM',       url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+   alpha:.50, attr:'© OpenStreetMap contributors', zmax:19},
+  {k:'dark',  lab:'dark',      url:'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png',
+   alpha:.85, attr:'© Stadia Maps · © OpenMapTiles · © OpenStreetMap contributors', zmax:20},
+  {k:'light', lab:'light',     url:'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png',
+   alpha:.55, attr:'© Stadia Maps · © OpenMapTiles · © OpenStreetMap contributors', zmax:20},
+  {k:'toner', lab:'toner',     url:'https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}{r}.png',
+   alpha:.45, attr:'© Stadia Maps · © Stamen Design · © OpenMapTiles · © OpenStreetMap contributors', zmax:20},
+  {k:'sat',   lab:'satellite', url:'https://tiles.stadiamaps.com/tiles/alidade_satellite/{z}/{x}/{y}{r}.jpg',
+   alpha:.80, attr:'© Stadia Maps · © OpenMapTiles · © OpenStreetMap contributors · imagery © Aerial imagery providers', zmax:20}];
+let BG='off'; try{ const v=localStorage.getItem('fvBgMap'); if(BG_MAPS.some(m=>m.k===v)) BG=v; }catch(e){}
+const bgDef=()=>BG_MAPS.find(m=>m.k===BG)||BG_MAPS[0];
+const BG_TILES=new Map();        // url -> Image, for this page's lifetime; the browser caches the bytes
+let BG_FAIL=null, BG_BOX=null;   // the last failure, and the switch's hit box
+function bgTile(u){
+  let im=BG_TILES.get(u);
+  if(!im){ im=new Image(); im.crossOrigin='anonymous'; im.decoding='async';
+    im.onload=()=>{ im._ok=true; draw(); };
+    im.onerror=()=>{ im._bad=true; BG_FAIL=bgDef().k; draw(); };
+    im.src=u; BG_TILES.set(u,im);
+    if(BG_TILES.size>400){ const k=BG_TILES.keys().next().value; BG_TILES.delete(k); } }
+  return im;
+}
+let RG=null, RGK=null, RGW=null, RGWK=null, RG_PROJ=true; try{ RG_PROJ=localStorage.getItem('fvRadarProj')!=='0'; }catch(e){}
+/* Rain-rate scale (Andy, 7 Nov), switchable on the key: "8" = the 8 steps above (each a doubling); "19" = a step
+   every x1.4 (half a doubling); "smooth" = every level the radar has (whole dBZ, 0.15 to ~86 mm/h), coloured
+   continuously between the same anchor colours. The grid comes as whole dBZ (rain_probe enc "dbz"), so nothing is
+   lost on the way; an older server's mm/h x 10 grid still draws. */
+const RG_SCALES=['8','19','smooth'];
+let RG_SCALE='8'; try{ const v=localStorage.getItem('fvRainScale'); if(RG_SCALES.includes(v)) RG_SCALE=v; }catch(e){}
+let RG_SCALEBOX=null;
+const MPmm=dbz=>Math.pow(Math.pow(10,dbz/10)/200,1/1.6);             // Marshall-Palmer, as rain_probe
+const T19=Array.from({length:19},(_,k)=>0.1*Math.pow(Math.SQRT2,k));  // 0.1 ... 51 mm/h
+const hx3=h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+function scaleAnchors(steps){ return steps===RR_STEPS?steps.concat([[64,'#7d0b66']]):steps.concat([[64,steps[steps.length-1][1]]]); }
+function colAt(steps,mm){                                             // [r,g,b] for a rate on the current scale (unthemed)
+  if(RG_SCALE==='8'){ let i=0; while(i+1<steps.length&&mm>=steps[i+1][0]) i++; return hx3(steps[i][1]); }
+  if(RG_SCALE==='19'){ let i=0; while(i+1<T19.length&&mm>=T19[i+1]) i++; mm=T19[i]*1.0001; }
+  const A=scaleAnchors(steps); if(mm<=A[0][0]) return hx3(A[0][1]); if(mm>=A[A.length-1][0]) return hx3(A[A.length-1][1]);
+  for(let i=0;i<A.length-1;i++) if(mm<A[i+1][0]){ const t=Math.log(mm/A[i][0])/Math.log(A[i+1][0]/A[i][0]), a=hx3(A[i][1]), b=hx3(A[i+1][1]); return a.map((x,k)=>Math.round(x+(b[k]-x)*t)); }
+  return hx3(A[A.length-1][1]);
+}
+const themed=c=>{ const s='rgb('+c.join(',')+')', m=window.gbTheme?gbTheme.map(s):s, q=/rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(m); return q?[+q[1],+q[2],+q[3]]:c; };
 let RG_KEYBOX=null;
 function wetBulb(t,rh){ if(t==null||rh==null) return null;   // Stull (2011), degrees C
   return t*Math.atan(0.151977*Math.sqrt(rh+8.313659))+Math.atan(t+rh)-Math.atan(rh-1.676331)+0.00391838*Math.pow(rh,1.5)*Math.atan(0.023101*rh)-4.686035; }
-function precipKind(){ const tw=COND?wetBulb(COND.temp,COND.humidity):null;
-  return {tw, kind: tw==null?'rain':tw<=1?'snow':tw<=2?'sleet':'rain'}; }
+// 850 hPa temperature at home now (Andy, 12 Nov): the Open-Meteo home forecast's hourly row nearest now,
+// within 90 minutes. null when the model hasn't been read or the instance can't serve it.
+function t850Now(){ const hr=((COND||{}).home_fc||{}).hourly||[], now=Date.now()/1000; let v=null, bd=5400;
+  for(const r of hr){ if(r[5]==null) continue; const d=Math.abs(r[0]-now); if(d<bd){ bd=d; v=r[5]; } } return v; }
+/* Snow / sleet / rain. The wet-bulb at home says whether falling snow survives to the ground; the 850 hPa
+   temperature (about 1.5 km up) says whether it is snow where it forms. Both have to be cold: above 0 °C at
+   850 hPa it is rain whatever the surface says, −2 to 0 °C turns snow into sleet, and −5 °C or below is snow
+   as long as the wet-bulb is 2 °C or under. Without an 850 hPa reading the wet-bulb alone decides, as before.
+   Keep in step with grid_dashboard.html (wxPrecipShare). */
+function precipKind(){ const tw=COND?wetBulb(COND.temp,COND.humidity):null, t850=t850Now();
+  let kind = tw==null?'rain' : tw<=1?'snow' : tw<=2?'sleet' : 'rain';
+  if(t850!=null){
+    if(t850>0) kind='rain';
+    else if(t850<=-5){ if(tw!=null&&tw<=2) kind='snow'; }
+    else if(t850>-2&&kind==='snow') kind='sleet';
+  }
+  return {tw, t850, kind}; }
+const rgMM=(rg,byte)=>rg.enc==='dbz'?(byte>=10?MPmm(byte):0):byte/10;    // a grid cell's rain rate
+// The rate at which the radar's echo is more likely hail than rain or snow: 55 dBZ, the same
+// threshold the plot paints white (rain_probe RG_HAIL_DBZ). About 100 mm/h read as rain.
+const HAIL_MMH=MPmm(55);
+const rgHail=(rg,byte)=>rg.enc==='dbz'?byte>=55:byte===255;               // >= 55 dBZ: possible hail
 function rgBuild(rg, steps){   // the grid as an image, one pixel per cell
   const n=rg.n, raw=atob(rg.b64), cv=document.createElement('canvas'); cv.width=n; cv.height=n;
   const x=cv.getContext('2d'), im=x.createImageData(n,n);
-  const rgb=steps.map(s=>{ const c=window.gbTheme?gbTheme.map(s[1]):s[1], m=/rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c);   // the theme's colours, as the key
-    return m?[+m[1],+m[2],+m[3]]:[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)]; });
-  const hc=[255,255,255];                                             // hail stays white in both themes (Andy)
-  for(let k=0;k<n*n;k++){ const byte=raw.charCodeAt(k), mm=byte/10; if(mm<0.1) continue;
-    if(byte===255){ im.data[4*k]=hc[0]; im.data[4*k+1]=hc[1]; im.data[4*k+2]=hc[2]; im.data[4*k+3]=235; continue; }   // >= 55 dBZ: possible hail, white (Andy, 5 Nov)
-    let i=0; while(i+1<steps.length && mm>=steps[i+1][0]) i++;
-    const a=Math.min(.75, .45+.30*Math.min(1, Math.log2(mm/0.1)/8));          // light rain fainter; at most 75 % (Andy)
-    im.data[4*k]=rgb[i][0]; im.data[4*k+1]=rgb[i][1]; im.data[4*k+2]=rgb[i][2]; im.data[4*k+3]=Math.round(a*255); }
+  const lut=new Array(256);                                           // colour and opacity per byte value, in the theme's colours
+  for(let b=0;b<256;b++){ const mm=rgMM(rg,b); if(rgHail(rg,b)){ lut[b]=[255,255,255,235]; continue; }   // hail stays white in both themes (Andy, 5 Nov)
+    if(mm<0.1){ lut[b]=null; continue; } const c=themed(colAt(steps,mm));
+    lut[b]=[c[0],c[1],c[2],Math.round(255*Math.min(.75, .45+.30*Math.min(1, Math.log2(mm/0.1)/8)))]; }   // light rain fainter; at most 75 % (Andy)
+  for(let k=0;k<n*n;k++){ const e=lut[raw.charCodeAt(k)]; if(!e) continue; im.data[4*k]=e[0]; im.data[4*k+1]=e[1]; im.data[4*k+2]=e[2]; im.data[4*k+3]=e[3]; }
   x.putImageData(im,0,0); return cv; }
+/* ---- radar animation (Andy, 15 Nov): the ▶ animate button, top right ----
+   Plays the last 2 / 6 / 12 / 24 h of radar frames (10 min apart; /api/radar-frames, rain_probe.radar_frames: the rain
+   recorder's saved frames where it has them, else RainViewer's last 2 h; the span button cycles, remembered) in place of
+   the live grid, then, when the radar's motion is usable (as for "moved to now": measured from the radar, or the
+   850 hPa wind), carries the newest frame on for AN_PROJ x 10 min along it, marked PROJECTED in amber with a dashed
+   ring: translation only, no growth or decay. Between frames the picture slides along the same motion and cross-fades
+   (blended additively on a layer of its own, so a half-way picture is as strong as a real frame). Each step between
+   frames slides along the drift measured from those two frames (the drift at the time, not now; Andy, 15 Nov). Pause, speed
+   (1x 2x 4x ½x), ■ back to live, and the timeline under them scrubs. The gauges and tracks stay as they are now. */
+const AN_SEC=1.2, AN_PROJ=6, AN_STEP=600, AN_SPANS=[2,6,12,24];
+const AN_END_HOLD=5;   // seconds held on the final frame (the newest, or the end of the projection) before starting again (Andy, 16 Nov)
+let AN_H=2; try{ const v=+localStorage.getItem('fvAnimSpan'); if(AN_SPANS.includes(v)) AN_H=v; }catch(e){}
+const ANIM={on:false, playing:false, frames:null, imgs:null, wimgs:null, key:null, pos:0, speed:1, loading:false, err:null, n:0, km:40, cell:0.5, wn:0, wkm:0, wcell:0, enc:'dbz', wrap:false, drag:false};
+let AN_BTNS=[], AN_TL=null, AN_RAF=0, AN_LAST=0, AN_HOLD=0, AN_DRAWN=0;
+const anLay=document.createElement('canvas'), anLx=anLay.getContext('2d');
+// one frame's two layers (coarse surround under the fine grid) are composed here first: drawn straight onto
+// anLay the fine grid would ADD to the surround under it in the cross-fade's 'lighter' pass
+const anL2=document.createElement('canvas'), an2x=anL2.getContext('2d');
+// The projection's motion: the live view's own, only when it is usable (measured from the radar, or the 850 hPa wind).
+// When the live motion is uncertain the projection is muted, not run on a guess (Andy, 15 Nov), and the panel says why.
+const anMv=rg=>{ const mo=rg&&rg.motion; return RG_PROJ&&mo&&(mo.src==='radar'||mo.src==='steering')&&mo.vx!=null?mo:null; };
+const anWhyNoProj=rg=>{ const mo=rg&&rg.motion; return !RG_PROJ?'projection off: key set to "as measured"'
+  :!mo||mo.vx==null?'no projection: motion unknown':mo.src==='uncertain'?'no projection: motion uncertain':''; };
+const animN=()=>{ const P=(ANIM.frames||[]).length; return P+(P&&anMv(SIT&&SIT.radar_grid)?AN_PROJ:0); };
+async function animLoad(){
+  if(ANIM.loading||!hasLoc()) return; ANIM.loading=true; ANIM.err=null; draw();
+  const base=$('base').value.replace(/\/$/,'');
+  try{ const j=await (await fetch(`${base}/api/radar-frames?lat=${$('lat').value}&lon=${$('lon').value}&hours=${AN_H}`,{cache:'no-store'})).json();
+    if(j&&j.frames&&j.frames.length){ const keep=ANIM.frames&&ANIM.frames.length?ANIM.frames[Math.min(ANIM.frames.length-1,Math.floor(ANIM.pos))].ts:null;
+      ANIM.frames=j.frames.slice().sort((a,b)=>a.ts-b.ts); ANIM.n=j.n; ANIM.km=j.km; ANIM.cell=j.cell_km; ANIM.enc=j.enc||'dbz'; ANIM.key=null;
+      ANIM.wn=j.wide_n||0; ANIM.wkm=j.wide_km||0; ANIM.wcell=j.wide_cell_km||0;   // the coarse surround, when the server sends it
+      if(keep!=null&&!ANIM.playing){ const k=ANIM.frames.findIndex(f=>f.ts>=keep); if(k>=0) ANIM.pos=k; } }
+    else ANIM.err=(j&&j.err)||'no frames'; }
+  catch(e){ ANIM.err=e.message; }
+  ANIM.loading=false; draw();
+}
+function animState(rg){
+  const F=ANIM.frames, P=F.length, mv=anMv(rg), N=P+(mv?AN_PROJ:0), p=Math.max(0,Math.min(N-1,ANIM.pos||0));
+  if(p>=P-1){ const dt=(p-(P-1))*AN_STEP, L=[[P-1, mv?mv.vx*dt/3600:0, mv?mv.vy*dt/3600:0, 1]];
+    return {L, t:F[P-1].ts+dt, proj:p>P-1+1e-3, rel:Math.round(dt/60), mv}; }
+  const k=Math.floor(p), f=p-k, gap=F[k+1].ts-F[k].ts, h=gap/3600, t=F[k].ts+f*gap, rel=Math.round((t-F[P-1].ts)/60);
+  // each step slides along the drift measured between its own two frames (rain_probe._ra_motion), not today's:
+  // "pair" = measured, "near" = borrowed from the pairs either side; none = cross-faded without sliding
+  const dm=RG_PROJ?F[k].mv||null:null, vx=dm?dm.vx:0, vy=dm?dm.vy:0;
+  if(f<1e-3) return {L:[[k,0,0,1]], t:F[k].ts, proj:false, rel:Math.round((F[k].ts-F[P-1].ts)/60), mv, dm};
+  return {L:[[k,vx*h*f,vy*h*f,1-f],[k+1,-vx*h*(1-f),-vy*h*(1-f),f]], t, proj:false, rel, mv, dm};
+}
+function animDraw(cx,cy,R,KM,rg,pk,steps){
+  const F=ANIM.frames, key=pk.kind+'|'+RG_SCALE+'|'+F.length+'|'+F[F.length-1].ts+'|'+(window.gbTheme?gbTheme.get():'');
+  if(ANIM.key!==key){ ANIM.imgs=F.map(f=>rgBuild({n:ANIM.n,enc:ANIM.enc,b64:f.b64},steps));
+    ANIM.wimgs=F.map(f=>(ANIM.wn&&f.b64w)?rgBuild({n:ANIM.wn,enc:ANIM.enc,b64:f.b64w},steps):null); ANIM.key=key; }
+  const st=animState(rg), half=ANIM.km+ANIM.cell/2, halfW=ANIM.wkm+ANIM.wcell/2, s=R/KM;
+  if(anLay.width!==c.width||anLay.height!==c.height){ anLay.width=c.width; anLay.height=c.height; }
+  if(anL2.width!==c.width||anL2.height!==c.height){ anL2.width=c.width; anL2.height=c.height; }
+  anLx.clearRect(0,0,anLay.width,anLay.height); anLx.imageSmoothingEnabled=true;
+  st.L.forEach(([k,ex,ny,a],i)=>{ anLx.globalCompositeOperation=i?'lighter':'source-over'; anLx.globalAlpha=a;
+    const wim=ANIM.wimgs&&ANIM.wimgs[k];
+    if(wim){ an2x.clearRect(0,0,anL2.width,anL2.height); an2x.imageSmoothingEnabled=true;
+      an2x.save(); an2x.clip(rgOutside(cx,cy,R,cx+(ex-half)*s,cy-(ny+half)*s,2*half*s),'evenodd');
+      an2x.drawImage(wim, cx+(ex-halfW)*s, cy-(ny+halfW)*s, 2*halfW*s, 2*halfW*s); an2x.restore();
+      an2x.drawImage(ANIM.imgs[k], cx+(ex-half)*s, cy-(ny+half)*s, 2*half*s, 2*half*s);
+      anLx.drawImage(anL2,0,0); }
+    else anLx.drawImage(ANIM.imgs[k], cx+(ex-half)*s, cy-(ny+half)*s, 2*half*s, 2*half*s); });
+  anLx.globalCompositeOperation='source-over'; anLx.globalAlpha=1;
+  g.save(); g.beginPath(); g.arc(cx,cy,R,0,7); g.clip(); g.drawImage(anLay,0,0); g.restore();
+  if(st.proj){ g.save(); g.setLineDash([10,7]); g.lineWidth=2.5; g.strokeStyle='rgba(245,185,66,.75)'; g.beginPath(); g.arc(cx,cy,R,0,7); g.stroke(); g.restore(); }
+  return {rg, pk, steps, ex:0, ny:0, age_h:0, mv:false, anim:st};
+}
+function animTick(now){
+  AN_RAF=0; if(!ANIM.on||!ANIM.playing) return;
+  const dt=Math.min(.25,Math.max(0,(now-(AN_LAST||now))/1000)); AN_LAST=now;   // never steps backwards
+  if(ANIM.frames&&ANIM.frames.length&&!ANIM.drag){ const P=ANIM.frames.length, N=animN();
+    if(AN_HOLD>0) AN_HOLD-=dt;
+    else if(ANIM.wrap){ ANIM.pos=0; ANIM.wrap=false; AN_HOLD=.6; }
+    else { const prev=ANIM.pos; ANIM.pos+=dt*ANIM.speed/AN_SEC;
+      if(ANIM.pos>=N-1){ ANIM.pos=N-1; AN_HOLD=AN_END_HOLD; ANIM.wrap=true; } } }   // no pause at the current time mid-loop (Andy, 15 Nov); a hold on the final frame (16 Nov)
+  if(now-AN_DRAWN>=33){ AN_DRAWN=now; draw(); }                               // ~30 frames a second
+  AN_RAF=requestAnimationFrame(animTick);
+}
+function animPlay(on){ ANIM.playing=on; AN_LAST=0; if(on&&!AN_RAF) AN_RAF=requestAnimationFrame(animTick); draw(); }
+function animStart(){ ANIM.on=true; ANIM.pos=0; AN_HOLD=0; ANIM.wrap=false; animLoad(); animPlay(true); }
+function animStop(){ ANIM.on=false; ANIM.playing=false; ANIM.drag=false; draw(); }
+function drawAnimCtl(W,H){
+  AN_BTNS=[]; AN_TL=null;
+  const rg=SIT&&SIT.radar_grid; if(!rg||!rg.b64) return;
+  g.save(); g.font='14.6px monospace'; g.textBaseline='middle'; g.textAlign='left';
+  const btn=(x,y,label,on,act,col_)=>{ const w=Math.round(g.measureText(label).width)+16;
+    g.fillStyle=on?'#3fb6c9':'rgba(8,12,18,.85)'; g.fillRect(x,y,w,24); g.strokeStyle=on?'#3fb6c9':'#3a4d63'; g.lineWidth=1; g.strokeRect(x+.5,y+.5,w-1,23);
+    g.fillStyle=on?'#04222b':(col_||'#b9c6d6'); g.fillText(label,x+8,y+12.5); AN_BTNS.push({x,y,w,h:24,act}); return w; };
+  if(!ANIM.on){ const lab='▶ animate radar', w=Math.round(g.measureText(lab).width)+16; btn(W-14-w,12,lab,false,animStart); g.restore(); return; }
+  // buttons: play / pause, speed, one per span (2h 6h 12h 24h, the chosen one lit), live. On a narrow panel the
+  // span buttons take a row of their own.
+  const bw=l=>Math.round(g.measureText(l).width)+16, GAP=6, SP=AN_SPANS.map(h=>h+'h');
+  const row1=bw('❚❚ pause')+bw('8×')+bw('■ live')+2*GAP, rowS=SP.reduce((a,l)=>a+bw(l)+GAP,0)-GAP;
+  const one=row1+GAP+rowS+10<=Math.min(420,W-28), PW=one?row1+GAP+rowS+10:Math.max(row1,rowS)+10;
+  const x0=W-14-PW, y0=12, yS=one?y0:y0+30, dy=one?0:30;
+  const why=ANIM.frames&&ANIM.frames.length&&!anMv(rg)?anWhyNoProj(rg):'';                 // projection muted: say why, under the timeline
+  g.fillStyle='rgba(8,12,18,.82)'; g.fillRect(x0-8,y0-6,PW+16,(ANIM.frames?96:46)+dy+(why?16:0));
+  let x=x0;
+  x+=btn(x,y0,ANIM.playing?'❚❚ pause':'▶ play',ANIM.playing,()=>animPlay(!ANIM.playing))+GAP;
+  x+=btn(x,y0,ANIM.speed===0.5?'½×':ANIM.speed+'×',false,()=>{ ANIM.speed={1:2,2:4,4:8,8:0.5,0.5:1}[ANIM.speed]; })+GAP;
+  btn(x0+PW-bw('■ live'),y0,'■ live',false,animStop);
+  let xs=one?x+GAP+4:x0;
+  AN_SPANS.forEach(h=>{ xs+=btn(xs,yS,h+'h',h===AN_H,()=>{ if(h===AN_H) return; AN_H=h; try{ localStorage.setItem('fvAnimSpan',String(AN_H)); }catch(_){}
+    ANIM.frames=null; ANIM.pos=0; AN_HOLD=0; ANIM.wrap=false; animLoad(); })+GAP; });
+  if(!ANIM.frames||!ANIM.frames.length){ g.fillStyle=ANIM.err?'#ff6b6b':'#8fa0b5'; g.textAlign='left';
+    g.fillText(ANIM.err?'frames unavailable':'loading frames…',x0,y0+dy+42); g.restore(); return; }
+  const P=ANIM.frames.length, N=animN(), st=animState(rg), hm=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
+  g.font='bold 18.3px monospace'; g.fillStyle=st.proj?'#f5b942':'#e6edf5'; g.fillText(hm(st.t),x0,y0+dy+42);
+  g.font='14.6px monospace'; g.fillStyle=st.proj?'#f5b942':'#8fa0b5';
+  const ago=m=>m>-60?m+' min':'−'+Math.floor(-m/60)+' h'+(-m%60?' '+(-m%60)+' min':'');   // long loops read in hours
+  g.fillText(st.proj?'PROJECTED +'+st.rel+' min':(st.rel<0?ago(st.rel):'newest frame')+(ANIM.loading?' · updating…':''),x0+64,y0+dy+42);
+  const tx0=x0+6, tx1=x0+PW-6, ty=y0+dy+68, X=i=>tx0+(tx1-tx0)*i/Math.max(1,N-1);
+  g.strokeStyle='#2c3d4f'; g.lineWidth=3; g.beginPath(); g.moveTo(tx0,ty); g.lineTo(tx1,ty); g.stroke();
+  const tk=N>40?6:1;                                                         // long loops: a tick an hour
+  for(let i=0;i<N;i++){ const pj=i>P-1; if(i<P&&tk>1&&new Date(ANIM.frames[i].ts*1000).getUTCMinutes()!==0) continue;
+    g.fillStyle=pj?'rgba(245,185,66,.8)':'#3fb6c9'; g.fillRect(X(i)-1,ty-(pj?5:7),2,pj?10:14); }
+  g.fillStyle='#e6edf5'; g.beginPath(); g.arc(X(Math.min(N-1,ANIM.pos)),ty,6,0,7); g.fill();
+  g.font='12.3px monospace'; g.fillStyle='#6b7c92'; g.textAlign='left'; g.fillText((ANIM.frames[P-1].ts-ANIM.frames[0].ts>12*3600?new Date(ANIM.frames[0].ts*1000).toLocaleDateString('en-GB',{weekday:'short',timeZone:'Europe/London'})+' ':'')+hm(ANIM.frames[0].ts),tx0-4,ty+15);
+  g.textAlign='right'; g.fillText(N>P?'+'+AN_PROJ*10+' min':hm(ANIM.frames[P-1].ts),tx1+4,ty+15);
+  if(why){ g.textAlign='right'; g.fillText(why,tx1+4,ty+31); }
+  AN_TL={x0:tx0,x1:tx1,y:ty-12,h:24,N};
+  g.restore();
+}
+const anHit=(mx,my)=>AN_BTNS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h);
+const anOnTL=(mx,my)=>AN_TL&&mx>=AN_TL.x0-8&&mx<=AN_TL.x1+8&&my>=AN_TL.y&&my<=AN_TL.y+AN_TL.h;
+function anScrub(mx){ const T=AN_TL; if(!T) return; ANIM.pos=Math.max(0,Math.min(T.N-1,(mx-T.x0)/(T.x1-T.x0)*(T.N-1))); AN_HOLD=0; ANIM.wrap=false; draw(); }
+/* The background map, under everything. Tiles are placed by their own corners in degrees,
+   converted to the plot's flat km space, so Mercator's stretch with latitude is carried
+   exactly rather than assumed away. The zoom is chosen to match the plot's own scale, so
+   only a handful of tiles are ever asked for — the ones on screen, nothing more. */
+function drawBgMap(cx,cy,R,KM){
+  const m=bgDef(); if(m.k==='off'||!hasLoc()) return;
+  const lat=+$('lat').value, lon=+$('lon').value, rad=lat*Math.PI/180;
+  const mpp=KM*1000/R;                                        // metres per canvas pixel
+  const z=Math.max(5,Math.min(m.zmax||18,Math.round(Math.log2(156543.03392*Math.cos(rad)/mpp))));
+  const n2=Math.pow(2,z), kx=111.320*Math.cos(rad);
+  const lon2x=L=>(L+180)/360*n2;
+  const lat2y=P=>{ const r=P*Math.PI/180; return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n2; };
+  const y2lat=Y=>{ const q=Math.PI*(1-2*Y/n2); return 180/Math.PI*Math.atan(Math.sinh(q)); };
+  const dLat=(KM+3)/111.320, dLon=(KM+3)/kx, s=R/KM;
+  const tx0=Math.floor(lon2x(lon-dLon)), tx1=Math.floor(lon2x(lon+dLon));
+  const ty0=Math.floor(lat2y(lat+dLat)), ty1=Math.floor(lat2y(lat-dLat));
+  g.save(); g.beginPath(); g.arc(cx,cy,R,0,7); g.clip();
+  g.globalAlpha=m.alpha; g.imageSmoothingEnabled=true;
+  for(let ty=ty0;ty<=ty1;ty++){
+    if(ty<0||ty>=n2) continue;
+    for(let tx=tx0;tx<=tx1;tx++){
+      const u=m.url.replace('{z}',z).replace('{x}',((tx%n2)+n2)%n2).replace('{y}',ty).replace('{r}','');
+      const im=bgTile(u); if(!im._ok) continue;
+      const ax=cx+((tx/n2*360-180)-lon)*kx*s, bx=cx+(((tx+1)/n2*360-180)-lon)*kx*s;
+      const ay=cy-(y2lat(ty)-lat)*111.320*s, by=cy-(y2lat(ty+1)-lat)*111.320*s;
+      g.drawImage(im, ax, ay, Math.ceil(bx-ax)+1, Math.ceil(by-ay)+1);   // +1: no hairline seams
+    }
+  }
+  g.restore();
+}
+/* The map switch, under the unit pill: one button cycling off → OSM → dark → light → toner → satellite. */
+function drawBgSwitch(x, y){
+  const m=bgDef(), bad=BG_FAIL===m.k&&m.k!=='off';
+  g.save(); g.font='13.3px monospace'; g.textBaseline='middle'; g.textAlign='left';
+  const lab='map: '+m.lab+(bad?' — needs a key here':'')+' ▸', w=Math.round(g.measureText(lab).width)+16;
+  g.fillStyle='rgba(8,12,18,.85)'; g.fillRect(x,y,w,24);
+  g.strokeStyle=bad?'#f5b942':'#3a4d63'; g.lineWidth=1; g.strokeRect(x+.5,y+.5,w-1,23);
+  g.fillStyle=bad?'#f5b942':(m.k==='off'?'#b9c6d6':'#5bd6e0'); g.fillText(lab,x+8,y+12.5);
+  g.restore(); BG_BOX={x,y,w,h:24};
+}
+function bgNext(){
+  const i=BG_MAPS.findIndex(m=>m.k===BG); BG=BG_MAPS[(i+1)%BG_MAPS.length].k;
+  try{ localStorage.setItem('fvBgMap',BG); }catch(e){}
+  BG_FAIL=null; draw();
+}
+/* The circle with the fine grid's own footprint punched out of it (even-odd), so the coarse
+   surround fills only what the fine grid has drifted off: drawn underneath instead, its colour
+   would show through the fine cells, which are deliberately translucent. */
+function rgOutside(cx,cy,R,x,y,w){ const P=new Path2D(); P.arc(cx,cy,R,0,7); P.rect(x,y,w,w); return P; }
 function drawRadarGrid(cx,cy,R,KM){
-  RG_KEYBOX=null;
+  RG_KEYBOX=null; RG_SCALEBOX=null;
   const rg=SIT&&SIT.radar_grid; if(!rg||!rg.b64||!rg.n) return null;
-  const pk=precipKind(), steps=pk.kind==='snow'?SN_STEPS:pk.kind==='sleet'?SL_STEPS:RR_STEPS, key=rg.ts+'|'+pk.kind+'|'+rg.b64.length;
+  const pk=precipKind(), steps=pk.kind==='snow'?SN_STEPS:pk.kind==='sleet'?SL_STEPS:RR_STEPS, key=rg.ts+'|'+pk.kind+'|'+rg.b64.length+'|'+RG_SCALE;
   if(RGK!==key){ RG=rgBuild(rg, steps); RGK=key; }
+  // the coarse surround, drawn under the fine grid so the crescent it vacates as it drifts
+  // shows 2 km cells rather than a straight edge into nothing
+  const wd=rg.wide;
+  if(wd&&wd.b64&&wd.n){ const wkey=rg.ts+'|'+pk.kind+'|'+wd.b64.length+'|'+RG_SCALE;
+    if(RGWK!==wkey){ RGW=rgBuild({n:wd.n,enc:rg.enc,b64:wd.b64}, steps); RGWK=wkey; } }
+  else { RGW=null; RGWK=null; }
+  if(ANIM.on&&ANIM.frames&&ANIM.frames.length) return animDraw(cx,cy,R,KM,rg,pk,steps);
   const mo=rg.motion, age_h=Math.max(0,(Date.now()/1000-rg.ts)/3600);
   const mv=RG_PROJ&&mo&&(mo.src==='radar'||mo.src==='steering')&&mo.vx!=null;   // uncertain motion: shown as measured
   const ex=mv?mo.vx*age_h:0, ny=mv?mo.vy*age_h:0;     // km moved east / north since the frame
   const half=rg.km+rg.cell_km/2, s=R/KM;
   g.save(); g.beginPath(); g.arc(cx,cy,R,0,7); g.clip();
-  g.imageSmoothingEnabled=true; g.drawImage(RG, cx+(ex-half)*s, cy-(ny+half)*s, 2*half*s, 2*half*s);
+  g.imageSmoothingEnabled=true;
+  if(RGW){ const hw=wd.km+wd.cell_km/2;
+    g.save(); g.clip(rgOutside(cx,cy,R,cx+(ex-half)*s,cy-(ny+half)*s,2*half*s),'evenodd');
+    g.drawImage(RGW, cx+(ex-hw)*s, cy-(ny+hw)*s, 2*hw*s, 2*hw*s); g.restore(); }
+  g.drawImage(RG, cx+(ex-half)*s, cy-(ny+half)*s, 2*half*s, 2*half*s);
   g.restore();
   return {rg, pk, steps, ex, ny, age_h, mv};
 }
@@ -331,11 +613,20 @@ function homeNow(){
   if(!SIT) return null;
   const hm=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
   const r5=t=>Math.round(t/300)*300, now=Date.now()/1000, pk=precipKind();
+  CD_FAST=false;
   const noun=pk.kind==='snow'?'snow':pk.kind==='sleet'?'sleet':'rain';
   const band=mm=>mm==null||mm<0.3?0:mm<2?1:mm<5?2:mm<10?3:4;
   const adj=b=>b===4?'Very heavy ':b===3?'Heavy ':b===2?'Moderate ':'';
   const cap=x=>x.charAt(0).toUpperCase()+x.slice(1);
-  const cd=t=>{ const m=Math.round((t-now)/60); return m>0&&m<=60?' · in '+m+' min':''; };   // live countdown (redrawn every 15 s)
+  /* Countdown to the arrival time. Inside ten minutes it runs in minutes and seconds and
+     the page redraws every second — but only when the estimate is firm enough to carry that
+     precision: a measured approach with a window of a quarter of an hour or less, or the
+     minute nowcast. A wind-estimated or wide-window arrival keeps the whole minutes it
+     has earned, redrawn every 15 s as before. */
+  const cd=(t,firm)=>{ const sec=t-now, m=Math.round(sec/60);
+    if(firm&&sec>0&&sec<=600){ CD_FAST=true; const ss=Math.round(sec);
+      return ' · in '+Math.floor(ss/60)+':'+String(ss%60).padStart(2,'0'); }
+    return m>0&&m<=60?' · in '+m+' min':''; };
   const ab=d=>String(d||'').replace(/north/g,'N').replace(/south/g,'S').replace(/east/g,'E').replace(/west/g,'W').replace(/-/g,'');
   const mn=(COND&&COND.minute||[]).filter(m=>m[0]>now-60).sort((a,b)=>a[0]-b[0]);
   const hi=SIT.home_int||{};
@@ -349,75 +640,123 @@ function homeNow(){
   const ep=SIT.approach_episode||{}, th=ep.threat;
   if(th&&th.eta_lo!=null&&th.eta_hi!=null&&!th.too_far){
     const t0=(SIT.ts||now), a=r5(t0+th.eta_lo*60), z=r5(t0+th.eta_hi*60), b=band(th.peak_mm);
-    const when=a<=now?'any minute':(z-a<=900?'~'+hm(r5((a+z)/2)):hm(a)+'–'+hm(z))+cd(a);
-    return {t:cap(adj(b).toLowerCase()+noun)+' '+when, sub:'from '+ab(th.dir)+(th.edge_km!=null?' · '+Math.round(th.edge_km)+' km':'')+' · '+(th.measured?'measured':'wind est.'), lvl:Math.max(1,b)};
+    // the countdown runs to the time actually shown: the middle of a narrow window
+    // (displayed as one ~time), the start of a wide one (displayed as a range)
+    const aR=t0+th.eta_lo*60, zR=t0+th.eta_hi*60, narrow=(z-a)<=900;
+    const when=aR<=now?'any minute':(narrow?'~'+hm(r5((a+z)/2)):hm(a)+'–'+hm(z))+cd(narrow?(aR+zR)/2:aR, !!th.measured&&narrow);
+    return {t:cap(adj(b).toLowerCase()+noun)+' '+when, sub:'from '+ab(th.dir)+(th.edge_km!=null?' · '+dst(th.edge_km):'')+' · '+(th.measured?'measured':'wind est.'), lvl:Math.max(1,b)};
   }
   const on=mn.find(m=>(m[1]||0)>=0.1);
-  if(on) return {t:cap(noun)+' ~'+hm(r5(on[0]))+cd(on[0]), sub:'nowcast', lvl:1};
+  if(on) return {t:cap(noun)+' ~'+hm(r5(on[0]))+cd(on[0], true), sub:'nowcast', lvl:1};
   const f15=((COND&&COND.home_fc&&COND.home_fc.m15)||[]).find(m=>m[0]>now&&m[0]<=now+3*3600&&(m[1]||0)>=0.3);
   if(f15) return {t:cap(noun)+' possible '+hm(r5(f15[0]-900)), sub:'model', lvl:0};
   return {t:'Dry next 3 h', sub:'radar · gauges · model', lvl:-1};
 }
+/* set by homeNow() when a seconds countdown is on screen: the 1 s redraw below runs only then */
+let CD_FAST=false, HN_LAST=null;
 function drawHomeNow(W, maxW){
-  const h=homeNow(); if(!h) return;
+  const h=homeNow(); HN_LAST=h; if(!h) return 6;
   const hl=SIT&&SIT.radar_grid&&SIT.radar_grid.hail;
-  if(hl&&hl.n){ h.t+=' · hail nearby'; h.sub+=' · hail '+Math.round(hl.near_km)+' km '+abbr(hl.bearing); h.lvl=Math.max(h.lvl,3); }
+  if(hl&&hl.n){ h.t+=' · hail nearby'; h.sub+=' · hail '+dst(hl.near_km)+' '+abbr(hl.bearing); h.lvl=Math.max(h.lvl,3); }
   const x0=14, y0=12, col=h.lvl>=3?'#ff6b6b':h.lvl===2?'#f5b942':h.lvl>=0?'#5bd6e0':'#8fa0b5';
   g.save(); g.textAlign='left'; g.textBaseline='top';
   // wrap the main line at its natural breaks to the room beside the radar circle
-  g.font='bold 17px monospace';
+  g.font='bold 18.3px monospace';
   const words=h.t.split(/(?<= ·| —| here now| from the [a-z-]+)(?= )/), L=[]; let cur='';
   words.forEach(wd=>{ const c=(cur+wd); if(cur&&g.measureText(c.trim()).width>maxW){ L.push(cur.trim()); cur=wd; } else cur=c; }); if(cur.trim()) L.push(cur.trim()); for(let i=0;i<L.length;i++) L[i]=L[i].replace(/ [·—]$/,'');
-  const w1=Math.max(...L.map(l=>g.measureText(l).width)); g.font='12px monospace'; const w2=g.measureText(h.sub).width;
+  const w1=Math.max(...L.map(l=>g.measureText(l).width)); g.font='13.3px monospace'; const w2=g.measureText(h.sub).width;
   g.fillStyle='rgba(8,12,18,.78)'; g.fillRect(x0-6, y0-6, Math.min(W-x0, Math.max(w1,w2)+14), 22*L.length+24);
-  g.font='bold 17px monospace'; g.fillStyle=col; L.forEach((l,i)=>g.fillText(l, x0, y0+22*i));
-  g.font='12px monospace'; g.fillStyle='#8fa0b5'; g.fillText(h.sub, x0, y0+22*L.length+1);
+  g.font='bold 18.3px monospace'; g.fillStyle=col; L.forEach((l,i)=>g.fillText(l, x0, y0+22*i));
+  g.font='13.3px monospace'; g.fillStyle='#8fa0b5'; g.fillText(h.sub, x0, y0+22*L.length+1);
+  g.restore();
+  return y0-6 + 22*L.length+24;
+}
+/* The mph / km/h switch, under the nowcast box in the top-left corner. Drawn in the
+   embedded radar-only view too, since that is where it is mostly used. */
+let U_BTNS=[];
+function drawSpdSwitch(x, y){
+  U_BTNS=[];
+  g.save(); g.font='14.6px monospace'; g.textBaseline='middle'; g.textAlign='left';
+  let cx=x;
+  for(const u of ['mph','kmh']){
+    const lab=u==='kmh'?'km/h':'mph', on=SPD_U===u, w=Math.round(g.measureText(lab).width)+16;
+    g.fillStyle=on?'#3fb6c9':'rgba(8,12,18,.85)'; g.fillRect(cx,y,w,24);
+    g.strokeStyle=on?'#3fb6c9':'#3a4d63'; g.lineWidth=1; g.strokeRect(cx+.5,y+.5,w-1,23);
+    g.fillStyle=on?'#04222b':'#b9c6d6'; g.fillText(lab,cx+8,y+12.5);
+    U_BTNS.push({x:cx,y,w,h:24,u}); cx+=w+4;
+  }
   g.restore();
 }
+const uHit=(mx,my)=>U_BTNS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h);
 function drawRadarKey(info, W, H){
   if(!info) return;
   const {rg, pk, steps, ex, ny, age_h, mv}=info, x0=14, y0=H-40, mo=rg.motion, sw=rg.steer;
-  g.font='13.3px monospace'; g.textAlign='left'; g.fillStyle='#8fa0b5';     // 1 pt larger (Andy, 5 Nov)
+  g.font='14.6px monospace'; g.textAlign='left'; g.fillStyle='#8fa0b5';     // 2 pt larger than it began (Andy, 5 and 18 Nov)
   const kind=pk.kind==='snow'?'snow':pk.kind==='sleet'?'sleet / mixed':'rain';
   const t=new Date(rg.ts*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
   const d=Math.hypot(ex,ny), dir=Math.round((Math.atan2(ex,ny)*180/Math.PI+360)%360);
   const hm=s=>new Date(s*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
   const pub=rg.pub?` (pub ${hm(rg.pub)})`:'', ageM=Math.round(age_h*60);
-  const l1h=`radar ${t}${pub}`, l1=l1h+' · '+(mv?`moved to now: ${d.toFixed(1)} km → ${dir}° (${mo.src==='radar'?'radar':'850 hPa'})`
+  let l1h=`radar ${t}${pub}`, l1=l1h+' · '+(mv?`moved to now: ${dst(d,1)} → ${dir}° (${mo.src==='radar'?'radar':'850 hPa'})`
     :mo&&!RG_PROJ?`as measured (click to move)`
     :mo&&mo.src==='uncertain'?`as measured: motion uncertain`
     :`motion unknown`);
+  if(info.anim){ const A=info.anim; l1h=`radar ${hm(A.t)}`;
+    l1=l1h+' · '+(A.proj?`projected +${A.rel} min: newest frame moved on at ${spd(Math.hypot(A.mv.vx,A.mv.vy))} → ${Math.round((Math.atan2(A.mv.vx,A.mv.vy)*180/Math.PI+360)%360)}°`
+      :`animation · `+(A.rel<=-60?`−${Math.floor(-A.rel/60)} h${-A.rel%60?' '+(-A.rel%60)+' min':''}`:A.rel<0?`${A.rel} min`:`newest frame`)
+       +(A.dm?` · drift then ${A.dm.src==='near'?'~':''}${spd(Math.hypot(A.dm.vx,A.dm.vy))} → ${Math.round((Math.atan2(A.dm.vx,A.dm.vy)*180/Math.PI+360)%360)}°`:A.rel<0?' · drift then not measured':'')); }   // ~ = borrowed from the frames either side
   // the radar's own motion and the 850 hPa wind side by side
-  const vec=(vx,vy)=>`${Math.hypot(vx,vy).toFixed(0)} km/h → ${Math.round((Math.atan2(vx,vy)*180/Math.PI+360)%360)}°`;
+  const vec=(vx,vy)=>`${spd(Math.hypot(vx,vy))} → ${Math.round((Math.atan2(vx,vy)*180/Math.PI+360)%360)}°`;
   const p2=[mo&&mo.src!=='steering'&&mo.vx!=null?`radar ${vec(mo.vx,mo.vy)}`:'',
-    sw?`850 hPa ${sw.kmh.toFixed(0)} km/h → ${sw.to_deg}°`:''].filter(Boolean), l2=p2.join(' · ');
+    sw?`850 hPa ${spd(sw.kmh)} → ${sw.to_deg}°`:''].filter(Boolean), l2=p2.join(' · ');
   // wrap at the " · " breaks to the room left of the rain-rate box when it sits beside the key (narrow panels)
   const mb=(!MH_HIDDEN&&MH_BOX&&MH_BOX.y<y0+32&&MH_BOX.x>x0+120)?MH_BOX.x:W, maxW=mb-x0-14;
   const wrap=parts=>{ const out=[]; let cur='';
-    parts=parts.flatMap(q=>g.measureText(q).width>maxW&&q.includes(': ')?[q.slice(0,q.indexOf(': ')+1), q.slice(q.indexOf(': ')+2)]:[q]);   // a part too long on its own: break after its colon
-    parts.forEach(q=>{ const c=cur?cur+' · '+q:q; if(cur&&g.measureText(c).width>maxW){ out.push(cur); cur=q; } else cur=c; }); if(cur) out.push(cur); return out; };
+    const flush=()=>{ if(cur){ out.push(cur); cur=''; } };
+    const push=q=>{ const t=cur?cur+' · '+q:q; if(cur&&g.measureText(t).width>maxW){ out.push(cur); cur=q; } else cur=t; };
+    parts.flatMap(q=>g.measureText(q).width>maxW&&q.includes(': ')?[q.slice(0,q.indexOf(': ')+1), q.slice(q.indexOf(': ')+2)]:[q])   // a part too long on its own: break after its colon
+      .forEach(q=>{
+        if(g.measureText(q).width<=maxW){ push(q); return; }
+        flush();                                        // nothing to break on: fill by words
+        let w=''; q.split(' ').forEach(word=>{ const t=w?w+' '+word:word;
+          if(w&&g.measureText(t).width>maxW){ out.push(w); w=word; } else w=t; });
+        if(w) cur=w;
+      });
+    flush(); return out; };
   // the colour scale: narrower swatches if needed; its units label on its own line when it won't fit beside it
   const HL=rg.hail&&rg.hail.n?1:0, NS=steps.length+HL;               // possible hail in the frame: one more swatch
-  const bw=Math.max(22,Math.min(36,Math.floor(maxW/NS))), unit=`mm/h · ${kind}`+(pk.tw!=null?` (wet-bulb ${pk.tw.toFixed(1)} °C)`:'');
-  const unitRow=NS*bw+6+g.measureText(unit).width<=maxW;
-  const lines=wrap(p2).concat(wrap([l1h, l1.slice(l1h.length+3)]), unitRow?[]:[unit]), LH=18, top=y0-8-LH*(lines.length-1)-16;
-  { const bwid=Math.min(maxW+12, Math.max(...lines.map(l=>g.measureText(l).width), NS*bw+150)+12);
+  const SCLW=g.measureText(`scale: ${RG_SCALE==='smooth'?'smooth':RG_SCALE+' steps'} ▸`).width+12;
+  // the swatches give up width before the scale switch does, so the switch always has its place
+  const bw=Math.max(18,Math.min(36,Math.floor((maxW-SCLW-14)/NS))), unit=`mm/h · ${kind}`+(pk.tw!=null?` (wet-bulb ${pk.tw.toFixed(1)} °C${pk.t850!=null?`, 850 hPa ${pk.t850>0?'+':''}${pk.t850.toFixed(1)} °C`:''})`:'');
+  const SCL=`scale: ${RG_SCALE==='smooth'?'smooth':RG_SCALE+' steps'} ▸`, sclW=SCLW;
+  const unitRow=NS*bw+6+g.measureText(unit).width+10+sclW<=maxW;
+  const bgm=bgDef(), bgAttr=(bgm.k!=='off'&&BG_FAIL!==bgm.k)?wrap(bgm.attr.split(' · ')):[];   // the map's credit, never hidden
+  const lines=wrap(p2).concat(wrap([l1h, l1.slice(l1h.length+3)]), unitRow?[]:wrap(unit.split(' · ')), bgAttr), LH=18, top=y0-8-LH*(lines.length-1)-16;
+  { const bwid=Math.min(Math.max(maxW+12, NS*bw+sclW+24), Math.max(...lines.map(l=>g.measureText(l).width), NS*bw+150, NS*bw+6+(unitRow?g.measureText(unit).width+10:0)+sclW+4)+12);
     g.fillStyle='rgba(8,12,18,.78)'; g.fillRect(x0-6, top, bwid, y0+32-top); g.fillStyle='#8fa0b5'; }   // dark backing: the text crosses the rings
   lines.forEach((l,i)=>g.fillText(l, x0, y0-8-LH*(lines.length-1-i)));
-  steps.forEach((st,i)=>{ g.globalAlpha=.75; g.fillStyle=st[1]; g.fillRect(x0+i*bw, y0, bw-2, 10); g.globalAlpha=1;
+  const KW=steps.length*bw-2, rgbs=c=>'rgb('+c.join(',')+')';
+  if(RG_SCALE==='8') steps.forEach((st,i)=>{ g.globalAlpha=.75; g.fillStyle=st[1]; g.fillRect(x0+i*bw, y0, bw-2, 10); g.globalAlpha=1;
     if(bw>=30||i%2===0||i===steps.length-1){ g.fillStyle='#8fa0b5'; g.fillText(i===steps.length-1?st[0]+'+':String(st[0]), x0+i*bw, y0+26); } });   // narrow swatches: every other number
+  else if(RG_SCALE==='19'){ const w=(KW+2)/T19.length; g.globalAlpha=.75; T19.forEach((v,i)=>{ g.fillStyle=rgbs(colAt(steps,v*1.0001)); g.fillRect(x0+i*w, y0, Math.max(1,w-1), 10); }); g.globalAlpha=1;
+    g.fillStyle='#8fa0b5'; [[0,'0.1'],[4,'0.4'],[8,'1.6'],[12,'6.4'],[16,'26'],[18,'51+']].forEach(([i,t])=>{ if(i<18||w*3>=g.measureText(t).width) g.fillText(t, x0+i*w, y0+26); }); }
+  else { const lo=0.15, hi=86; g.globalAlpha=.75; for(let px=0;px<KW;px++){ g.fillStyle=rgbs(colAt(steps,lo*Math.pow(hi/lo,px/KW))); g.fillRect(x0+px, y0, 1.3, 10); } g.globalAlpha=1;
+    g.fillStyle='#8fa0b5'; [[0.15,'0.15'],[1,'1'],[4,'4'],[16,'16'],[64,'64']].forEach(([v,t])=>g.fillText(t, x0+Math.log(v/lo)/Math.log(hi/lo)*KW-(v===0.15?0:g.measureText(t).width/2), y0+26)); }
   if(HL){ const hx=x0+steps.length*bw, wp=document.createElement('canvas'); wp.width=wp.height=1;   // white swatch drawn as an image:
     wp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([255,255,255,255]),1,1),0,0);   // the theme leaves it white
     g.drawImage(wp, hx, y0, bw-2, 10); g.strokeStyle='#8fa0b5'; g.lineWidth=1; g.strokeRect(hx+.5, y0+.5, bw-3, 9);
     g.fillStyle='#8fa0b5'; g.fillText('hail?', hx, y0+26); }
   if(unitRow) g.fillText(unit, x0+NS*bw+6, y0+10);
+  { const sx=Math.min(unitRow?x0+NS*bw+6+g.measureText(unit).width+10:x0+NS*bw+6, W-6-sclW), sy=y0-2;   // the scale switch
+    g.strokeStyle='#3a4d63'; g.lineWidth=1; g.strokeRect(sx+.5, sy+.5, sclW, 15); g.fillStyle='#b9c6d6'; g.fillText(SCL, sx+6, sy+12);
+    RG_SCALEBOX={x:sx, y:sy-3, w:sclW+2, h:21}; }
   RG_KEYBOX={x:x0, y:top, w:Math.max(...lines.map(l=>g.measureText(l).width), steps.length*bw+200), h:y0+32-top};
 }
 /* ---- highest rain rate in the plot: bar plot, bottom right (SIT.max_hist, from rain_probe.maxh_public) ----
    Each bar is the highest rate in its time slot, seen by radar anywhere within the 40 km plot and / or by any
    physical EA gauge on it (sea net points are radar / model proxies, so not counted). 1 h: 5-minute bars,
-   6 h: 15-minute, 24 h: 1-hour. Log scale like the key (0.1 to 32+ mm/h), coloured with the radar key's
-   colours. No bar = no data for that slot; a short grey tick = data, but dry. Choices remembered. */
+   6 h: 15-minute, 24 h: 1-hour. Log scale 0.1 to 64 mm/h (stretched to the next doubling when a bar is higher), coloured with the radar
+   key's colours on its chosen scale. No bar = no data for that slot; a short grey tick = data, but dry. Choices remembered. */
 const MH_SPANS={'1h':[3600,300],'6h':[21600,900],'24h':[86400,3600]};
 let MH_SPAN='6h', MH_SRC='both'; try{ MH_SPAN=localStorage.getItem('fvMhSpan')||'6h'; MH_SRC=localStorage.getItem('fvMhSrc')||'both'; }catch(e){}
 if(!MH_SPANS[MH_SPAN]) MH_SPAN='6h'; if(!['radar','gauge','both'].includes(MH_SRC)) MH_SRC='both';
@@ -432,12 +771,12 @@ function drawMaxHist(W,H,steps){
   MH_BTNS=[]; MH_BARS=[]; MH_BOX=null;
   const mh=SIT&&SIT.max_hist; if(!mh) return;
   if(MH_HIDDEN){                                   // collapsed to a tab, bottom right: click to show
-    g.save(); g.font='12px monospace'; const lab='▸ rate plot', tw=g.measureText(lab).width+16, th=22, tx=W-tw-12, ty=H-th-12;
+    g.save(); g.font='13.3px monospace'; const lab='▸ rate plot', tw=g.measureText(lab).width+16, th=22, tx=W-tw-12, ty=H-th-12;
     g.fillStyle='rgba(11,16,22,.88)'; g.strokeStyle='#2c3d4f'; g.beginPath(); g.roundRect?g.roundRect(tx,ty,tw,th,5):g.rect(tx,ty,tw,th); g.fill(); g.stroke();
     g.fillStyle='#8fa0b5'; g.textAlign='left'; g.textBaseline='middle'; g.fillText(lab,tx+8,ty+th/2+1); g.restore();
     MH_BTNS.push({x:tx,y:ty,w:tw,h:th,act:()=>{ MH_HIDDEN=false; try{ localStorage.setItem('fvMhHidden','0'); }catch(e){} }});
     return; }
-  const bw=Math.round(Math.min(380,Math.max(270,W*0.38))), bh=182;
+  const bw=Math.round(Math.min(400,Math.max(300,W*0.38)))+Math.round(AXW*4), bh=186+Math.round(AXW*2);   // 1 pt larger text: the chip row and the axis need the room
   let x0=W-bw-12, y0=H-bh-12; const pos=MH_DRAG?MH_DRAG.pos:mhPosGet(W,H);
   if(pos){ x0=Math.round(pos[0]*W); y0=Math.round(pos[1]*H); }
   x0=Math.max(4,Math.min(W-bw-4,x0)); y0=Math.max(4,Math.min(H-bh-4,y0));
@@ -445,14 +784,14 @@ function drawMaxHist(W,H,steps){
   g.save();
   g.fillStyle='rgba(11,16,22,.88)'; g.strokeStyle='#22303f'; g.lineWidth=1;
   g.beginPath(); g.roundRect?g.roundRect(x0,y0,bw,bh,8):g.rect(x0,y0,bw,bh); g.fill(); g.stroke();
-  g.font='13px monospace'; g.textAlign='left'; g.textBaseline='alphabetic'; g.fillStyle='#8fa0b5';
+  g.font='14.3px monospace'; g.textAlign='left'; g.textBaseline='alphabetic'; g.fillStyle='#8fa0b5';
   g.fillText('max rain rate in plot', x0+10, y0+19);
   g.fillStyle='#566277'; g.fillText('⠿', x0+bw-48, y0+19);           // drag grip
-  g.font='14px monospace'; g.fillStyle='#8fa0b5'; g.textAlign='center'; g.fillText('✕', x0+bw-16, y0+19); g.textAlign='left';
+  g.font='15.3px monospace'; g.fillStyle='#8fa0b5'; g.textAlign='center'; g.fillText('✕', x0+bw-16, y0+19); g.textAlign='left';
   MH_BTNS.push({x:x0+bw-28,y:y0+4,w:24,h:22,act:()=>{ MH_HIDDEN=true; try{ localStorage.setItem('fvMhHidden','1'); }catch(e){} }});
   // chips: span, then source
   let cx=x0+10; const cy=y0+28, ch=20;
-  const chip=(lab,on,act)=>{ g.font='12px monospace'; const w=g.measureText(lab).width+12;
+  const chip=(lab,on,act)=>{ g.font='13.3px monospace'; const w=g.measureText(lab).width+12;
     g.fillStyle=on?'#3fb6c9':'#0f1620'; g.strokeStyle=on?'#3fb6c9':'#2c3d4f'; g.beginPath(); g.roundRect?g.roundRect(cx,cy,w,ch,4):g.rect(cx,cy,w,ch); g.fill(); g.stroke();
     g.fillStyle=on?'#04222b':'#8fa0b5'; g.fillText(lab,cx+6,cy+14); MH_BTNS.push({x:cx,y:cy,w,h:ch,act}); cx+=w+4; };
   ['1h','6h','24h'].forEach(k=>chip(k,MH_SPAN===k,()=>{ MH_SPAN=k; try{ localStorage.setItem('fvMhSpan',k); }catch(e){} }));
@@ -465,50 +804,130 @@ function drawMaxHist(W,H,steps){
     for(let i=a;i<=b;i++){ if(t0+dur<=tS+i*slot) continue; if(val[i]==null||mm>val[i]){ val[i]=mm; src[i]=lab; } } };
   if(MH_SRC!=='gauge') (mh.radar||[]).forEach(r=>{ if(r[0]+(mh.radar_s||600)>tS) put(r[0],mh.radar_s||600,r[1],'radar'); });
   if(MH_SRC!=='radar') (mh.gauge||[]).forEach(r=>{ if(r[0]+(mh.gauge_s||300)>tS) put(r[0],mh.gauge_s||300,r[1],r[2]||'gauge'); });
-  // plot area + log scale 0.1 .. 64 mm/h
-  const L=x0+36, R=x0+bw-10, T=y0+58, B=y0+bh-24, pw=R-L, ph=B-T;
-  const Y=v=>B-Math.max(0,Math.min(1,Math.log2(Math.max(v,0.1)/0.1)/Math.log2(640)))*ph;
-  g.font='11px monospace'; g.textAlign='right'; g.textBaseline='middle';
-  [1,4,16].forEach(v=>{ const y=Y(v); g.strokeStyle='rgba(90,110,140,.22)'; g.beginPath(); g.moveTo(L,y); g.lineTo(R,y); g.stroke(); g.fillStyle='#6b7c92'; g.fillText(String(v),L-5,y); });
+  // plot area + linear scale (Andy, 8 Nov; was log): 0 .. 32 mm/h, to the next doubling when a bar is higher (up to 512), 4 grid steps
+  const L=x0+36+Math.round(AXW*3), R=x0+bw-10, T=y0+58, B=y0+bh-24-Math.round(AXW), pw=R-L, ph=B-T;
+  const vmax=Math.max(0,...val.filter(v=>v!=null)); let top=32; while(top<vmax&&top<512) top*=2;
+  const Y=v=>B-Math.max(0,Math.min(1,v/top))*ph, yBar=v=>Math.min(Y(v),B-1.5);   // any rain at least 1.5 px
+  g.font=(12.3+AXW)+'px monospace'; g.textAlign='right'; g.textBaseline='middle';
+  [1,2,3,4].map(k=>k*top/4).forEach(v=>{ const y=Y(v); g.strokeStyle='rgba(90,110,140,.22)'; g.beginPath(); g.moveTo(L,y); g.lineTo(R,y); g.stroke(); g.fillStyle='#6b7c92'; g.fillText(String(v),L-5,y); });
   g.save(); g.translate(x0+9,(T+B)/2); g.rotate(-Math.PI/2); g.textAlign='center'; g.fillStyle='#566277'; g.fillText('mm/h',0,0); g.restore();
   g.strokeStyle='#2c3d4f'; g.beginPath(); g.moveTo(L,B+.5); g.lineTo(R,B+.5); g.stroke();
   const sw=pw/n, gap=Math.min(2,sw*0.2);
-  const colOf=mm=>{ let i=0; while(i+1<steps.length&&mm>=steps[i+1][0]) i++; return steps[i][1]; };
+  const colOf=mm=>'rgb('+colAt(steps,mm).join(',')+')';   // the radar key's colours, on its chosen scale
   for(let i=0;i<n;i++){ const x=L+i*sw+gap/2, w=sw-gap, v=val[i]; if(v==null) continue;
     const t0=tS+i*slot, f=t=>new Date(t*1000).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/London'});
     if(v<0.1){ g.fillStyle='#3a4a5c'; g.fillRect(x,B-2,w,2); }
-    else { g.fillStyle=colOf(v); g.fillRect(x,Y(v),w,B-Y(v)); }
-    MH_BARS.push({x:L+i*sw,y:T,w:sw,h:ph+2,html:`<b>${f(t0)}–${f(t0+slot)}</b><br>`+(v<0.1?'dry':`${v.toFixed(v<10?1:0)} mm/h`)+` · ${src[i]==='radar'?'radar (anywhere in the plot)':'gauge: '+src[i]}`}); }
+    else { g.fillStyle=colOf(v); g.fillRect(x,yBar(v),w,B-yBar(v));
+      // above the hail threshold the echo is more likely hail than rain or snow: that part
+      // of the bar goes white, as the radar plot paints a hail cell
+      if(v>HAIL_MMH){ const yb=yBar(v), yh=Math.min(Y(HAIL_MMH),B);
+        if(yh>yb){ g.fillStyle='rgba(255,255,255,.92)'; g.fillRect(x,yb,w,yh-yb); } } }
+    MH_BARS.push({x:L+i*sw,y:T,w:sw,h:ph+2,html:`<b>${f(t0)}–${f(t0+slot)}</b><br>`+(v<0.1?'dry':`${v.toFixed(v<10?1:0)} mm/h`)+
+      (v>HAIL_MMH?' · <b>possible hail</b>':'')+` · ${src[i]==='radar'?'radar (anywhere in the plot)':'gauge: '+src[i]}`}); }
   // time axis
-  g.font='11px monospace'; g.textBaseline='top'; g.fillStyle='#6b7c92';
+  g.font=(12.3+AXW)+'px monospace'; g.textBaseline='top'; g.fillStyle='#6b7c92';
   g.textAlign='left'; g.fillText('−'+MH_SPAN, L, B+5); g.textAlign='right'; g.fillText('now', R, B+5);
   g.textAlign='center'; g.fillText('−'+(MH_SPAN==='1h'?'30m':MH_SPAN==='6h'?'3h':'12h'), (L+R)/2, B+5);
-  if(!val.some(v=>v!=null)){ g.font='11px monospace'; g.textAlign='center'; g.textBaseline='middle'; g.fillStyle='#566277'; g.fillText('no history yet — builds as the radar and gauges report', (L+R)/2, (T+B)/2); }
+  if(!val.some(v=>v!=null)){ g.font='12.3px monospace'; g.textAlign='center'; g.textBaseline='middle'; g.fillStyle='#566277'; g.fillText('no history yet — builds as the radar and gauges report', (L+R)/2, (T+B)/2); }
   g.restore();
 }
 // last-said memory per channel: {phrase,tier,ts}
 const lastSaid={rain:null, now:null};
+/* Centred labels on the plot. Each one keeps its centre where it can and slides in just far
+   enough to stay whole, steps its size down only if it could not fit the panel at all, and is
+   remembered so the next one can avoid it. `alt` is a shorter wording to fall back to when the
+   preferred one would land on a label already drawn — two cells close together; after that it
+   steps up or down a line, and only then does it accept the overlap. */
+let LAB_BOXES=[];
+const LAB_PLATE='rgba(8,12,18,.72)';   // behind every label: the plot can be very bright under it
+const LAB_LH=20;                        // line spacing: the plates then abut exactly, no double-darkened seam
+/* Centred text on the plot. `txt` may be one string or several lines, drawn as a block with
+   its last line on `y` (labels sit above what they describe, so the block grows upward).
+   Each line gets a dark plate so it stays readable over heavy rain or satellite imagery, the
+   block keeps its centre where it can and slides in just far enough to stay whole, steps its
+   size down only if it could not fit the panel at all, and is remembered so the next one can
+   avoid it. `alt` is a shorter wording — typically the same label without its second line —
+   to fall back to when the preferred one would land on something already drawn. */
+function labCentred(txt, x, y, alt){
+  const W=c.width, pad=6, avail=W-2*pad, f=g.font;
+  const parts=/^(bold )?([\d.]+)px (.+)$/.exec(f);
+  const asArr=t=>Array.isArray(t)?t.filter(Boolean):[t];
+  const fit=ls=>{ let w=Math.max(...ls.map(t=>g.measureText(t).width)), px=null;
+    if(w>avail&&parts){ px=parseFloat(parts[2]);
+      while(px>11&&w>avail){ px-=0.6; g.font=(parts[1]||'')+px.toFixed(1)+'px '+parts[3];
+        w=Math.max(...ls.map(t=>g.measureText(t).width)); }
+      g.font=f; }
+    return {ls, w, px}; };
+  const clear=b=>!LAB_BOXES.some(o=>!(b[2]<o[0]||b[0]>o[2]||b[3]<o[1]||b[1]>o[3]));
+  // in order of preference: the full wording where it belongs, then the short one there,
+  // then the short one a line away, and only then the full one a line away — a label that
+  // has moved off its cell is harder to read than one that has lost its source
+  const full=asArr(txt), sh=alt?asArr(alt):null;
+  const same=sh&&sh.join('\n')===full.join('\n');
+  const cands=[[full,0]];
+  if(sh&&!same) cands.push([sh,0]);
+  for(const dy of [-20,20,-40,40]){ if(sh&&!same) cands.push([sh,dy]); cands.push([full,dy]); }
+  let best=null;
+  for(const [ls,dy] of cands){
+    const q=fit(ls), h=LAB_LH*(ls.length-1);
+    const xx=q.w>=avail?W/2:Math.max(pad+q.w/2, Math.min(W-pad-q.w/2, x));
+    const yy=Math.max(14+h, y+dy);
+    const cand={q, xx, yy, box:[xx-q.w/2, yy-h-7, xx+q.w/2, yy+7]};
+    if(!best) best=cand;
+    if(clear(cand.box)){ best=cand; break; }
+  }
+  const fs=g.fillStyle, nl=best.q.ls.length;
+  // the alignment and baseline are set here, not inherited: a caller drawing with
+  // textBaseline 'top' would otherwise leave its text sitting low in the plate
+  g.save(); g.textAlign='center'; g.textBaseline='middle';
+  if(best.q.px&&parts) g.font=(parts[1]||'')+best.q.px.toFixed(1)+'px '+parts[3];
+  best.q.ls.forEach((t,i)=>{ const yy=best.yy-LAB_LH*(nl-1-i), w=g.measureText(t).width;
+    g.fillStyle=LAB_PLATE; g.fillRect(best.xx-w/2-4, yy-11, w+8, 20);   // 2 px more above, to match the gap below
+    g.fillStyle=fs; g.fillText(t, best.xx, yy); });
+  g.restore();
+  g.font=f; LAB_BOXES.push(best.box);
+}
+/* A plate behind one line of text not drawn through labCentred: it follows whatever
+   alignment and baseline the caller has set, so the plate lands where the text will. */
+function labPlate(txt, x, y, align){
+  const w=g.measureText(txt).width, fs=g.fillStyle, a=align||g.textAlign, b=g.textBaseline;
+  const x0=(a==='right'||a==='end')?x-w:((a==='center')?x-w/2:x);
+  const y0=(b==='middle')?y-11:((b==='top'||b==='hanging')?y-3:y-15);
+  g.fillStyle=LAB_PLATE; g.fillRect(x0-4, y0, w+8, 20); g.fillStyle=fs;
+}
 const seen={rain:new Set(), now:new Set()};
 function xy(cx,cy,R,b,d,KM){const r=b*Math.PI/180,rr=R*Math.min(d,KM)/KM;return[cx+rr*Math.sin(r),cy-rr*Math.cos(r)];}
 function draw(){
   const W=c.width,H=c.height,PT=H>W*1.3,KM=40,MG=PT?32:70,R=Math.min(W,H)/2-MG,cx=W/2,cy=Math.min(H/2,R+MG+(PT?14:0));   // portrait: circle near the top (the nowcast line sits in the corner beside it), room below for the key and rate plot   // portrait panel (EA page): circle nearly to the edges and at the top, the spare height below it for the key and rate plot   // portrait panel: circle at the top, the spare height below it for the key and rate plot
-  g.clearRect(0,0,W,H); HIT=[];
+  g.clearRect(0,0,W,H); HIT=[]; LAB_BOXES=[];
   if(window.gbTheme&&gbTheme.get()==='light'){ g.fillStyle='#161e29'; g.beginPath(); g.arc(cx,cy,R,0,7); g.fill(); }   // light theme: the radar circle on a darker grey than its panel (Andy, 5 Nov)
+  drawBgMap(cx,cy,R,KM);                   // the background map, under the rain
   const rgi=drawRadarGrid(cx,cy,R,KM);     // under everything else
-  g.strokeStyle=col.line;g.lineWidth=1;g.font='16px monospace';g.fillStyle=col.lab;g.textAlign='left';
-  [5,20,40].forEach(km=>{g.beginPath();g.arc(cx,cy,R*km/KM,0,7);g.stroke();g.fillText(km+' km',cx+2,cy-R*km/KM-3);});
-  g.strokeStyle='rgba(90,110,140,.14)';
-  for(let a=0;a<360;a+=45){const[x,y]=xy(cx,cy,R,a,KM,KM);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke();}
-  if(!SIT){ g.font='17px monospace';g.fillStyle=col.ink;g.textAlign='center';g.fillText('waiting for data…',cx,cy-20); drawHome(cx,cy,R); return; }
+  g.strokeStyle=col.line;g.lineWidth=1;g.font='17.3px monospace';g.fillStyle=col.lab;g.textAlign='left';g.textBaseline='alphabetic';
+  dstRings().forEach(km=>{const rr=R*Math.min(km,KM)/KM, lab=dst(km);
+    g.beginPath();g.arc(cx,cy,rr,0,7);g.stroke();
+    labPlate(lab,cx+2,cy-rr-3); g.fillText(lab,cx+2,cy-rr-3);});
+  // the eight spokes, carried a little past the rim so the cardinals have something to sit on
+  for(let a=0;a<360;a+=45){ const t=a*Math.PI/180, sn=Math.sin(t), cs=Math.cos(t);
+    g.strokeStyle='rgba(90,110,140,.14)';                       // inside: faint, it crosses the rain
+    g.beginPath();g.moveTo(cx,cy);g.lineTo(cx+R*sn,cy-R*cs);g.stroke();
+    const rr=R+(a%90===0?CARD_OUT:CARD_OUT*0.6);                // outside: a visible stub for the cardinal
+    g.strokeStyle='rgba(120,145,175,.55)';
+    g.beginPath();g.moveTo(cx+R*sn,cy-R*cs);g.lineTo(cx+rr*sn,cy-rr*cs);g.stroke(); }
+  if(!SIT){ g.font='18.3px monospace';g.fillStyle=col.ink;g.textAlign='center';labCentred('waiting for data…',cx,cy-20); drawHome(cx,cy,R); return; }
   drawRadarKey(rgi, W, H);
-  drawHomeNow(W, PT?Math.round(W*0.4):Math.max(240,cx-R-24));   // portrait: wrap within the top-left corner
+  { const yb=drawHomeNow(W, PT?Math.round(W*0.4):Math.max(240,cx-R-24)) + 6;   // portrait: wrap within the top-left corner
+    drawSpdSwitch(8, yb); drawBgSwitch(8, yb+28); }
   drawMaxHist(W, H, rgi?rgi.steps:RR_STEPS);
+  drawAnimCtl(W, H);
   // intensity centroid heading
   const it=SIT.intensity||{};
   if(it.bearing!=null){ g.setLineDash([5,4]);g.strokeStyle='rgba(63,182,201,.55)';g.lineWidth=1.5;
     const[x,y]=xy(cx,cy,R,it.bearing,Math.min(it.dist_km||30,38),KM);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke();g.setLineDash([]); }
-  // tracks
-  (SIT.tracks||[]).forEach(t=>{
+  // tracks. Hidden while the animation is running (Andy, 19 Nov): the cells, their arrows
+  // and their ETAs describe NOW, and painting them over a frame from two hours ago — or over
+  // a projection of the next hour — says something the picture underneath does not.
+  (ANIM.on?[]:(SIT.tracks||[])).forEach(t=>{
     const[bx,by]=xy(cx,cy,R,t.bearing,t.dist_km,KM); const appr=t.approaching;
     const cc=appr?col.ok:col.warn, rad=Math.max(22,Math.min(46,18+(t.n||1)*7));
     g.fillStyle=(appr?'rgba(57,217,138,.12)':'rgba(245,185,66,.10)');g.beginPath();g.arc(bx,by,rad,0,7);g.fill();
@@ -519,23 +938,31 @@ function draw(){
       g.strokeStyle=cc;g.lineWidth=2.3;g.beginPath();g.moveTo(bx,by);g.lineTo(ax,ay);g.stroke();
       g.beginPath();g.moveTo(ax,ay);g.lineTo(ax-11*Math.cos(an-0.4),ay-11*Math.sin(an-0.4));
       g.lineTo(ax-11*Math.cos(an+0.4),ay-11*Math.sin(an+0.4));g.closePath();g.fillStyle=cc;g.fill(); }
-    g.fillStyle=cc;g.font='17px monospace';g.textAlign='center';
-    g.fillText('#'+t.id+(t.snow?' ❄':''), bx, by-rad-21);
-    let tag;
-    if(appr){ const _p=[]; const _e=etaLbl(t); if(_e)_p.push(_e); if(t.speed_kmh)_p.push(mph(t.speed_kmh)+'mph'); tag=_p.join(' · '); }
-    else if(t.stale){ tag='stale'; }
-    else if(t.move_deg!=null){ tag='→ '+abbr(t.move_deg)+(t.move_kmh?(' · '+mph(t.move_kmh)+'mph'):'')+mvSrc(t,false); }
-    else { tag='drifting'; }
-    if(tag){ g.font='15px monospace';g.fillStyle=col.lab;g.fillText(tag,bx,by-rad-6); }
+    g.fillStyle=cc;g.font='18.3px monospace';g.textAlign='center';
+    const idTxt='#'+t.id+(t.snow?' ❄':'');
+    // the motion on one line and where it came from on a second, so a long tag stays narrow
+    let tag, tagShort=null;
+    if(appr){ const _p=[]; const _e=etaLbl(t); if(_e)_p.push(_e); if(t.speed_kmh)_p.push(spd(t.speed_kmh)); tag=[_p.join(' · ')]; }
+    else if(t.stale){ tag=['stale']; }
+    else if(t.move_deg!=null){ tagShort=['→ '+abbr(t.move_deg)+(t.move_kmh?(' · '+spd(t.move_kmh)):'')];
+      const src=mvSrc(t,false).replace(/^ · /,'').trim(); tag=src?[tagShort[0],src]:tagShort; }
+    else { tag=['drifting']; }
+    // a narrow panel can't carry where the motion came from as well as the motion: the plot
+    // keeps the figures and the hover keeps the source
+    let tagY=by-rad-6;
+    if(tag[0]){ g.font='16.3px monospace';
+      if(tagShort && Math.max(...tag.map(q=>g.measureText(q).width)) > W*0.6) tag=tagShort;
+      g.fillStyle=col.lab; labCentred(tag,bx,tagY,tagShort); tagY-=LAB_LH*(tag.length-1); }
+    g.fillStyle=cc; g.font='18.3px monospace'; labCentred(idTxt, bx, tagY-20);
     if(!appr && t.move_deg!=null && t.move_kmh){ const mr=t.move_deg*Math.PI/180, ml=Math.min(rad+26,46);
       const mxp=bx+ml*Math.sin(mr), myp=by-ml*Math.cos(mr), an=Math.atan2(myp-by,mxp-bx);
       g.strokeStyle=cc;g.lineWidth=1.6;g.setLineDash([4,3]);g.beginPath();g.moveTo(bx,by);g.lineTo(mxp,myp);g.stroke();g.setLineDash([]);
       g.beginPath();g.moveTo(mxp,myp);g.lineTo(mxp-9*Math.cos(an-0.4),myp-9*Math.sin(an-0.4));
       g.lineTo(mxp-9*Math.cos(an+0.4),myp-9*Math.sin(an+0.4));g.closePath();g.fillStyle=cc;g.fill(); }
     HIT.push({x:bx,y:by,r:rad,html:`<b>#${t.id}${t.snow?' ❄':''}</b> ${BANDS[t.peak_band]}<br>${fromHome(t.bearing,t.dist_km)} · ${t.n} gauge${t.n>1?'s':''}<br>`+
-      (appr?('approaching · '+(liveEta(t)||'')+(t.speed_kmh?(' · '+mph(t.speed_kmh)+' mph'):''))
+      (appr?('approaching · '+(liveEta(t)||'')+(t.speed_kmh?(' · '+spd(t.speed_kmh)):''))
            :(t.stale?'stale — no active gauges this cycle'
-             :(t.move_deg!=null?('moving '+abbr(t.move_deg)+(t.move_kmh?(' at '+mph(t.move_kmh)+' mph'):'')+mvSrc(t,true)):'drifting')))
+             :(t.move_deg!=null?('moving '+abbr(t.move_deg)+(t.move_kmh?(' at '+spd(t.move_kmh)):'')+mvSrc(t,true)):'drifting')))
       +(appr&&t.verified_by&&t.verified_by.length?('<br>'+(t.move_src||'gauges')+', confirmed by '+t.verified_by.join(', ')):'')
       +(t.speed_note&&!t.speed_verified?('<br><span style="color:#8595a8">'+t.speed_note+'</span>'):'')});
   });
@@ -571,22 +998,70 @@ function draw(){
     g.lineTo(x+Math.cos(ang+2.5)*s, y+Math.sin(ang+2.5)*s);
     g.lineTo(x+Math.cos(ang-2.5)*s, y+Math.sin(ang-2.5)*s);
     g.closePath(); wet?g.fill():g.stroke();
-    g.fillStyle=cc;g.font='12px monospace';g.textAlign='center';g.fillText('M'+(m.confirmed?'✓':''),x,y-11);
-    HIT.push({x,y,r:12,html:`<b>mobile tracker</b> · ${m.src==='RV'?'radar (RainViewer)':(m.src==='OC4'?'OpenWeather reading':'Open-Meteo model')}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+Math.round(m.speed_mph)+' mph inbound'):''}`}); });
+    g.fillStyle=cc;g.font='13.3px monospace';g.textAlign='center';labCentred('M'+(m.confirmed?'✓':''),x,y-11);
+    HIT.push({x,y,r:12,html:`<b>mobile tracker</b> · ${m.src==='RV'?'radar (RainViewer)':(m.src==='OC4'?'OpenWeather reading':'Open-Meteo model')}<br>${fromHome(m.b,m.d)}<br>${(m.mm||0).toFixed(2)} mm/h${m.snow?' · snow':''}${m.speed_mph?('<br>~'+spd(m.speed_mph*1.609344)+' inbound'):''}`}); });
+  drawWideWatch(cx,cy,R);
+  drawCardinals(cx,cy,R);
   drawHome(cx,cy,R);
+}
+/* A chevron on the rim at the bearing of the band the coarse surround has found beyond the
+   plot, with its distance and rough ETA. It is outside the circle, so there is nothing to
+   draw in place: the rim is where it will come in. */
+function drawWideWatch(cx,cy,R){
+  const w=SIT&&SIT.wide_watch; if(!w||w.bearing==null) return;
+  // nothing nearer in play, or it stays off the plot: rain at home or an arrival already on
+  // the nowcast line makes a watch an hour out noise beside it. Same rule as the spoken one
+  // (rain_probe.select), and it is still in the situation table either way.
+  if(HN_LAST && HN_LAST.lvl>=1) return;
+  const a=(w.bearing-90)*Math.PI/180, ex=Math.cos(a), ey=Math.sin(a);
+  const px=cx+ex*(R-7), py=cy+ey*(R-7), col='#f5b942';
+  g.save();
+  g.fillStyle=col; g.beginPath();                       // a triangle pointing in, towards home
+  g.moveTo(px-ex*13, py-ey*13);
+  g.lineTo(px+ey*7,  py-ex*7);
+  g.lineTo(px-ey*7,  py+ex*7);
+  g.closePath(); g.fill();
+  const lx=cx+ex*(R-34), ly=cy+ey*(R-34);
+  g.font='14.3px monospace'; g.textBaseline='middle'; g.fillStyle=col;
+  g.textAlign=ex>0.25?'right':ex<-0.25?'left':'center';
+  const wlab=dst(w.dist_km)+' \u00b7 ~'+wwEta(w.eta_min);
+  labPlate(wlab, lx, ly); g.fillText(wlab, lx, ly);
+  g.restore();
+  HIT.push({x:px,y:py,r:14,html:'<b>heads-up \u00b7 beyond the plot</b><br>'+
+    BANDS[_wwBand(w)]+' rain about '+dst(w.dist_km)+' '+bearingWord(w.bearing)+' of home, '+
+    dstA(w.area_km2)+' in the nearest band<br>closing at '+spd(w.closing_kmh)+
+    ', so roughly '+wwEta(w.eta_min)+' away<br><span style="color:#8595a8">From the radar\'s '+dst(100)+' surround, '+
+    'carried on at the measured motion only \u2014 it can decay or veer before it arrives.</span>'});
 }
 // "At your location" voice: intensity MEASURED at home (radar box at home / nearest gauge
 // < 5 km, smoothed over two readings), with its source.
 function hiTxt(sit){ const h=(sit&&sit.home_int)||{};
   if(!h.src) return '—';
   return (h.band>0?h.name:'dry')+(h.mm!=null?' · '+h.mm+' mm/h':'')+' · '+h.src; }
+const CARD_OUT=11, CARD_NAMES=['N','NE','E','SE','S','SW','W','NW'];
+/* The eight cardinals, just outside the rim. Drawn after the cells so they can give way:
+   where one would land on a cell's label it is muted and loses its plate, rather than
+   printing a bright letter over the reading. */
+function drawCardinals(cx,cy,R){
+  g.save(); g.font='13.3px monospace'; g.textAlign='center'; g.textBaseline='middle';
+  CARD_NAMES.forEach((nm,i)=>{
+    const a=(i*45-90)*Math.PI/180, rr=R+CARD_OUT+9;
+    const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr, w=g.measureText(nm).width;
+    const box=[x-w/2-3, y-8, x+w/2+3, y+8];
+    const over=LAB_BOXES.some(o=>!(box[2]<o[0]||box[0]>o[2]||box[3]<o[1]||box[1]>o[3]));
+    if(over){ g.globalAlpha=.22; g.fillStyle=col.lab; g.fillText(nm,x,y); g.globalAlpha=1; return; }
+    g.fillStyle=LAB_PLATE; g.fillRect(x-w/2-4, y-11, w+8, 20);
+    g.fillStyle='#8fa0b5'; g.fillText(nm,x,y); LAB_BOXES.push(box);
+  });
+  g.restore();
+}
 function drawHome(cx,cy){
   const hm=(SIT&&SIT.home)||{};
   if((hm.band||0)>0){ g.strokeStyle=hm.snow?'#ff7ed6':(bandCol[hm.band]||col.wet);
     g.lineWidth=2.6;g.beginPath();g.arc(cx,cy,15,0,7);g.stroke(); }
   g.beginPath();g.arc(cx,cy,5,0,7);g.fillStyle=col.ink;g.fill();
   g.strokeStyle=col.accent;g.lineWidth=1.5;g.beginPath();g.arc(cx,cy,9,0,7);g.stroke();
-  g.fillStyle=col.lab;g.font='16px monospace';g.textAlign='center';g.fillText('home',cx,cy+26);
+  g.fillStyle=col.lab;g.font='17.3px monospace';g.textAlign='center';labCentred('home',cx,cy+26);
   HIT.push({x:cx,y:cy,r:15,html:`<b>home</b><br>at-home reading: ${(hm.mm!=null?hm.mm+' mm/h':'—')} · ${(hm.name&&hm.name!=='dry')?hm.name:'dry'}<br><span style="color:#8595a8">model reading at home (nowcast channel). The rain voice’s “at your location” uses the measured reading: ${hiTxt(SIT)}</span>`}); }
 
 function render(sit, spk, ws){
@@ -605,14 +1080,16 @@ function render(sit, spk, ws){
   const pkTxt=(sit.intensity&&sit.intensity.peak_band>0&&sit.intensity.peak_band>(an.max_band||0))?('(90-min peak '+sit.intensity.name+')'):'';
   $('stateSub').textContent=[nowTxt, dir?('· '+dir):'', pkTxt].filter(Boolean).join(' ');
   $('kv').innerHTML=[['coverage',fmt(sit.coverage)],['shower conf.',fmt(sit.shower_confidence)],
-    ['nearest wet',sit.nearest_wet_km!=null?sit.nearest_wet_km+' km':'—'],['active gauges',sit.n_active],
+    ['nearest wet',sit.nearest_wet_km!=null?dst(sit.nearest_wet_km,1):'—'],['active gauges',sit.n_active],
     ['wet now',sit.n_wet],['stable',Math.round((sit.stable_s||0)/60)+' min'],
     ['at home',(sit.home&&sit.home.band>0)?((sit.home.mm!=null?sit.home.mm+' mm/h ':'')+sit.home.name):'dry'],
     ['at-home voice', hiTxt(sit)],
     ['EA gauges', eaGaugesTxt(sit)],
     ['local backup', sit.backup||(sit.ea_gauges==='present'?'EA gauges (live)':'—')],
-    ['steering wind', sit.steering?('from '+bearingWord(sit.steering.from_deg)+' '+mph(sit.steering.kmh)+' mph · '
+    ['steering wind', sit.steering?('from '+bearingWord(sit.steering.from_deg)+' '+spd(sit.steering.kmh)+' · '
         +(sit.steering.src==='850hPa'?('850 hPa'+(sit.steering.stale?' (old)':'')):'surface est.')):'—'],
+    ['approach', apprTxt(sit.approach_episode)],
+    ['heads-up ('+dst(100)+')', wwTxt(sit.wide_watch)],
     ['flagged gauges', (sit.gauge_flags||[]).length||'none']]
     .map(r=>`<span class="k">${r[0]}</span><span class="v">${r[1]}</span>`).join('');
   $('tracks').innerHTML=tracksHUD();
@@ -661,15 +1138,58 @@ function ingest(ch, list){
 }
 function ago(ts){ const s=Math.round((Date.now()-ts)/1000); return s<60?s+'s ago':(s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'); }
 function speakRow(label, live, mem){
-  if(live && live.length) return `<div class="q"><span class="vlab">${label}</span> ${live.map(w=>'“'+w.phrase+'”').join(' ')}</div>`;
-  if(mem) return `<div class="qold"><span class="vlab">${label}</span> “${mem.phrase}” <span class="mago">${ago(mem.ts)}</span></div>`;
+  if(live && live.length) return `<div class="q"><span class="vlab">${label}</span> ${live.map(w=>'“'+dstSpeak(spdSpeak(w.phrase))+'”').join(' ')}</div>`;
+  if(mem) return `<div class="qold"><span class="vlab">${label}</span> “${dstSpeak(spdSpeak(mem.phrase))}” <span class="mago">${ago(mem.ts)}</span></div>`;
   return `<div class="qnone"><span class="vlab">${label}</span> — none —</div>`;
 }
 function renderSpeak(){ $('speak').innerHTML = speakRow('situation', SPK, lastSaid.rain) + speakRow('nowcast', WS, lastSaid.now); }
 function fmt(x){return x==null?'—':(''+x);}
 function bearingWord(b){ if(b==null)return''; const d=['north','north-east','east','south-east','south','south-west','west','north-west'];
   return d[Math.round((b%360)/45)%8]; }
-function mph(kmh){ return Math.round(kmh/1.609); }
+/* ---- speed units (Andy, 18 Nov) --------------------------------------------
+   Every speed on this page reads in mph or km/h, switched by the pill under the nowcast
+   box. The radar is embedded in the EA page, so the two share one setting: localStorage
+   holds it and each tells the other when it changes, so the panels below the radar and
+   the radar itself never disagree. */
+let SPD_U='mph';
+try{ if(localStorage.getItem('gbSpeedUnit')==='kmh') SPD_U='kmh'; }catch(e){}
+function spdU(){ return SPD_U==='kmh'?'km/h':'mph'; }
+function spdN(kmh){ return kmh==null?null:(SPD_U==='kmh'?kmh:kmh/1.609344); }
+function spd(kmh){ return kmh==null?'\u2014':Math.round(spdN(kmh))+' '+spdU(); }
+/* the server writes the spoken lines in miles per hour; in km/h the dashboard rewrites them
+   on the way to the speech engine, so show them here the way they will be said */
+function spdSpeak(t){ return SPD_U!=='kmh'?t:String(t||'').replace(/(\d+(?:\.\d+)?)\s*miles per hour/gi,
+  (m,v)=>Math.round(parseFloat(v)*1.609344)+' kilometres per hour'); }
+/* Distances follow the same switch (261120.1). It read as broken otherwise: with mph chosen
+   every reading on the plot — the rings, the heads-up marker, each cell's range, the
+   situation table and the spoken distance — still said kilometres. One switch, one system of
+   units. The server's figures stay in km throughout; only what is printed changes. */
+const MI=1.609344;
+function dstU(){ return SPD_U==='kmh'?'km':'mi'; }
+function dstN(km){ return km==null?null:(SPD_U==='kmh'?km:km/MI); }
+function dst(km,dp){ if(km==null) return '—';
+  const v=dstN(km); return (dp?v.toFixed(dp).replace(/\.0$/,''):String(Math.round(v)))+' '+dstU(); }
+function dstA(km2){ if(km2==null) return '—';              // an area, km2 -> mi2
+  return Math.round(SPD_U==='kmh'?km2:km2/(MI*MI))+' '+dstU()+'²'; }
+/* Rings. In km the plot keeps 5 / 20 / 40, the outermost being the rim itself; in miles it
+   is 3 / 12 / 25, the nearest round values to those, with 25 mi (40.2 km) clamped to the rim
+   it already sits on. Andy, 20 Nov. */
+function dstRings(){ return SPD_U==='kmh'?[5,20,40]:[3*MI,12*MI,25*MI]; }
+/* The server writes the spoken distance in miles, like the speed; in km/h it is rewritten
+   on the way to the speech engine, so the quoted line matches what will be said. */
+function dstTxt(t){ return SPD_U==='kmh'?t:String(t||'').replace(/(\d+(?:\.\d+)?)\s*km\b/gi,
+  (m,v)=>{const x=parseFloat(v)/MI; return (x<10?x.toFixed(1).replace(/\.0$/,''):String(Math.round(x)))+' mi';}); }
+function dstSpeak(t){ return SPD_U!=='kmh'?t:String(t||'').replace(/(\d+(?:\.\d+)?)\s*miles\b/gi,
+  (m,v)=>Math.round(parseFloat(v)*MI)+' kilometres'); }
+function spdSet(u){ if(u!=='kmh'&&u!=='mph') return; if(u===SPD_U) return; SPD_U=u;
+  try{ localStorage.setItem('gbSpeedUnit',u); }catch(e){}
+  if(SIT) render(SIT,SPK,WS); else draw(); }
+function spdPick(u){ spdSet(u);
+  try{ if(window.top!==window) parent.postMessage({gbSpeedUnit:SPD_U}, location.origin); }catch(e){} }
+addEventListener('message',e=>{ if(e.origin!==location.origin) return;
+  const u=e.data&&e.data.gbSpeedUnit; if(u) spdSet(u); });
+// changed in another tab (the dashboard, or a second copy of this page)
+addEventListener('storage',e=>{ if(e.key==='gbSpeedUnit') spdSet(e.newValue); });
 const ABBR=['N','NE','E','SE','S','SW','W','NW'];
 function abbr(b){ return b==null?'':ABBR[Math.round((b%360)/45)%8]; }
 function agefmt(s){ if(s==null)return'—'; return s<90?s+'s':(s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1).replace(/\.0$/,'')+'h'); }
@@ -693,19 +1213,40 @@ function mvSrc(t,long){
   if(t.move_trusted) return long?` (${s}${v?', confirmed by '+v:''})`:` · ${s} ✓`;
   return long?(s==='850 hPa'?' (850 hPa wind only, unverified)':` (${s}, not yet confirmed)`):(s==='850 hPa'?' · 850 hPa wind':` · ${s}, unconfirmed`);
 }
+/* The coarse surround's heads-up: the nearest band of rain upwind and beyond the plot
+   (rain_probe._wide_watch). Translation only, so it is a watch, not an arrival time. */
+function wwTxt(w){ return !w?'\u2014':(dst(w.dist_km)+' '+bearingWord(w.bearing)+
+  ' \u00b7 '+BANDS[_wwBand(w)]+' \u00b7 ~'+wwEta(w.eta_min)); }
+function _wwBand(w){ const m=w.peak_mm||0; return m<0.3?0:m<2?1:m<5?2:m<10?3:4; }
+function wwEta(m){ return m<75?(Math.max(5,Math.round(m/5)*5)+' min'):((m/60).toFixed(1).replace(/\.0$/,'')+' h'); }
+/* Why the approach line is or is not speaking. The engine decides this every poll
+   (rain_probe._appr_qualifies) and it used to go nowhere: a quiet spell in showery weather
+   looked the same as a broken one. Reads e.g. "withheld: isolated beyond 12 km \u00b7 8.4 km SW,
+   0.9 mm/h" \u2014 the gate that is biting, and the threat it is biting on. */
+function apprTxt(ep){
+  if(!ep) return '\u2014';
+  const t=ep.threat;
+  if(!t) return ep.state&&ep.state!=='idle' ? ('episode '+ep.state) : 'nothing in the cone';
+  const bits=[dst(t.edge_km)+' '+(t.dir||''),
+    (t.peak_mm!=null?t.peak_mm+' mm/h':''), t.cls,
+    (t.miss_km!=null?'misses by '+dst(t.miss_km,1):''),
+    (t.eta_text||'')].filter(Boolean).join(' \u00b7 ');
+  const head=ep.qualifies_ok ? (ep.state==='alerted'?'alerted':'qualifies') : ('withheld: '+dstTxt(ep.qualifies||'?'));
+  return head+' \u2014 '+bits;
+}
 function tracksHUD(){
   const ts=((SIT&&SIT.tracks)||[]);
   if(!ts.length) return '<div class="trow" style="color:var(--ink-faint)">none</div>';
   return ts.map(t=>{
     const dirw=bearingWord(t.bearing), appr=t.approaching, el=appr?etaLbl(t):'';
-    const m=appr?('\u2193 '+(t.speed_kmh?mph(t.speed_kmh)+' mph':'closing')+(el?(' \u00b7 '+el):''))
-      :(t.stale?'stale':(t.move_deg!=null?('\u2192 '+abbr(t.move_deg)+(t.move_kmh?' '+mph(t.move_kmh)+' mph':'')+mvSrc(t,false)):'drifting'));
-    return `<div class="trow ${appr?'appr':''}"><span>#${t.id}</span> ${dirw} \u00b7 ${t.dist_km} km ${appr?'<span class="chip appr">approaching</span>':'<span class="chip">'+BANDS[t.peak_band]+'</span>'}<span class="m">${m}</span></div>`;
+    const m=appr?('\u2193 '+(t.speed_kmh?spd(t.speed_kmh):'closing')+(el?(' \u00b7 '+el):''))
+      :(t.stale?'stale':(t.move_deg!=null?('\u2192 '+abbr(t.move_deg)+(t.move_kmh?' '+spd(t.move_kmh):'')+mvSrc(t,false)):'drifting'));
+    return `<div class="trow ${appr?'appr':''}"><span>#${t.id}</span> ${dirw} \u00b7 ${dst(t.dist_km,1)} ${appr?'<span class="chip appr">approaching</span>':'<span class="chip">'+BANDS[t.peak_band]+'</span>'}<span class="m">${m}</span></div>`;
   }).join('');
 }
 function esc(x){ return String(x==null?'':x).replace(/[&<>"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
 // "16 km north-east of home"
-function fromHome(b,d){ return (d==null||b==null)?'':(Math.round(d*10)/10)+' km '+bearingWord(b)+' of home'; }
+function fromHome(b,d){ return (d==null||b==null)?'':dst(d,1)+' '+bearingWord(b)+' of home'; }
 function tipGauge(p,kind){
   const cur=BANDS[p.cur!=null?p.cur:p.band]||'dry', pk=BANDS[p.band]||'dry';
   const mm=p.mm!=null?p.mm.toFixed(2)+' mm/h':'—';
@@ -751,9 +1292,15 @@ addEventListener('resize',()=>{ fitEmbed(); draw(); });
 // the radar keeps moving between data refreshes; a click on its key switches "moved to now" / "as measured"
 setInterval(()=>{ if(SIT&&SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ) draw(); }, 5000);
 setInterval(()=>{ if(SIT&&!(SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ)) draw(); }, 15000);   // keeps the nowcast countdown and cell ETAs live    // moved on to now every 5 s
+setInterval(()=>{ if(CD_FAST&&SIT&&!document.hidden&&!ANIM.on) draw(); }, 1000);   // the seconds countdown to rain arriving
 setInterval(()=>{ if(SIT&&SIT.max_hist&&!(SIT.radar_grid&&SIT.radar_grid.b64&&RG_PROJ)) draw(); }, 60000);   // keeps the max-rate bars moving along
 const cvXY=e=>{ const r=c.getBoundingClientRect(); return [(e.clientX-r.left)*(c.width/r.width),(e.clientY-r.top)*(c.height/r.height)]; };
 let mhJustDragged=false;
+c.addEventListener('pointerdown',e=>{ const [mx,my]=cvXY(e); if(!anOnTL(mx,my)) return;   // the animation's timeline: scrub (pauses)
+  ANIM.drag=true; if(ANIM.playing) animPlay(false); anScrub(mx); c.setPointerCapture(e.pointerId); tip.style.display='none'; e.preventDefault(); e.stopImmediatePropagation(); });
+c.addEventListener('pointermove',e=>{ if(!ANIM.drag) return; anScrub(cvXY(e)[0]); });
+const anDragEnd=()=>{ if(ANIM.drag){ ANIM.drag=false; mhJustDragged=true; setTimeout(()=>mhJustDragged=false,0); } };
+c.addEventListener('pointerup',anDragEnd); c.addEventListener('pointercancel',anDragEnd);
 c.addEventListener('pointerdown',e=>{ if(!MH_BOX) return; const [mx,my]=cvXY(e), d=MH_BOX.drag;
   if(mx<d.x||mx>d.x+d.w||my<d.y||my>d.y+d.h) return;
   MH_DRAG={sx:mx, sy:my, bx:MH_BOX.x, by:MH_BOX.y, moved:false, pos:[MH_BOX.x/c.width, MH_BOX.y/c.height]};
@@ -769,7 +1316,12 @@ c.addEventListener('dblclick',e=>{ if(!MH_BOX) return; const [mx,my]=cvXY(e), d=
   if(mx>=d.x&&mx<=d.x+d.w&&my>=d.y&&my<=d.y+d.h){ mhPosSet(c.width,c.height,null); draw(); } });
 c.addEventListener('click',e=>{ if(mhJustDragged) return; const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(c.width/rect.width), my=(e.clientY-rect.top)*(c.height/rect.height);
+  const ub=uHit(mx,my); if(ub){ spdPick(ub.u); return; }                                                      // mph / km/h
+  if(BG_BOX&&mx>=BG_BOX.x&&mx<=BG_BOX.x+BG_BOX.w&&my>=BG_BOX.y&&my<=BG_BOX.y+BG_BOX.h){ bgNext(); return; }   // background map
+  const ab=anHit(mx,my); if(ab){ ab.act(); draw(); return; }                                                   // animation buttons
   const mb=MH_BTNS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h); if(mb){ mb.act(); draw(); return; }   // max-rate plot switches
+  const sb=RG_SCALEBOX; if(sb&&mx>=sb.x&&mx<=sb.x+sb.w&&my>=sb.y&&my<=sb.y+sb.h){   // the scale switch: 8 steps -> 19 -> smooth
+    RG_SCALE=RG_SCALES[(RG_SCALES.indexOf(RG_SCALE)+1)%RG_SCALES.length]; try{ localStorage.setItem('fvRainScale',RG_SCALE); }catch(_){} RGK=null; draw(); return; }
   if(!RG_KEYBOX) return; const b=RG_KEYBOX;
   if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h){ RG_PROJ=!RG_PROJ; try{ localStorage.setItem('fvRadarProj',RG_PROJ?'1':'0'); }catch(_){} draw(); } });
 
@@ -783,6 +1335,8 @@ function hitAt(mx,my){ let best=null,bk=1e9;
   let nb=null,nd=13; for(const h of HIT){ if(h.r>16)continue; const d=Math.hypot(mx-h.x,my-h.y); if(d<nd){nd=d;nb=h;} } return nb; }
 c.addEventListener('mousemove',e=>{ if(MH_DRAG) return; const rect=c.getBoundingClientRect();
   const mx=(e.clientX-rect.left)*(c.width/rect.width), my=(e.clientY-rect.top)*(c.height/rect.height);
+  const onBg=BG_BOX&&mx>=BG_BOX.x&&mx<=BG_BOX.x+BG_BOX.w&&my>=BG_BOX.y&&my<=BG_BOX.y+BG_BOX.h;
+  if(ANIM.drag||anHit(mx,my)||anOnTL(mx,my)||uHit(mx,my)||onBg){ tip.style.display='none'; c.style.cursor='pointer'; return; }
   if(MH_BOX){ const d=MH_BOX.drag; if(mx>=d.x&&mx<=d.x+d.w&&my>=d.y&&my<=d.y+d.h&&!MH_BTNS.some(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h)){
     tip.style.display='none'; c.style.cursor='grab'; return; } }
   const mbar=MH_BARS.find(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h), onBtn=MH_BTNS.some(q=>mx>=q.x&&mx<=q.x+q.w&&my>=q.y&&my<=q.y+q.h);
@@ -825,5 +1379,58 @@ const DEMO={situational:{state:'approaching',base_state:'approaching',approachin
 draw(); renderSpeak();
 if(hasLoc() && (EMBED || !$('base').value)) start();
 else setStatus(hasLoc()?'idle — click connect (or demo)':'set a location on the EA page, or enter lat / lon — or try demo');
+</script>
+<script>
+/* "What set the alarm off" receiver. The alarms run in the dashboard; this window shows the
+   same line, through localStorage + the storage event (the path the theme already uses), for
+   up to five minutes. window.gbTrig.mount(bar) puts it in a bar; gbTrig.go is what clicking
+   it should do in THIS window, if anything. */
+window.gbTrig=(function(){
+  var KEY="gbAlarmTrig", MS=5*60*1000, els=[], cur=null, t1=null, t2=null;
+  function esc(v){return String(v==null?"":v).replace(/[&<>"]/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+  function paint(){
+    for(var i=0;i<els.length;i++){ var e=els[i];
+      if(!cur){ e.className="hdr-trig"; e.innerHTML=""; continue; }
+      var m=Math.floor((Date.now()-cur.ts)/60000);
+      e.className="hdr-trig on "+(cur.tier||"notice")+((Date.now()-cur.ts<6000)?" flash":"");
+      e.innerHTML='<b>'+esc(cur.cat)+'</b><span class="tx">'+esc(cur.text)+'</span>'+
+                  '<span class="ago">'+(m<1?"now":m+" min")+'</span>';
+    }
+  }
+  function clear(share){ cur=null;
+    if(t1){clearTimeout(t1);t1=null;} if(t2){clearInterval(t2);t2=null;} paint();
+    if(share){ try{ localStorage.setItem(KEY, JSON.stringify({clear:Date.now()})); }catch(e){} } }
+  function set(o){ cur=o; paint();
+    if(t1) clearTimeout(t1);
+    t1=setTimeout(function(){clear(false);}, Math.max(1000, MS-(Date.now()-o.ts)));
+    if(!t2) t2=setInterval(paint, 30000); }
+  function read(){ try{ var v=localStorage.getItem(KEY); if(!v) return; var o=JSON.parse(v);
+    if(o && !o.clear && o.ts && Date.now()-o.ts<MS) set(o); }catch(e){} }
+  addEventListener("storage", function(e){
+    if(e.key!==KEY || !e.newValue) return;
+    var o=null; try{ o=JSON.parse(e.newValue); }catch(_){ return; }
+    if(!o) return;
+    if(o.clear){ clear(false); return; }
+    if(o.ts && Date.now()-o.ts<MS) set(o);
+  });
+  var api={ go:null,
+    mount:function(bar, before){
+      if(!bar) return null;
+      var e=bar.querySelector(".hdr-trig[data-trig]");
+      if(!e){ e=document.createElement("div"); e.className="hdr-trig"; e.setAttribute("data-trig","1");
+        e.title="What set the alarm off \u2014 click to clear";
+        if(before && before.parentNode===bar) bar.insertBefore(e, before); else bar.appendChild(e);
+        e.addEventListener("click", function(){ var g=cur&&cur.go; clear(true);
+          if(api.go){ try{ api.go(g); }catch(_){} } }); }
+      if(els.indexOf(e)<0) els.push(e);
+      els=els.filter(function(x){ return x.isConnected; });
+      read(); paint(); return e; },
+    clear:clear, current:function(){ return cur; } };
+  return api;
+})();
+
+gbTrig.go=null;                                  // a single-purpose window: nothing to switch to
+(function(){ var bar=document.querySelector(".bar")||document.body; gbTrig.mount(bar); })();
 </script>
 </body></html>

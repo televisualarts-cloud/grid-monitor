@@ -1,6 +1,6 @@
 """GB transmission wall (/wall): live node injections for the network mimic.
 
-Build 261030.4  (version = YYMMDD.N in UT; bump on every change to this file)
+Build 261125.1  (version = YYMMDD.N in UT; bump on every change to this file)
 Copyright (c) 2026 Andy Smith, G7IZU. Same MIT licence as grid_server.py.
 
 Standard library only. Optional companion to grid_server.py; the server runs
@@ -70,6 +70,16 @@ NET_FILE = HERE / "grid_network.json"
 
 WALL_TTL = 55                 # s; one refresh per minute however many screens are open
 SAMPLE_S = 60                 # background sampler cadence while the wall is in use
+# ---- scheduled change into the next settlement boundary (Andy, 23 Nov) --------------------
+# GB generation changes at :00 and :30, and the frequency moves with it. Every unit's own
+# notification (or the level NESO has instructed) says what it will be doing then, so the size
+# of the change is PUBLISHED half an hour ahead rather than guessed. What is not known is
+# whether that size is ordinary for the time of day: that needs this figure logged against the
+# frequency for some weeks first, which is what ramp_log() starts. Until there are enough
+# readings the pre-warning falls back to an absolute size.
+RAMP_MIN_UNIT_MW = 5          # ignore the noise floor of tiny notification wobbles
+RAMP_TOP_N = 3                # biggest contributors named with the figure
+_ramp_acc = {"units": 0.0, "ic": 0.0, "top": []}
 IDLE_STOP_S = 30 * 60         # stop sampling after this long with no /api/wall request
 IC_HIST_MIN = 20              # minutes of interconnector flows kept (for their 15-min change)
 UNIT_HIST_MIN = 120           # minutes of per-unit history kept for node charts
@@ -92,9 +102,11 @@ DEMAND_TTL = 3 * 3600         # its actuals are added through the day; re-read e
 SPLIT_MIN_DAYS = 7            # actual days needed before the Scotland share is fitted
 SPLIT_RANGE = (0.01, 0.20)    # a fitted Scotland share outside this is not used
 B6_LOG_FILE = HERE / "b6_log.json"   # the wall page's modelled Scotland -> England transfer per half-hour (git-ignored)
-B6_LOG_DAYS = 4
+B6_LOG_DAYS = 30                     # 4 was enough to score yesterday; 30 gives something to fit on (Andy, 24 Nov)
 GSP_LOG_FILE = HERE / "gsp_log.json"  # the page's modelled vs NGED-measured GSP imports per half-hour (git-ignored)
 GSP_LOG_DAYS = 2
+BND_LOG_FILE = HERE / "bnd_log.json"  # how far each constrained ETYS boundary got, per half-hour (git-ignored)
+BND_LOG_DAYS = 60
 IC_VERIFY_MW = 100.0          # a schedule is trusted only if its "now" matches FUELINST within
 IC_VERIFY_PCT = 15.0          # max(100 MW, 15 %)
 
@@ -193,7 +205,7 @@ _S = {}                       # bound grid_server globals
 _lock = threading.Lock()
 _state = {"payload": None, "ts": 0.0, "last_req": 0.0, "sampler": False,
           "net": None, "net_mtime": 0, "unit_node": None, "unit_node_key": None,
-          "constraints": None, "constraints_ts": 0.0, "lolp": None, "lolp_ts": 0.0,
+          "constraints": None, "constraints_ts": 0.0, "constraints_fetch": None, "lolp": None, "lolp_ts": 0.0,
           "ic_tok": {}, "remit": None, "remit_ts": 0.0}
 _ic_hist = deque(maxlen=IC_HIST_MIN + 2)     # one {"t", "ic": {code: mw}} per minute, in memory only
 _unit_hist = {}                             # code -> deque[(t_iso, mw)]
@@ -985,7 +997,10 @@ def so_summary():
 def _constraints(now):
     if _state["constraints"] is not None and time.time() - _state["constraints_ts"] < CONSTRAINT_TTL:
         return _state["constraints"]
-    day = (now - timedelta(hours=2)).strftime("%Y-%m-%d")
+    # From YESTERDAY 00:00, not today's: the panel shows a grid for the completed day beside the one
+    # in progress, and yesterday's is the more useful of the two — it is what actually happened
+    # rather than what was forecast for a day not yet run (Andy, 25 Nov). About 1,600 rows.
+    day = (now - timedelta(hours=2) - timedelta(days=1)).strftime("%Y-%m-%d")
     sql = (f'SELECT "Constraint Group","Date_ Time GMT_BST","Limit_MW","Flow_MW" FROM "{NESO_CONSTRAINT_RES}" '
            f'WHERE "Date_ Time GMT_BST" >= \'{day}T00:00:00\' ORDER BY "Date_ Time GMT_BST"')
     try:
@@ -994,9 +1009,121 @@ def _constraints(now):
         rows = [{"g": x["Constraint Group"], "t": x["Date_ Time GMT_BST"],
                  "lim": float(x["Limit_MW"]), "f": float(x["Flow_MW"])} for x in recs]
         _state["constraints"], _state["constraints_ts"] = rows, time.time()
-    except Exception:
+        _state["constraints_fetch"] = {"t": _iso(datetime.now(timezone.utc)), "ok": True, "n": len(rows)}
+    except Exception as e:
         _state["constraints_ts"] = time.time() - CONSTRAINT_TTL + 300     # retry in 5 min
+        prev = _state.get("constraints_fetch") or {}
+        _state["constraints_fetch"] = {"t": _iso(datetime.now(timezone.utc)), "ok": False,
+                                       "err": f"{type(e).__name__}"[:40],
+                                       "good_t": prev.get("good_t") or (prev.get("t") if prev.get("ok") else None),
+                                       "good_n": prev.get("n") if prev.get("ok") else prev.get("good_n")}
+    f = _state.get("constraints_fetch")
+    if f and f.get("ok"):
+        f["good_t"], f["good_n"] = f["t"], f["n"]
     return _state["constraints"]
+
+
+def _ramp_public(bnd_dt, bnd_in):
+    """The scheduled change into the next boundary: generation and interconnectors apart, the
+    biggest few contributors named. Generation is the half-hour signal; interconnectors mostly
+    move on the hour, so they are reported beside it rather than mixed into it."""
+    top = sorted(_ramp_acc["top"], key=lambda x: -abs(x[0]))[:RAMP_TOP_N]
+    return {"at": _iso(bnd_dt), "in_s": bnd_in,
+            "units_mw": round(_ramp_acc["units"]), "ic_mw": round(_ramp_acc["ic"]),
+            "net_mw": round(_ramp_acc["units"] + _ramp_acc["ic"]),
+            "n": len(_ramp_acc["top"]),
+            "top": [{"mw": round(d), "name": str(nm)[:40]} for d, nm in top]}
+
+
+def _constraint_day(rows, now):
+    """What the whole day's day-ahead rows say, which is otherwise fetched and thrown away: the
+    tightest half-hour of the day for any group, and for each group the window it is forecast to
+    spend over its limit. The wall panel is blank when NESO has published nothing for the current
+    half-hour, and a blank panel reads as "nothing is happening" when it means "nothing arrived" —
+    so the fetch's own state travels with it. Times are the file's own UK-local half-hour keys."""
+    f = _state.get("constraints_fetch") or {}
+    out = {"fetch": {"t": f.get("t"), "ok": f.get("ok"), "n": f.get("n"),
+                     "good_t": f.get("good_t"), "good_n": f.get("good_n"), "err": f.get("err")},
+           "now": _uk_local_key(now), "groups": [], "tightest": None}
+    if not rows:
+        return out
+    # The file is DAY-AHEAD: asking for everything from today 00:00 brings back tomorrow's rows
+    # as well, and counting both as one day gave groups "75 hh" of a 48-half-hour day and drew
+    # two days on top of each other (Andy, 23 Nov). The summary is TODAY, by the file's own
+    # UK-local keys. (Tomorrow's rows are there for the asking if a "tomorrow" view is ever
+    # wanted; they are simply not this.)
+    today = out["now"][:10]
+    hm0 = lambda k: k[11:16]
+    yday = (datetime.fromisoformat(today) - timedelta(days=1)).strftime("%Y-%m-%d")
+    yrows = [r for r in rows if str(r.get("t", ""))[:10] == yday]
+    if yrows:                                    # the completed day, for the panel's second grid
+        out["day_prev"] = yday
+        out["times_prev"], out["grid_prev"] = _grid_for(yrows, hm0)
+    rows = [r for r in rows if str(r.get("t", ""))[:10] == today]
+    if not rows:
+        return out
+    keys = sorted({r["t"] for r in rows})
+    out["day"] = keys[0][:10]
+    out["from"], out["to"], out["hh"] = keys[0], keys[-1], len(keys)
+    hm = lambda k: k[11:16]
+    best = None
+    per = {}
+    for r in rows:
+        lim = r.get("lim") or 0
+        if lim <= 0:
+            continue
+        pct = r["f"] / lim
+        if best is None or pct > best[0]:
+            best = (pct, r)
+        if r["f"] > lim:
+            g = per.setdefault(r["g"], {"g": r["g"], "n": 0, "ts": [], "peak": None})
+            g["n"] += 1
+            g["ts"].append(r["t"])
+            if g["peak"] is None or pct > g["peak"][0]:
+                g["peak"] = (pct, r)
+    if best:
+        pct, r = best
+        out["tightest"] = {"g": r["g"], "t": hm(r["t"]), "f": round(r["f"], 1),
+                           "lim": round(r["lim"], 1), "pct": round(100 * pct)}
+    for g in per.values():
+        ts = sorted(g["ts"])
+        pct, r = g["peak"]
+        out["groups"].append({"g": g["g"], "n": g["n"], "from": hm(ts[0]), "to": hm(ts[-1]),
+                              "hh": [hm(t) for t in ts],
+                              "peak_t": hm(r["t"]), "peak_f": round(r["f"], 1),
+                              "peak_lim": round(r["lim"], 1), "peak_pct": round(100 * pct)})
+    out["groups"].sort(key=lambda x: -x["peak_pct"])
+    # The whole day as a matrix, for the panel's heat grid: every group, every half-hour, the
+    # forecast flow as a percentage of the limit. These are NESO's PRE-ACTION flows, so a row at
+    # 350 % is the flow there would be if NESO did nothing, not a boundary running at three and a
+    # half times its limit -- the panel has to say so. Rounded to whole percent and capped at 999
+    # to keep the payload small; a missing half-hour is null (Andy, 24 Nov).
+    out["times"], out["grid"] = _grid_for(rows, hm)
+    return out
+
+
+def _grid_for(rows, hm):
+    """(half-hour labels, {group: [pct per half-hour]}) for one day's rows: the forecast flow as a
+    whole percentage of the limit. Capped at 999 and rounded to keep the payload small; a half-hour
+    with no row is null."""
+    keys = sorted({r["t"] for r in rows})
+    times = [hm(k) for k in keys]
+    grid = {}
+    for r in rows:
+        lim = r.get("lim") or 0
+        if lim <= 0:
+            continue
+        grid.setdefault(r["g"], {})[hm(r["t"])] = min(999, round(100 * r["f"] / lim))
+    return times, {g: [v.get(t) for t in times] for g, v in sorted(grid.items())}
+
+
+def _next_boundary(now):
+    """The next settlement boundary (:00 or :30) as an epoch, and how far off it is.
+    GB generation changes mostly at these, which is why the frequency moves there."""
+    t = now.replace(second=0, microsecond=0)
+    add = 30 - (t.minute % 30)
+    b = t + timedelta(minutes=add)
+    return b, int((b - now).total_seconds())
 
 
 def _uk_local_key(dt):
@@ -1041,6 +1168,7 @@ def _lolp(now):
 # the page's modelled transfer is compared with NESO's metered Scottish transfer once that is published.
 _split = {"rows": None, "ts": 0.0, "fit": None, "check": None, "err": None}
 _b6 = {"log": None, "saved": 0.0}
+_bndl = {"log": None, "saved": 0.0}
 _gl = {"log": None, "saved": 0.0}
 
 
@@ -1143,6 +1271,60 @@ def _b6_load():
     return _b6["log"]
 
 
+def _bnd_log_load():
+    if _bndl["log"] is None:
+        try:
+            _bndl["log"] = json.loads(BND_LOG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            _bndl["log"] = {}
+    return _bndl["log"]
+
+
+def _bnd_log(key, items):
+    """One model run's constrained boundaries -> per half-hour, per boundary: how many runs saw it, the
+    highest percentage of its limit it reached, the most turned down behind it, and which limit that
+    percentage was measured against ("neso" = NESO's own day-ahead limit, "etys" = ETYS capability).
+
+    The map's thresholds were set from B6, the one boundary whose limit NESO publishes; for the rest
+    the limit is a planning figure and nobody knows yet what a normal day looks like. This is the
+    record that answers it (Andy, 23 Nov). Kept per half-hour rather than per run so a boundary
+    constrained all evening is one row a half-hour, not sixty.
+    """
+    if not items:
+        return
+    log = _bnd_log_load()
+    e = log.setdefault(key, {})
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("n") or "")[:8]
+        try:
+            pct = round(float(it.get("p")), 3)
+        except (TypeError, ValueError):
+            continue
+        if not name or not 0.0 <= pct <= 20.0:          # a ratio, so anything past 20 is a bug not a boundary
+            continue
+        r = e.setdefault(name, {"n": 0, "mx": 0.0, "mw": 0, "s": ""})
+        r["n"] += 1
+        r["mx"] = max(r["mx"], pct)
+        src = str(it.get("s") or "")[:4]
+        if src:
+            r["s"] = src
+        try:
+            r["mw"] = max(int(r.get("mw") or 0), int(float(it.get("d") or 0)))
+        except (TypeError, ValueError):
+            pass
+    cut = (datetime.now(timezone.utc) - timedelta(days=BND_LOG_DAYS)).strftime("%Y-%m-%d")
+    for k in [k for k in log if k[:10] < cut]:
+        del log[k]
+    if time.time() - _bndl["saved"] > 300:
+        try:
+            BND_LOG_FILE.write_text(json.dumps(log, separators=(",", ":")), encoding="utf-8")
+            _bndl["saved"] = time.time()
+        except OSError:
+            pass
+
+
 def post_b6(body):
     """POST /api/wall-b6 {"t": the /api/wall time, "b6": MW}: the page's modelled transfer, kept per half-hour."""
     try:
@@ -1154,10 +1336,22 @@ def post_b6(body):
     d, sp = _sp_key(t)
     _gsp_log(f"{d}/{sp}", body.get("gsp"))
     if isinstance(body.get("bnd"), list):                               # boundaries the page shows as constrained
-        _bnd_rep.update(ts=time.time(), names=[str(x)[:8] for x in body["bnd"][:12]])
+        raw = body["bnd"][:12]                                          # names (old pages) or {n, p, s, d} (261123.8 on)
+        _bnd_rep.update(ts=time.time(),
+                        names=[str(x.get("n") or "")[:8] if isinstance(x, dict) else str(x)[:8] for x in raw])
+        _bnd_log(f"{d}/{sp}", [x for x in raw if isinstance(x, dict)])
     log = _b6_load()
     e = log.setdefault(f"{d}/{sp}", {})
-    e[t.strftime("%H:%M")] = round(v)                                  # one value per model run (any page)
+    # One value per model run (any page). Since 24 Nov the AC and the estimated Western Link parts
+    # are kept beside the total as [total, ac, dc], because the total alone cannot say whether an
+    # error sits in the AC flows or in the one term that is a guess. Older entries are bare numbers
+    # and both shapes are read.
+    try:
+        ac = float(body["ac"]); dc = float(body["dc"])
+        val = [round(v), round(ac), round(dc)] if abs(ac) <= 20000 and abs(dc) <= 20000 else round(v)
+    except (KeyError, TypeError, ValueError):
+        val = round(v)
+    e[t.strftime("%H:%M")] = val
     cut = (datetime.now(timezone.utc) - timedelta(days=B6_LOG_DAYS)).strftime("%Y-%m-%d")
     for k in [k for k in log if k[:10] < cut]:
         del log[k]
@@ -1229,21 +1423,44 @@ def _gsp_check():
     return out
 
 
+def _b6_tot(x):
+    """A logged run: a bare total (before 24 Nov) or [total, ac, dc]."""
+    return float(x[0]) if isinstance(x, list) else float(x)
+
+
 def _b6_check(rows):
-    """Modelled transfer (mean of the runs in each half-hour) against NESO's metered Scottish transfer."""
+    """Modelled transfer (mean of the runs in each half-hour) against NESO's metered Scottish transfer.
+
+    The split between the AC circuits and the estimated Western Link is reported too, but note what
+    it can and cannot tell you: in a DC load flow the total crossing the border is the Scottish net
+    injection, whatever share the Western Link is given -- the share decides how that total is divided
+    between the link and the AC circuits, not how big it is. So a bias in the total comes from the
+    Scottish balance (demand split, embedded estimate), never from the share, and fitting the share
+    against this check would be fitting the wrong parameter (Andy, 24 Nov; I had suggested exactly
+    that before working through the arithmetic).
+    """
     log = _b6_load()
     act = {(r[0], r[1]): r[7] for r in rows if r[2] == "A" and r[3] > 0}
-    e = []
+    e, dcs = [], []
     for k, runs in log.items():
         d, sp = k.split("/")
         tr = act.get((d, int(sp)))
-        if tr is not None and len(runs) >= 10:
-            e.append((sum(runs.values()) / len(runs), tr))
+        if tr is None or len(runs) < 10:
+            continue
+        vals = list(runs.values())
+        e.append((sum(_b6_tot(x) for x in vals) / len(vals), tr))
+        pair = [x for x in vals if isinstance(x, list) and len(x) >= 3 and _b6_tot(x)]
+        if pair:
+            dcs.append(sum(abs(x[2]) / max(1.0, abs(x[0])) for x in pair) / len(pair))
     if not e:
         return None
-    return {"n": len(e), "mae_mw": round(sum(abs(m - t) for m, t in e) / len(e)),
-            "bias_mw": round(sum(m - t for m, t in e) / len(e)),
-            "ratio": round(sum(m for m, _ in e) / max(1.0, sum(t for _, t in e)), 3)}
+    out = {"n": len(e), "mae_mw": round(sum(abs(m - t) for m, t in e) / len(e)),
+           "bias_mw": round(sum(m - t for m, t in e) / len(e)),
+           "ratio": round(sum(m for m, _ in e) / max(1.0, sum(t for _, t in e)), 3)}
+    if dcs:
+        out["dc_share"] = round(sum(dcs) / len(dcs), 3)
+        out["dc_n"] = len(dcs)
+    return out
 
 
 def _split_now(now):
@@ -1541,7 +1758,10 @@ def _refresh():
         except Exception as e:
             errors.append(f"OSM positions: {type(e).__name__}")
     un = _unit_nodes(locs, net)
-    T = {"now": nts, "m15": nts - 900, "p30": nts + 1800, "p60": nts + 3600}
+    bnd_dt, bnd_in = _next_boundary(now)
+    _ramp_acc["units"] = 0.0; _ramp_acc["ic"] = 0.0; _ramp_acc["top"] = []
+    T = {"now": nts, "m15": nts - 900, "p30": nts + 1800, "p60": nts + 3600,
+         "bnd": int(bnd_dt.timestamp())}
 
     def lv(u, t):
         if u in bo:
@@ -1579,6 +1799,9 @@ def _refresh():
                     if v is not None:
                         a[i] += v
                         a[3 + i] += 1
+                vb, _ = lv(u, T["bnd"]); vn, _ = lv(u, T["now"])
+                if vb is not None and vn is not None and abs(vb - vn) >= RAMP_MIN_UNIT_MW:
+                    _ramp_acc["ic"] += (vb - vn)        # counted separately: the hour, not the half hour
             continue
         if u.startswith("2__") or u.startswith("C__") or u.startswith("V__"):
             continue                                   # supplier / embedded aggregates: not at a node
@@ -1586,6 +1809,15 @@ def _refresh():
         if vnow is None:
             continue
         vm15, _ = lv(u, T["m15"]); vp30, _ = lv(u, T["p30"]); vp60, _ = lv(u, T["p60"])
+        # What this unit is notified (or has been instructed) to be doing at the next boundary,
+        # less what it is doing now: summed over everything, that is the scheduled ramp. It is
+        # published, not predicted — the uncertainty is in whether it is followed.
+        vb, _ = lv(u, T["bnd"])
+        if vb is not None:
+            d = vb - vnow
+            if abs(d) >= RAMP_MIN_UNIT_MW:
+                _ramp_acc["units"] += d
+                _ramp_acc["top"].append((d, (locs.get(u) or {}).get("name") or u))
         if max(abs(vnow), abs(vm15 or 0), abs(vp30 or 0), abs(vp60 or 0)) < 1:
             continue
         nd = un.get(u)
@@ -1666,7 +1898,8 @@ def _refresh():
         "units": {str(k): v for k, v in units.items()}, "ic": ic,
         "offlinks": {str(k): round(v) for k, v in link_mw.items()},
         "local_live": _local_live(net),
-        "boundaries": {"keys": keys, "rows": bnd},
+        "boundaries": {"keys": keys, "rows": bnd, "day": _constraint_day(rows, now)},
+        "ramp": _ramp_public(bnd_dt, bnd_in),
         "lolp": _lolp(now),
         "split": spl,
         "emb": _emb_now(spl),
@@ -1713,6 +1946,18 @@ def get_wall():
             if "error" not in p or _state["payload"] is None:
                 _state["payload"], _state["ts"] = p, time.time()
         return _state["payload"]
+
+
+def get_ramp():
+    """Just the scheduled-change block, from the same cached payload the wall uses. The whole
+    payload is what knows it, so asking for the ramp keeps the wall's data pipeline warm —
+    which is the point: the figure has to be logged minute by minute to be worth anything."""
+    p = get_wall() or {}
+    r = p.get("ramp")
+    if not r:
+        return {"error": p.get("error") or "no ramp"}
+    out = dict(r); out["t"] = p.get("t")
+    return out
 
 
 def get_history(node):

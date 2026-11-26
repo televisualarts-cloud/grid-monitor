@@ -1,6 +1,6 @@
 # gas_probe.py — read-only gas supply/margin DIAGNOSTIC probe for GB Energy Monitor
 #
-# Build 261028.1  (version = YYMMDD.N in UT; bump on every change to this file)
+# Build 261111.1  (version = YYMMDD.N in UT; bump on every change to this file)
 # Change history: CHANGELOG.md
 #
 # Mirrors rain_probe.py: each cycle it evaluates the gas signals we have and LOGS the
@@ -203,10 +203,14 @@ def _uk_offset_h(t):
     return 1 if last_sun(t.year, 3) <= t < last_sun(t.year, 10) else 0
 
 
+GAS_DAY_START_H = 5      # the GB gas day runs 05:00 to 05:00 UK clock time (06:00 here until build 261111.1:
+                         # National Gas's published opening linepack matches the 05:00 reading)
+
+
 def gas_day(now=None):
-    """Gas day (datetime.date) at epoch `now`: 06:00 to 06:00 UK clock time."""
+    """Gas day (datetime.date) at epoch `now`: 05:00 to 05:00 UK clock time."""
     t = datetime.datetime.fromtimestamp(now or time.time(), datetime.timezone.utc)
-    return (t + datetime.timedelta(hours=_uk_offset_h(t) - 6)).date()
+    return (t + datetime.timedelta(hours=_uk_offset_h(t) - GAS_DAY_START_H)).date()
 
 
 def _row_for(rows, day):
